@@ -344,6 +344,7 @@ BASE_SCRIPTS = [
     "feature_account_overflow.py",
     "feature_balance_overflow_height.py",
     "feature_balance_overflow_mempool.py",
+    "feature_balance_overflow_reorg.py",
     "feature_balance_overflow_rpc.py",
     "feature_mn_version_gate.py",
     "feature_accounts_validation.py",
