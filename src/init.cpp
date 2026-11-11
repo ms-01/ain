@@ -455,6 +455,7 @@ void SetupServerArgs()
             "(default: 0 = disable pruning blocks, 1 = allow manual pruning via RPC, >=%u = automatically prune block files to stay under the specified target size in MiB)", MIN_DISK_SPACE_FOR_BLOCK_FILES / 1024 / 1024), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-reindex", "Rebuild chain state and block index from the blk*.dat files on disk", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-reindex-chainstate", "Rebuild chain state from the currently indexed blocks. When in pruning mode or if blocks on disk might be corrupted, use full -reindex instead.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-autoreset", "Automatically rewind legacy chain state to pre-exploit height (default: 1)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #if HAVE_SYSTEM
     gArgs.AddArg("-shutdownnotify=<cmd>", "Execute command immediately before beginning shutdown. The need for shutdown may be urgent, so be careful not to delay it long (if the command doesn't require interaction with the server, consider having it fork into the background).", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #endif
@@ -814,6 +815,8 @@ static void ThreadImport(std::vector<fs::path> vImportFiles)
     util::ThreadRename("loadblk");
     ScheduleBatchPriority();
 
+    bool autoResetTriggered = false;
+
     {
     CImportingNow imp;
 
@@ -875,6 +878,34 @@ static void ThreadImport(std::vector<fs::path> vImportFiles)
         }
     }
 
+    // Auto-Reset: Check if active chain contains legacy blocks at/above nBalanceOverflowHeight
+    if (gArgs.GetBoolArg("-autoreset", true)) {
+        const auto& consensus = chainparams.GetConsensus();
+        const auto overflowHeight = consensus.nBalanceOverflowHeight;
+        const auto gateHeight = consensus.nMNVersionGateHeight;
+        CBlockIndex* pindexExploit = nullptr;
+        {
+            LOCK(cs_main);
+            if (overflowHeight > 0 && overflowHeight >= gateHeight && ::ChainActive().Height() >= overflowHeight) {
+                CBlockIndex* pindex = ::ChainActive()[overflowHeight];
+                if (pindex && (pindex->nVersion & Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW) == 0) {
+                    pindexExploit = pindex;
+                }
+            }
+        }
+        if (pindexExploit) {
+            LogPrintf("Auto-Reset: Legacy chain detected at height %d without overflow fix signal (block %s). Automatically invalidating...\n",
+                      overflowHeight, pindexExploit->GetBlockHash().ToString());
+            CValidationState invState;
+            if (!InvalidateBlock(invState, chainparams, pindexExploit)) {
+                LogPrintf("Auto-Reset: InvalidateBlock failed: %s\n", FormatStateMessage(invState));
+            } else {
+                autoResetTriggered = true;
+                LogPrintf("Auto-Reset: Successfully rewound active chain to height %d\n", ::ChainActive().Height());
+            }
+        }
+    }
+
     // scan for better chains in the block chain database, that are not yet connected in the active best chain
     CValidationState state;
     if (!ActivateBestChain(state, chainparams)) {
@@ -890,7 +921,12 @@ static void ThreadImport(std::vector<fs::path> vImportFiles)
     }
     } // End scope of CImportingNow
     if (gArgs.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
-        LoadMempool(::mempool);
+        if (autoResetTriggered) {
+            LogPrintf("Auto-Reset: Discarding legacy mempool to prevent orphaned transactions.\n");
+            fs::remove(GetDataDir() / "mempool.dat");
+        } else {
+            LoadMempool(::mempool);
+        }
     }
     ::mempool.SetIsLoaded(!ShutdownRequested());
 }

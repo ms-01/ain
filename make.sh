@@ -1063,21 +1063,20 @@ get_default_ci_group_logs() {
 # shellcheck disable=SC2120
 git_add_hooks() {
     local force_update=${1:-0}
-    local file=".git/hooks/pre-push"
+    local hooks_dir
+    hooks_dir="$(git rev-parse --git-path hooks 2>/dev/null || echo ".git/hooks")"
+    local file="${hooks_dir}/pre-push"
     if [[ -f "$file" && $force_update == "0" ]]; then
         return
     fi
-    echo "> add pre-push-hook"
-    mkdir -p "$(dirname $file)" 2>/dev/null || { true && return; }
+    mkdir -p "$(dirname "$file")" 2>/dev/null || return 0
     cat <<END >"$file"
 #!/bin/bash
 set -Eeuo pipefail
-dir="\$(dirname "\${BASH_SOURCE[0]}")"
-_SCRIPT_DIR="\$(cd "\${dir}/" && pwd)"
-cd \$_SCRIPT_DIR/../../
+cd "\$(git rev-parse --show-toplevel)"
 ./make.sh check
 END
-    chmod +x "$file"
+    chmod +x "$file" 2>/dev/null || true
 }
 
 # Platform helpers
