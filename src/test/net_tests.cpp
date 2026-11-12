@@ -305,5 +305,14 @@ BOOST_AUTO_TEST_CASE(LocalAddress_BasicLifecycle)
     BOOST_CHECK_EQUAL(IsLocal(addr), false);
 }
 
+BOOST_AUTO_TEST_CASE(mainnet_dns_seeds)
+{
+    const auto chainParams = CreateChainParams(CBaseChainParams::MAIN);
+    const auto& seeds = chainParams->DNSSeeds();
+
+    BOOST_CHECK(std::find(seeds.begin(), seeds.end(), "seed.defichain.live") != seeds.end());
+    BOOST_CHECK(std::find(seeds.begin(), seeds.end(), "seed.mydeficha.in") != seeds.end());
+    BOOST_CHECK(std::find(seeds.begin(), seeds.end(), "seed.defichain.io") == seeds.end());
+}
 
 BOOST_AUTO_TEST_SUITE_END()
