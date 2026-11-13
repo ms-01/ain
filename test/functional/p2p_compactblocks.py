@@ -955,6 +955,32 @@ class CompactBlocksTest(DefiTestFramework):
         stalling_peer.send_and_ping(msg)
         assert_equal(int(node.getbestblockhash(), 16), block.sha256)
 
+    def test_duplicate_blocktxn(self, test_node):
+        node = self.nodes[0]
+        utxo = self.utxos.pop(0)
+        block = self.build_block_with_transactions(node, utxo, 2)
+        self.utxos.append([block.vtx[-1].sha256, 0, block.vtx[-1].vout[0].nValue])
+
+        test_node.send_header_for_blocks([block])
+        comp_block = HeaderAndShortIDs()
+        comp_block.initialize_from_block(
+            block, use_witness=(test_node.cmpct_version == 2)
+        )
+        test_node.send_and_ping(msg_cmpctblock(comp_block.to_p2p()))
+
+        msg_bt = (
+            msg_blocktxn()
+            if test_node.cmpct_version == 2
+            else msg_no_witness_blocktxn()
+        )
+        msg_bt.block_transactions = BlockTransactions(block.sha256, block.vtx[1:])
+        test_node.send_and_ping(msg_bt)
+        assert_equal(int(node.getbestblockhash(), 16), block.sha256)
+
+        # Sending a duplicate blocktxn for the already-reconstructed block must not crash the node.
+        test_node.send_and_ping(msg_bt)
+        assert_equal(int(node.getbestblockhash(), 16), block.sha256)
+
     def run_test(self):
         # Setup the p2p connections
         self.segwit_node = self.nodes[0].add_p2p_connection(
@@ -1017,6 +1043,11 @@ class CompactBlocksTest(DefiTestFramework):
 
         self.log.info("Testing invalid index in cmpctblock message...")
         self.test_invalid_cmpctblock_message()
+
+        self.log.info(
+            "Testing duplicate blocktxn after compact block reconstruction..."
+        )
+        self.test_duplicate_blocktxn(self.additional_segwit_node)
 
 
 if __name__ == "__main__":

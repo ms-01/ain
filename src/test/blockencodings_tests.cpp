@@ -386,4 +386,27 @@ BOOST_AUTO_TEST_CASE(TransactionsRequestDeserializationOverflowTest) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(PartiallyDownloadedBlockNullHeaderTest) {
+    CTxMemPool pool;
+    CBlock block(BuildBlockTestCase());
+    CBlockHeaderAndShortTxIDs shortIDs(block, true);
+
+    PartiallyDownloadedBlock partialBlock(&pool);
+
+    // Uninitialized PartiallyDownloadedBlock (null header) must not assert
+    BOOST_CHECK(!partialBlock.IsTxAvailable(0));
+    CBlock outBlock;
+    BOOST_CHECK_EQUAL(partialBlock.FillBlock(outBlock, {}, 0), READ_STATUS_INVALID);
+
+    // First InitData succeeds; second InitData on non-null header must return READ_STATUS_INVALID
+    LOCK2(cs_main, pool.cs);
+    BOOST_CHECK_EQUAL(partialBlock.InitData(shortIDs, extra_txn), READ_STATUS_OK);
+    BOOST_CHECK_EQUAL(partialBlock.InitData(shortIDs, extra_txn), READ_STATUS_INVALID);
+
+    // Complete reconstruction clears header; subsequent IsTxAvailable/FillBlock must not assert
+    BOOST_CHECK_EQUAL(partialBlock.FillBlock(outBlock, {block.vtx[1], block.vtx[2]}, 0), READ_STATUS_OK);
+    BOOST_CHECK(!partialBlock.IsTxAvailable(0));
+    BOOST_CHECK_EQUAL(partialBlock.FillBlock(outBlock, {}, 0), READ_STATUS_INVALID);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

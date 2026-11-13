@@ -3092,6 +3092,12 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
             PartiallyDownloadedBlock& partialBlock = *it->second.second->partialBlock;
+            if (partialBlock.header.IsNull()) {
+                // Possible if a previous compact block reconstruction attempt failed
+                MarkBlockAsReceived(resp.blockhash);
+                Misbehaving(pfrom->GetId(), 100, strprintf("Peer %d sent us block transactions for a compact block whose previous reconstruction attempt failed\n", pfrom->GetId()));
+                return true;
+            }
             const auto prevIndex = LookupBlockIndex(partialBlock.header.hashPrevBlock);
             if (!prevIndex) {
                 // Should never get here. Valid header including hashPrevBlock should be checked in CMPCTBLOCK.
