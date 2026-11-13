@@ -181,7 +181,7 @@ namespace {
     std::atomic<int64_t> g_last_tip_update(0);
 
     /** Relay map */
-    typedef std::map<uint256, CTransactionRef> MapRelay;
+    typedef std::map<GenTxid, CTransactionRef> MapRelay;
     MapRelay mapRelay GUARDED_BY(cs_main);
     /** Expiration-time ordered list of (expire time, relay map entry) pairs. */
     std::deque<std::pair<int64_t, MapRelay::iterator>> vRelayExpiration GUARDED_BY(cs_main);
@@ -340,15 +340,15 @@ struct CNodeState {
      */
     struct TxDownloadState {
         /* Track when to attempt download of announced transactions (process
-         * time in micros -> txid)
+         * time in micros -> GenTxid)
          */
-        std::multimap<std::chrono::microseconds, uint256> m_tx_process_time;
+        std::multimap<std::chrono::microseconds, GenTxid> m_tx_process_time;
 
         //! Store all the transactions a peer has recently announced
-        std::set<uint256> m_tx_announced;
+        std::set<GenTxid> m_tx_announced;
 
         //! Store transactions which were requested by us, with timestamp
-        std::map<uint256, std::chrono::microseconds> m_tx_in_flight;
+        std::map<GenTxid, std::chrono::microseconds> m_tx_in_flight;
 
         //! Periodically check for stuck getdata requests
         std::chrono::microseconds m_check_expiry_timer{0};
@@ -393,7 +393,7 @@ struct CNodeState {
 };
 
 // Keeps track of the time (in microseconds) when transactions were requested last time
-limitedmap<uint256, std::chrono::microseconds> g_already_asked_for GUARDED_BY(cs_main)(MAX_INV_SZ);
+limitedmap<GenTxid, std::chrono::microseconds> g_already_asked_for GUARDED_BY(cs_main)(MAX_INV_SZ);
 
 /** Map maintaining per-node state. */
 static std::map<NodeId, CNodeState> mapNodeState GUARDED_BY(cs_main);
@@ -697,34 +697,34 @@ static void FindNextBlocksToDownload(NodeId nodeid, unsigned int count, std::vec
     }
 }
 
-void EraseTxRequest(const uint256& txid) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+void EraseTxRequest(const GenTxid& gtxid) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
-    g_already_asked_for.erase(txid);
+    g_already_asked_for.erase(gtxid);
 }
 
-std::chrono::microseconds GetTxRequestTime(const uint256& txid) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+std::chrono::microseconds GetTxRequestTime(const GenTxid& gtxid) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
-    auto it = g_already_asked_for.find(txid);
+    auto it = g_already_asked_for.find(gtxid);
     if (it != g_already_asked_for.end()) {
         return it->second;
     }
     return {};
 }
 
-void UpdateTxRequestTime(const uint256& txid, std::chrono::microseconds request_time) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+void UpdateTxRequestTime(const GenTxid& gtxid, std::chrono::microseconds request_time) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
-    auto it = g_already_asked_for.find(txid);
+    auto it = g_already_asked_for.find(gtxid);
     if (it == g_already_asked_for.end()) {
-        g_already_asked_for.insert(std::make_pair(txid, request_time));
+        g_already_asked_for.insert(std::make_pair(gtxid, request_time));
     } else {
         g_already_asked_for.update(it, request_time);
     }
 }
 
-std::chrono::microseconds CalculateTxGetDataTime(const uint256& txid, std::chrono::microseconds current_time, bool use_inbound_delay) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+std::chrono::microseconds CalculateTxGetDataTime(const GenTxid& gtxid, std::chrono::microseconds current_time, bool use_inbound_delay) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
     std::chrono::microseconds process_time;
-    const auto last_request_time = GetTxRequestTime(txid);
+    const auto last_request_time = GetTxRequestTime(gtxid);
     // First time requesting this tx
     if (last_request_time.count() == 0) {
         process_time = current_time;
@@ -740,23 +740,23 @@ std::chrono::microseconds CalculateTxGetDataTime(const uint256& txid, std::chron
     return process_time;
 }
 
-void RequestTx(CNodeState* state, const uint256& txid, std::chrono::microseconds current_time) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+void RequestTx(CNodeState* state, const GenTxid& gtxid, std::chrono::microseconds current_time) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
     CNodeState::TxDownloadState& peer_download_state = state->m_tx_download;
     if (peer_download_state.m_tx_announced.size() >= MAX_PEER_TX_ANNOUNCEMENTS ||
             peer_download_state.m_tx_process_time.size() >= MAX_PEER_TX_ANNOUNCEMENTS ||
-            peer_download_state.m_tx_announced.count(txid)) {
+            peer_download_state.m_tx_announced.count(gtxid)) {
         // Too many queued announcements from this peer, or we already have
         // this announcement
         return;
     }
-    peer_download_state.m_tx_announced.insert(txid);
+    peer_download_state.m_tx_announced.insert(gtxid);
 
     // Calculate the time to try requesting this transaction. Use
     // fPreferredDownload as a proxy for outbound peers.
-    const auto process_time = CalculateTxGetDataTime(txid, current_time, !state->fPreferredDownload);
+    const auto process_time = CalculateTxGetDataTime(gtxid, current_time, !state->fPreferredDownload);
 
-    peer_download_state.m_tx_process_time.emplace(process_time, txid);
+    peer_download_state.m_tx_process_time.emplace(process_time, gtxid);
 }
 
 } // namespace
@@ -1288,6 +1288,7 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
     {
     case MSG_TX:
     case MSG_WITNESS_TX:
+    case MSG_WTX:
         {
             assert(recentRejects);
             if (::ChainActive().Tip()->GetBlockHash() != hashRecentRejectsChainTip)
@@ -1305,11 +1306,12 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
                 if (mapOrphanTransactions.count(inv.hash)) return true;
             }
             const CCoinsViewCache& coins_cache = ::ChainstateActive().CoinsTip();
+            const GenTxid gtxid = ToGenTxid(inv);
 
             return recentRejects->contains(inv.hash) ||
-                   mempool.exists(inv.hash) ||
-                   coins_cache.HaveCoinInCache(COutPoint(inv.hash, 0)) || // Best effort: only try output 0 and 1
-                   coins_cache.HaveCoinInCache(COutPoint(inv.hash, 1));
+                   mempool.exists(gtxid) ||
+                   (!gtxid.IsWtxid() && (coins_cache.HaveCoinInCache(COutPoint(inv.hash, 0)) || // Best effort: only try output 0 and 1
+                                         coins_cache.HaveCoinInCache(COutPoint(inv.hash, 1))));
         }
     case MSG_BLOCK:
     case MSG_WITNESS_BLOCK:
@@ -1587,7 +1589,7 @@ void static ProcessGetData(CNode* pfrom, const CChainParams& chainparams, CConnm
     {
         LOCK(cs_main);
 
-        while (it != pfrom->vRecvGetData.end() && (it->type == MSG_TX || it->type == MSG_WITNESS_TX)) {
+        while (it != pfrom->vRecvGetData.end() && it->IsGenTxMsg()) {
             if (interruptMsgProc)
                 return;
             // Don't bother if send buffer is too full to respond anyway
@@ -1599,13 +1601,14 @@ void static ProcessGetData(CNode* pfrom, const CChainParams& chainparams, CConnm
 
             // Send stream from relay memory
             bool push = false;
-            auto mi = mapRelay.find(inv.hash);
-            int nSendFlags = (inv.type == MSG_TX ? SERIALIZE_TRANSACTION_NO_WITNESS : 0);
+            const GenTxid gtxid = ToGenTxid(inv);
+            auto mi = mapRelay.find(gtxid);
+            int nSendFlags = (inv.IsMsgTx() ? SERIALIZE_TRANSACTION_NO_WITNESS : 0);
             if (mi != mapRelay.end()) {
                 connman->PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *mi->second));
                 push = true;
             } else if (pfrom->timeLastMempoolReq) {
-                auto txinfo = mempool.info(inv.hash);
+                auto txinfo = mempool.info(gtxid);
                 // To protect privacy, do not answer getdata using the mempool when
                 // that TX couldn't have been INVed in reply to a MEMPOOL request.
                 if (txinfo.tx && txinfo.nTime <= pfrom->timeLastMempoolReq) {
@@ -1931,12 +1934,11 @@ void static ProcessOrphanTx(CConnman* connman, std::set<uint256>& orphan_work_se
             // Probably non-standard or insufficient fee
             LogPrint(BCLog::MEMPOOL, "   removed orphan tx %s\n", orphanHash.ToString());
             assert(IsTransactionReason(orphan_state.GetReason()));
-            if (!orphanTx.HasWitness() && orphan_state.GetReason() != ValidationInvalidReason::TX_WITNESS_MUTATED) {
-                // Do not use rejection cache for witness transactions or
-                // witness-stripped transactions, as they can have been malleated.
-                // See https://github.com/bitcoin/bitcoin/issues/8279 for details.
+            if (orphan_state.GetReason() != ValidationInvalidReason::TX_WITNESS_MUTATED) {
+                // Do not use rejection cache for witness-stripped transactions,
+                // as they can have been malleated. Key by wtxid per BIP 339.
                 assert(recentRejects);
-                recentRejects->insert(orphanHash);
+                recentRejects->insert(orphanTx.GetWitnessHash());
             }
             EraseOrphanTx(orphanHash);
             done = true;
@@ -2039,6 +2041,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         // Be shy and don't send version until we hear
         if (pfrom->fInbound)
             PushNodeVersion(pfrom, connman, GetAdjustedTime());
+
+        if (nSendVersion >= WTXID_RELAY_VERSION) {
+            connman->PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::WTXIDRELAY));
+        }
 
         connman->PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::VERACK));
 
@@ -2190,6 +2196,27 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             });
         }
 
+        return true;
+    }
+
+    // BIP 339 defines feature negotiation of wtxid relay, which must happen between
+    // VERSION and VERACK to avoid relay problems from switching after a connection is up.
+    if (strCommand == NetMsgType::WTXIDRELAY) {
+        if (pfrom->fSuccessfullyConnected) {
+            // Disconnect peers that send a wtxidrelay message after VERACK.
+            LogPrint(BCLog::NET, "wtxidrelay received after verack, peer=%d\n", pfrom->GetId());
+            pfrom->fDisconnect = true;
+            return true;
+        }
+        if (std::min(pfrom->nVersion.load(), PROTOCOL_VERSION) >= WTXID_RELAY_VERSION) {
+            if (!pfrom->m_wtxid_relay) {
+                pfrom->m_wtxid_relay = true;
+            } else {
+                LogPrint(BCLog::NET, "ignoring duplicate wtxidrelay from peer=%d\n", pfrom->GetId());
+            }
+        } else {
+            LogPrint(BCLog::NET, "ignoring wtxidrelay due to old version=%d from peer=%d\n", pfrom->nVersion.load(), pfrom->GetId());
+        }
         return true;
     }
 
@@ -2376,13 +2403,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                     connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::GETDATA, std::vector<CInv>{inv}));
                 }
             }
-            else
+            else if (inv.IsGenTxMsg())
             {
                 pfrom->AddInventoryKnown(inv);
                 if (fBlocksOnly) {
                     LogPrint(BCLog::NET, "transaction (%s) inv sent in violation of protocol peer=%d\n", inv.hash.ToString(), pfrom->GetId());
                 } else if (!fAlreadyHave && !fImporting && !fReindex && !::ChainstateActive().IsInitialBlockDownload()) {
-                    RequestTx(State(pfrom->GetId()), inv.hash, current_time);
+                    RequestTx(State(pfrom->GetId()), ToGenTxid(inv), current_time);
                 }
             }
         }
@@ -2715,7 +2742,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         vRecv >> ptx;
         const CTransaction& tx = *ptx;
 
-        CInv inv(MSG_TX, tx.GetHash());
+        const GenTxid txid_gen = GenTxid::Txid(tx.GetHash());
+        const GenTxid wtxid_gen = GenTxid::Wtxid(tx.GetWitnessHash());
+        CInv inv(pfrom->m_wtxid_relay ? MSG_WTX : MSG_TX, pfrom->m_wtxid_relay ? tx.GetWitnessHash() : tx.GetHash());
         pfrom->AddInventoryKnown(inv);
 
         LOCK2(cs_main, g_cs_orphans);
@@ -2724,9 +2753,12 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         CValidationState state;
 
         CNodeState* nodestate = State(pfrom->GetId());
-        nodestate->m_tx_download.m_tx_announced.erase(inv.hash);
-        nodestate->m_tx_download.m_tx_in_flight.erase(inv.hash);
-        EraseTxRequest(inv.hash);
+        nodestate->m_tx_download.m_tx_announced.erase(txid_gen);
+        nodestate->m_tx_download.m_tx_announced.erase(wtxid_gen);
+        nodestate->m_tx_download.m_tx_in_flight.erase(txid_gen);
+        nodestate->m_tx_download.m_tx_in_flight.erase(wtxid_gen);
+        EraseTxRequest(txid_gen);
+        EraseTxRequest(wtxid_gen);
 
         std::list<CTransactionRef> lRemovedTxn;
 
@@ -2735,7 +2767,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             mempool.xcheck(&::ChainstateActive().CoinsTip(), pcustomcsview.get(), chainparams);
             RelayTransaction(tx.GetHash(), *connman);
             for (unsigned int i = 0; i < tx.vout.size(); i++) {
-                auto it_by_prev = mapOrphanTransactionsByPrev.find(COutPoint(inv.hash, i));
+                auto it_by_prev = mapOrphanTransactionsByPrev.find(COutPoint(tx.GetHash(), i));
                 if (it_by_prev != mapOrphanTransactionsByPrev.end()) {
                     for (const auto& elem : it_by_prev->second) {
                         pfrom->orphan_work_set.insert(elem->first);
@@ -2769,7 +2801,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 for (const CTxIn& txin : tx.vin) {
                     CInv _inv(MSG_TX | nFetchFlags, txin.prevout.hash);
                     pfrom->AddInventoryKnown(_inv);
-                    if (!AlreadyHave(_inv)) RequestTx(State(pfrom->GetId()), _inv.hash, current_time);
+                    if (!AlreadyHave(_inv)) RequestTx(State(pfrom->GetId()), ToGenTxid(_inv), current_time);
                 }
                 AddOrphanTx(ptx, pfrom->GetId());
 
@@ -2784,15 +2816,15 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 // We will continue to reject this tx since it has rejected
                 // parents so avoid re-requesting it from other peers.
                 recentRejects->insert(tx.GetHash());
+                recentRejects->insert(tx.GetWitnessHash());
             }
         } else {
             assert(IsTransactionReason(state.GetReason()));
-            if (!tx.HasWitness() && state.GetReason() != ValidationInvalidReason::TX_WITNESS_MUTATED) {
-                // Do not use rejection cache for witness transactions or
-                // witness-stripped transactions, as they can have been malleated.
-                // See https://github.com/bitcoin/bitcoin/issues/8279 for details.
+            if (state.GetReason() != ValidationInvalidReason::TX_WITNESS_MUTATED) {
+                // Do not use rejection cache for witness-stripped transactions,
+                // as they can have been malleated. Key by wtxid per BIP 339.
                 assert(recentRejects);
-                recentRejects->insert(tx.GetHash());
+                recentRejects->insert(tx.GetWitnessHash());
                 if (RecursiveDynamicUsage(*ptx) < 100000) {
                     AddToCompactExtraTransactions(ptx);
                 }
@@ -3430,17 +3462,18 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         vRecv >> vInv;
         if (vInv.size() <= MAX_PEER_TX_IN_FLIGHT + MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
             for (CInv &inv : vInv) {
-                if (inv.type == MSG_TX || inv.type == MSG_WITNESS_TX) {
-                    // If we receive a NOTFOUND message for a txid we requested, erase
+                if (inv.IsGenTxMsg()) {
+                    // If we receive a NOTFOUND message for a tx we requested, erase
                     // it from our data structures for this peer.
-                    auto in_flight_it = state->m_tx_download.m_tx_in_flight.find(inv.hash);
+                    const GenTxid gtxid = ToGenTxid(inv);
+                    auto in_flight_it = state->m_tx_download.m_tx_in_flight.find(gtxid);
                     if (in_flight_it == state->m_tx_download.m_tx_in_flight.end()) {
                         // Skip any further work if this is a spurious NOTFOUND
                         // message.
                         continue;
                     }
                     state->m_tx_download.m_tx_in_flight.erase(in_flight_it);
-                    state->m_tx_download.m_tx_announced.erase(inv.hash);
+                    state->m_tx_download.m_tx_announced.erase(gtxid);
                 }
             }
         }
@@ -4057,7 +4090,7 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
 
                 for (const auto& txinfo : vtxinfo) {
                     const uint256& hash = txinfo.tx->GetHash();
-                    CInv inv(MSG_TX, hash);
+                    const CInv inv = pto->m_wtxid_relay ? CInv(MSG_WTX, txinfo.tx->GetWitnessHash()) : CInv(MSG_TX, hash);
                     pto->setInventoryTxToSend.erase(hash);
                     if (filterrate) {
                         if (txinfo.feeRate.GetFeePerK() < filterrate)
@@ -4066,7 +4099,7 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                     if (pto->pfilter) {
                         if (!pto->pfilter->IsRelevantAndUpdate(*txinfo.tx)) continue;
                     }
-                    pto->filterInventoryKnown.insert(hash);
+                    pto->filterInventoryKnown.insert(inv.hash);
                     vInv.push_back(inv);
                     if (vInv.size() == MAX_INV_SZ) {
                         connman->PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
@@ -4114,12 +4147,16 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                     if (!txinfo.tx) {
                         continue;
                     }
+                    const CInv inv = pto->m_wtxid_relay ? CInv(MSG_WTX, txinfo.tx->GetWitnessHash()) : CInv(MSG_TX, hash);
+                    if (pto->m_wtxid_relay && pto->filterInventoryKnown.contains(inv.hash)) {
+                        continue;
+                    }
                     if (!IsEVMTx(*txinfo.tx) && filterrate && txinfo.feeRate.GetFeePerK() < filterrate) {
                         continue;
                     }
                     if (pto->pfilter && !pto->pfilter->IsRelevantAndUpdate(*txinfo.tx)) continue;
                     // Send
-                    vInv.push_back(CInv(MSG_TX, hash));
+                    vInv.push_back(inv);
                     nRelayedTransactions++;
                     {
                         // Expire old relay messages
@@ -4129,7 +4166,7 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                             vRelayExpiration.pop_front();
                         }
 
-                        auto ret = mapRelay.insert(std::make_pair(hash, std::move(txinfo.tx)));
+                        auto ret = mapRelay.insert(std::make_pair(ToGenTxid(inv), std::move(txinfo.tx)));
                         if (ret.second) {
                             vRelayExpiration.push_back(std::make_pair(nNow + 15 * 60 * 1000000, ret.first));
                         }
@@ -4244,7 +4281,7 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
         if (state.m_tx_download.m_check_expiry_timer <= current_time) {
             for (auto it=state.m_tx_download.m_tx_in_flight.begin(); it != state.m_tx_download.m_tx_in_flight.end();) {
                 if (it->second <= current_time - TX_EXPIRY_INTERVAL) {
-                    LogPrint(BCLog::NET, "timeout of inflight tx %s from peer=%d\n", it->first.ToString(), pto->GetId());
+                    LogPrint(BCLog::NET, "timeout of inflight tx %s from peer=%d\n", it->first.GetHash().ToString(), pto->GetId());
                     state.m_tx_download.m_tx_announced.erase(it->first);
                     state.m_tx_download.m_tx_in_flight.erase(it++);
                 } else {
@@ -4258,15 +4295,15 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
 
         auto& tx_process_time = state.m_tx_download.m_tx_process_time;
         while (!tx_process_time.empty() && tx_process_time.begin()->first <= current_time && state.m_tx_download.m_tx_in_flight.size() < MAX_PEER_TX_IN_FLIGHT) {
-            const uint256 txid = tx_process_time.begin()->second;
+            const GenTxid gtxid = tx_process_time.begin()->second;
             // Erase this entry from tx_process_time (it may be added back for
             // processing at a later time, see below)
             tx_process_time.erase(tx_process_time.begin());
-            CInv inv(MSG_TX | GetFetchFlags(pto), txid);
+            CInv inv(gtxid.IsWtxid() ? MSG_WTX : (MSG_TX | GetFetchFlags(pto)), gtxid.GetHash());
             if (!AlreadyHave(inv)) {
                 // If this transaction was last requested more than 1 minute ago,
                 // then request.
-                const auto last_request_time = GetTxRequestTime(inv.hash);
+                const auto last_request_time = GetTxRequestTime(gtxid);
                 if (last_request_time <= current_time - GETDATA_TX_INTERVAL) {
                     LogPrint(BCLog::NET, "Requesting %s peer=%d\n", inv.ToString(), pto->GetId());
                     vGetData.push_back(inv);
@@ -4274,20 +4311,20 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                         connman->PushMessage(pto, msgMaker.Make(NetMsgType::GETDATA, vGetData));
                         vGetData.clear();
                     }
-                    UpdateTxRequestTime(inv.hash, current_time);
-                    state.m_tx_download.m_tx_in_flight.emplace(inv.hash, current_time);
+                    UpdateTxRequestTime(gtxid, current_time);
+                    state.m_tx_download.m_tx_in_flight.emplace(gtxid, current_time);
                 } else {
                     // This transaction is in flight from someone else; queue
                     // up processing to happen after the download times out
                     // (with a slight delay for inbound peers, to prefer
                     // requests to outbound peers).
-                    const auto next_process_time = CalculateTxGetDataTime(txid, current_time, !state.fPreferredDownload);
-                    tx_process_time.emplace(next_process_time, txid);
+                    const auto next_process_time = CalculateTxGetDataTime(gtxid, current_time, !state.fPreferredDownload);
+                    tx_process_time.emplace(next_process_time, gtxid);
                 }
             } else {
                 // We have already seen this transaction, no need to download.
-                state.m_tx_download.m_tx_announced.erase(inv.hash);
-                state.m_tx_download.m_tx_in_flight.erase(inv.hash);
+                state.m_tx_download.m_tx_announced.erase(gtxid);
+                state.m_tx_download.m_tx_in_flight.erase(gtxid);
             }
         }
 

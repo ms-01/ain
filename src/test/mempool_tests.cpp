@@ -740,4 +740,39 @@ BOOST_AUTO_TEST_CASE(MempoolAncestryTests)
     BOOST_CHECK_EQUAL(descendants, 6ULL);
 }
 
+BOOST_AUTO_TEST_CASE(MempoolWtxidIndexingTest)
+{
+    CTxMemPool pool;
+    TestMemPoolEntryHelper entry;
+
+    CMutableTransaction mtx;
+    mtx.vin.resize(1);
+    mtx.vin[0].prevout.hash = InsecureRand256();
+    mtx.vin[0].prevout.n = 0;
+    mtx.vin[0].scriptWitness.stack.push_back(std::vector<unsigned char>{0x01, 0x02});
+    mtx.vout.resize(1);
+    mtx.vout[0].nValue = 1 * COIN;
+
+    CTransactionRef tx = MakeTransactionRef(mtx);
+    BOOST_CHECK(tx->GetHash() != tx->GetWitnessHash());
+
+    pool.addUnchecked(entry.Fee(1000LL).FromTx(tx));
+
+    const GenTxid gtxid_txid = GenTxid::Txid(tx->GetHash());
+    const GenTxid gtxid_wtxid = GenTxid::Wtxid(tx->GetWitnessHash());
+
+    BOOST_CHECK(pool.exists(gtxid_txid));
+    BOOST_CHECK(pool.exists(gtxid_wtxid));
+    BOOST_CHECK(!pool.exists(GenTxid::Wtxid(tx->GetHash())));
+    BOOST_CHECK(!pool.exists(GenTxid::Txid(tx->GetWitnessHash())));
+
+    TxMempoolInfo info_txid = pool.info(gtxid_txid);
+    TxMempoolInfo info_wtxid = pool.info(gtxid_wtxid);
+    BOOST_CHECK(info_txid.tx != nullptr);
+    BOOST_CHECK(info_wtxid.tx != nullptr);
+    BOOST_CHECK(info_txid.tx->GetWitnessHash() == tx->GetWitnessHash());
+    BOOST_CHECK(info_wtxid.tx->GetHash() == tx->GetHash());
+    BOOST_CHECK(pool.info(GenTxid::Wtxid(InsecureRand256())).tx == nullptr);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

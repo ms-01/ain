@@ -759,6 +759,8 @@ public:
     std::atomic<int64_t> nMinPingUsecTime{std::numeric_limits<int64_t>::max()};
     // Whether a ping is requested.
     std::atomic<bool> fPingQueued{false};
+    // Whether this peer supports BIP 339 wtxid transaction relay.
+    std::atomic<bool> m_wtxid_relay{false};
     // Minimum fee rate with which to filter inv's to this node
     CAmount minFeeFilter GUARDED_BY(cs_feeFilter){0};
     CCriticalSection cs_feeFilter;

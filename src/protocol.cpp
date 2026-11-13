@@ -43,6 +43,7 @@ const char *GETBLOCKTXN="getblocktxn";
 const char *BLOCKTXN="blocktxn";
 const char *ANCHORAUTH="anchorauth";
 const char *ANCHORCONFIRM="anchorconf"; // Renamed from anchorcnf for Dakota fork, new message type. Old type ignored.
+const char *WTXIDRELAY="wtxidrelay";
 } // namespace NetMsgType
 
 /** All known message types. Keep this in the same order as the list of
@@ -77,6 +78,7 @@ const static std::string allNetMessageTypes[] = {
     NetMsgType::BLOCKTXN,
     NetMsgType::ANCHORAUTH,
     NetMsgType::ANCHORCONFIRM,
+    NetMsgType::WTXIDRELAY,
 };
 const static std::vector<std::string> allNetMessageTypesVec(allNetMessageTypes, allNetMessageTypes+ARRAYLEN(allNetMessageTypes));
 
@@ -189,6 +191,7 @@ std::string CInv::GetCommand() const
     case MSG_CMPCT_BLOCK:    return cmd.append(NetMsgType::CMPCTBLOCK);
     case MSG_ANCHOR_AUTH:    return cmd.append(NetMsgType::ANCHORAUTH);
     case MSG_ANCHOR_CONFIRM: return cmd.append(NetMsgType::ANCHORCONFIRM);
+    case MSG_WTX:            return cmd.append("wtx");
     default:
         throw std::out_of_range(strprintf("CInv::GetCommand(): type=%d unknown type", type));
     }
@@ -206,4 +209,10 @@ std::string CInv::ToString() const
 const std::vector<std::string> &getAllNetMessageTypes()
 {
     return allNetMessageTypesVec;
+}
+
+GenTxid ToGenTxid(const CInv& inv)
+{
+    assert(inv.IsGenTxMsg());
+    return inv.IsMsgWtx() ? GenTxid::Wtxid(inv.hash) : GenTxid::Txid(inv.hash);
 }

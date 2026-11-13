@@ -50,6 +50,7 @@ from test_framework.messages import (
     MSG_TYPE_MASK,
     msg_verack,
     msg_version,
+    msg_wtxidrelay,
     NODE_NETWORK,
     NODE_WITNESS,
     sha256,
@@ -82,6 +83,7 @@ MESSAGEMAP = {
     b"tx": msg_tx,
     b"verack": msg_verack,
     b"version": msg_version,
+    b"wtxidrelay": msg_wtxidrelay,
 }
 
 MAGIC_BYTES = {
@@ -408,6 +410,9 @@ class P2PInterface(P2PConnection):
         self.send_message(msg_pong(message.nonce))
 
     def on_verack(self, message):
+        pass
+
+    def on_wtxidrelay(self, message):
         pass
 
     def on_version(self, message):

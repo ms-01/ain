@@ -223,6 +223,14 @@ struct mempoolentry_txid {
     result_type operator()(const CTransactionRef &tx) const { return tx->GetHash(); }
 };
 
+// extracts a transaction witness-hash from CTxMemPoolEntry or CTransactionRef
+struct mempoolentry_wtxid {
+    typedef uint256 result_type;
+    result_type operator()(const CTxMemPoolEntry &entry) const { return entry.GetTx().GetWitnessHash(); }
+
+    result_type operator()(const CTransactionRef &tx) const { return tx->GetWitnessHash(); }
+};
+
 /** \class CompareTxMemPoolEntryByDescendantScore
  *
  *  Sort an entry by max(score/size of entry's tx, score/size with all descendants).
@@ -338,6 +346,7 @@ struct entry_time {};
 struct ancestor_score {};
 struct address_and_nonce {};
 struct txid_tag {};
+struct index_by_wtxid {};
 
 class CBlockPolicyEstimator;
 
@@ -480,6 +489,8 @@ public:
         boost::multi_index::indexed_by<
             // sorted by txid
             boost::multi_index::hashed_unique<boost::multi_index::tag<txid_tag>, mempoolentry_txid, SaltedTxidHasher>,
+            // sorted by wtxid
+            boost::multi_index::hashed_unique<boost::multi_index::tag<index_by_wtxid>, mempoolentry_wtxid, SaltedTxidHasher>,
             // sorted by fee rate
             boost::multi_index::ordered_non_unique<boost::multi_index::tag<descendant_score>,
                                                    boost::multi_index::identity<CTxMemPoolEntry>,
@@ -745,8 +756,17 @@ public:
         return (mapTx.count(hash) != 0);
     }
 
+    bool exists(const GenTxid &gtxid) const {
+        LOCK(cs);
+        if (gtxid.IsWtxid()) {
+            return (mapTx.get<index_by_wtxid>().count(gtxid.GetHash()) != 0);
+        }
+        return (mapTx.count(gtxid.GetHash()) != 0);
+    }
+
     CTransactionRef get(const uint256 &hash) const;
     TxMempoolInfo info(const uint256 &hash) const;
+    TxMempoolInfo info(const GenTxid &gtxid) const;
     std::vector<TxMempoolInfo> infoAll() const;
 
     size_t DynamicMemoryUsage() const;

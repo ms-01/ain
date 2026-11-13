@@ -14,7 +14,7 @@ static const int INIT_PROTO_VERSION = 209;
 
 // TODO: Alias this to the latest network upgrade height that the node supports 
 // as they are synonymous.
-static const int PROTOCOL_VERSION = 70039;
+static const int PROTOCOL_VERSION = 70040;
 
 // TODO: Set this as the previous successful network upgrade height 
 // pre-node release. Each version can supports connecting from 
@@ -51,5 +51,8 @@ static const int INVALID_CB_NO_BAN_VERSION = 70015;
 
 //! Enable DFIP1 and DFIP2 and tokenization
 static const int AMK_VERSION = 70016;
+
+//! wtxid-based transaction relay (BIP 339) starts with this version
+static const int WTXID_RELAY_VERSION = 70040;
 
 #endif // DEFI_VERSION_H
