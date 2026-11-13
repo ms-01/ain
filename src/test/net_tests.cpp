@@ -315,4 +315,33 @@ BOOST_AUTO_TEST_CASE(mainnet_dns_seeds)
     BOOST_CHECK(std::find(seeds.begin(), seeds.end(), "seed.defichain.io") == seeds.end());
 }
 
+BOOST_AUTO_TEST_CASE(gentxid_and_wtx_inv_test)
+{
+    uint256 h1 = InsecureRand256();
+    uint256 h2 = InsecureRand256();
+
+    GenTxid g_txid = GenTxid::Txid(h1);
+    GenTxid g_wtxid = GenTxid::Wtxid(h1);
+    BOOST_CHECK(!g_txid.IsWtxid());
+    BOOST_CHECK(g_wtxid.IsWtxid());
+    BOOST_CHECK(g_txid.GetHash() == h1);
+    BOOST_CHECK(g_wtxid.GetHash() == h1);
+    BOOST_CHECK(!(g_txid == g_wtxid));
+    BOOST_CHECK(g_txid < g_wtxid);
+
+    CInv inv_tx(MSG_TX, h1);
+    CInv inv_wtx(MSG_WTX, h2);
+    CInv inv_wit_tx(MSG_WITNESS_TX, h1);
+    CInv inv_blk(MSG_BLOCK, h1);
+
+    BOOST_CHECK(inv_tx.IsMsgTx() && !inv_tx.IsMsgWtx() && inv_tx.IsGenTxMsg());
+    BOOST_CHECK(!inv_wtx.IsMsgTx() && inv_wtx.IsMsgWtx() && inv_wtx.IsGenTxMsg());
+    BOOST_CHECK(inv_wit_tx.IsMsgWitnessTx() && inv_wit_tx.IsGenTxMsg());
+    BOOST_CHECK(!inv_blk.IsGenTxMsg());
+    BOOST_CHECK_EQUAL(inv_wtx.GetCommand(), "wtx");
+    BOOST_CHECK(ToGenTxid(inv_tx) == GenTxid::Txid(h1));
+    BOOST_CHECK(ToGenTxid(inv_wtx) == GenTxid::Wtxid(h2));
+    BOOST_CHECK(ToGenTxid(inv_wit_tx) == GenTxid::Txid(h1));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

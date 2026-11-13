@@ -53,6 +53,7 @@ NODE_NETWORK_LIMITED = 1 << 10
 
 MSG_TX = 1
 MSG_BLOCK = 2
+MSG_WTX = 8
 MSG_WITNESS_FLAG = 1 << 30
 MSG_TYPE_MASK = 0xFFFFFFFF >> 2
 
@@ -293,6 +294,7 @@ class CInv:
         2 | MSG_WITNESS_FLAG: "WitnessBlock",
         4: "CompactBlock",
         5: "AnchorAuth",
+        8: "WTX",
     }
 
     def __init__(self, t=0, h=0):
@@ -1207,6 +1209,23 @@ class msg_verack:
 
     def __repr__(self):
         return "msg_verack()"
+
+
+class msg_wtxidrelay:
+    __slots__ = ()
+    command = b"wtxidrelay"
+
+    def __init__(self):
+        pass
+
+    def deserialize(self, f):
+        pass
+
+    def serialize(self):
+        return b""
+
+    def __repr__(self):
+        return "msg_wtxidrelay()"
 
 
 class msg_addr:

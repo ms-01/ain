@@ -12,8 +12,15 @@ from test_framework.messages import (
     FromHex,
     MSG_TX,
     MSG_TYPE_MASK,
+    MSG_WITNESS_FLAG,
+    MSG_WTX,
+    msg_getdata,
     msg_inv,
+    msg_mempool,
     msg_notfound,
+    msg_verack,
+    msg_witness_tx,
+    msg_wtxidrelay,
 )
 from test_framework.mininode import (
     P2PInterface,
@@ -26,6 +33,7 @@ from test_framework.util import (
 )
 from test_framework.address import ADDRESS_BCRT1_UNSPENDABLE
 
+import copy
 import time
 
 
@@ -38,6 +46,59 @@ class TestP2PConn(P2PInterface):
         for i in message.inv:
             if i.type & MSG_TYPE_MASK == MSG_TX:
                 self.tx_getdata_count += 1
+
+
+class WtxidP2PConn(P2PInterface):
+    def __init__(self, version=70040, send_wtxidrelay=True, auto_request_inv=True):
+        super().__init__()
+        self.peer_version = version
+        self.send_wtxidrelay = send_wtxidrelay
+        self.auto_request_inv = auto_request_inv
+        self.received_wtxidrelay = False
+        self.received_verack = False
+        self.wtxidrelay_before_verack = False
+        self.invs = []
+        self.getdatas = []
+        self.txs = []
+
+    def peer_connect(self, *args, **kwargs):
+        create_conn = super().peer_connect(*args, **kwargs)
+        if self.on_connection_send_msg is not None:
+            self.on_connection_send_msg.nVersion = self.peer_version
+        return create_conn
+
+    def on_wtxidrelay(self, message):
+        self.received_wtxidrelay = True
+        if not self.received_verack:
+            self.wtxidrelay_before_verack = True
+
+    def on_verack(self, message):
+        self.received_verack = True
+
+    def on_version(self, message):
+        if self.send_wtxidrelay:
+            self.send_message(msg_wtxidrelay())
+        self.send_message(msg_verack())
+        self.nServices = message.nServices
+
+    def on_inv(self, message):
+        self.invs.extend(message.inv)
+        if self.auto_request_inv:
+            want = msg_getdata()
+            for i in message.inv:
+                if i.type in (MSG_TX, MSG_WTX):
+                    if i.type == MSG_TX:
+                        want.inv.append(CInv(MSG_TX | MSG_WITNESS_FLAG, i.hash))
+                    else:
+                        want.inv.append(i)
+            if want.inv:
+                self.send_message(want)
+
+    def on_getdata(self, message):
+        self.getdatas.extend(message.inv)
+
+    def on_tx(self, message):
+        self.txs.append(message.tx)
 
 
 # Constants from net_processing
@@ -58,6 +119,7 @@ class TxDownloadTest(DefiTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = False
         self.num_nodes = 2
+        self.extra_args = [["-peerbloomfilters=1"], []]
 
     def test_tx_requests(self):
         self.log.info(
@@ -191,7 +253,198 @@ class TxDownloadTest(DefiTestFramework):
         wait_until(lambda: p.tx_getdata_count == MAX_GETDATA_IN_FLIGHT + 2)
         self.nodes[0].setmocktime(0)
 
+    def _create_segwit_tx(self, node):
+        addr = node.getnewaddress("", "bech32")
+        node.sendtoaddress(addr, 1.0)
+        node.generate(1)
+        utxo = next(
+            u for u in node.listunspent() if u["address"] == addr and u["amount"] == 1
+        )
+        raw = node.createrawtransaction(
+            inputs=[{"txid": utxo["txid"], "vout": utxo["vout"]}],
+            outputs={ADDRESS_BCRT1_UNSPENDABLE: 0.999},
+        )
+        signed = node.signrawtransactionwithwallet(raw)
+        assert signed["complete"]
+        ctx = FromHex(CTransaction(), signed["hex"])
+        node.setmocktime(0)
+        return signed["hex"], ctx
+
+    def test_wtxidrelay_handshake(self):
+        self.log.info("Test BIP 339 wtxidrelay handshake negotiation")
+        node = self.nodes[0]
+
+        legacy_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70039, send_wtxidrelay=False)
+        )
+        legacy_peer.sync_with_ping()
+        with mininode_lock:
+            assert_equal(legacy_peer.received_wtxidrelay, False)
+            assert_equal(legacy_peer.message_count["wtxidrelay"], 0)
+
+        wtxid_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        wtxid_peer.sync_with_ping()
+        with mininode_lock:
+            assert_equal(wtxid_peer.received_wtxidrelay, True)
+            assert_equal(wtxid_peer.wtxidrelay_before_verack, True)
+
+        self.log.info("Test disconnect when wtxidrelay is sent after verack")
+        late_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=False)
+        )
+        late_peer.sync_with_ping()
+        late_peer.send_message(msg_wtxidrelay())
+        late_peer.wait_for_disconnect()
+
+        node.disconnect_p2ps()
+
+    def test_wtxid_relay_and_mempool(self):
+        self.log.info("Test MSG_WTX relay, mempool lookup, MEMPOOL cmd, and NOTFOUND")
+        node = self.nodes[0]
+        raw_hex, ctx = self._create_segwit_tx(node)
+        txid = int(ctx.rehash(), 16)
+        wtxid = ctx.calc_sha256(True)
+        assert txid != wtxid
+
+        wtxid_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        legacy_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70039, send_wtxidrelay=False)
+        )
+        wtxid_peer.sync_with_ping()
+        legacy_peer.sync_with_ping()
+
+        # Broadcast tx from node 0: wtxid_peer should get MSG_WTX, legacy_peer MSG_TX
+        node.sendrawtransaction(raw_hex)
+        wait_until(
+            lambda: any(i.type == MSG_WTX and i.hash == wtxid for i in wtxid_peer.invs),
+            lock=mininode_lock,
+        )
+        wait_until(
+            lambda: any(i.type == MSG_TX and i.hash == txid for i in legacy_peer.invs),
+            lock=mininode_lock,
+        )
+        wait_until(
+            lambda: any(t.calc_sha256(True) == wtxid for t in wtxid_peer.txs),
+            lock=mininode_lock,
+        )
+        wait_until(
+            lambda: any(
+                int(t.rehash(), 16) == txid for t in legacy_peer.txs
+            ),
+            lock=mininode_lock,
+        )
+
+        # Re-announcing MSG_WTX for an in-mempool tx must NOT trigger GETDATA
+        with mininode_lock:
+            wtxid_peer.getdatas.clear()
+        wtxid_peer.send_message(msg_inv([CInv(MSG_WTX, wtxid)]))
+        wtxid_peer.sync_with_ping()
+        with mininode_lock:
+            assert_equal(len(wtxid_peer.getdatas), 0)
+
+        # BIP 35 MEMPOOL request to wtxid_peer should reply with MSG_WTX
+        with mininode_lock:
+            wtxid_peer.invs.clear()
+        wtxid_peer.send_message(msg_mempool())
+        wait_until(
+            lambda: any(i.type == MSG_WTX and i.hash == wtxid for i in wtxid_peer.invs),
+            lock=mininode_lock,
+        )
+
+        # NOTFOUND for MSG_WTX clears in-flight state so a later inv can be requested again
+        fake_wtxid = 0xCAFEBABE
+        wtxid_peer.send_message(msg_inv([CInv(MSG_WTX, fake_wtxid)]))
+        wait_until(
+            lambda: any(
+                i.type == MSG_WTX and i.hash == fake_wtxid for i in wtxid_peer.getdatas
+            ),
+            lock=mininode_lock,
+        )
+        wtxid_peer.send_message(msg_notfound([CInv(MSG_WTX, fake_wtxid)]))
+        wtxid_peer.sync_with_ping()
+
+        with mininode_lock:
+            wtxid_peer.getdatas.clear()
+        node_mocktime = int(time.time()) + GETDATA_TX_INTERVAL + MAX_GETDATA_RANDOM_DELAY + 5
+        node.setmocktime(node_mocktime)
+        wtxid_peer.send_message(msg_inv([CInv(MSG_WTX, fake_wtxid)]))
+        wait_until(
+            lambda: any(
+                i.type == MSG_WTX and i.hash == fake_wtxid for i in wtxid_peer.getdatas
+            ),
+            lock=mininode_lock,
+        )
+        node.setmocktime(0)
+        node.disconnect_p2ps()
+
+    def test_witness_malleation_not_blackholed(self):
+        self.log.info(
+            "Test that a rejected witness-malleated tx does not blackhole the valid wtxid"
+        )
+        node = self.nodes[0]
+        _, ctx_valid = self._create_segwit_tx(node)
+        txid = int(ctx_valid.rehash(), 16)
+        wtxid_valid = ctx_valid.calc_sha256(True)
+
+        # Create an invalid witness-malleated variant with identical txid
+        ctx_malleated = copy.deepcopy(ctx_valid)
+        ctx_malleated.wit.vtxinwit[0].scriptWitness.stack[0] = b"\x00" * 71
+        assert_equal(int(ctx_malleated.rehash(), 16), txid)
+        wtxid_malleated = ctx_malleated.calc_sha256(True)
+        assert wtxid_malleated != wtxid_valid
+
+        attacker = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        honest = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        attacker.sync_with_ping()
+        honest.sync_with_ping()
+
+        # 1. Attacker announces and sends the witness-malleated invalid tx
+        attacker.send_message(msg_inv([CInv(MSG_WTX, wtxid_malleated)]))
+        wait_until(
+            lambda: any(
+                i.type == MSG_WTX and i.hash == wtxid_malleated
+                for i in attacker.getdatas
+            ),
+            lock=mininode_lock,
+        )
+        attacker.send_message(msg_witness_tx(ctx_malleated))
+        attacker.sync_with_ping()
+        assert ctx_valid.rehash() not in node.getrawmempool()
+
+        # 2. Re-announcing the same invalid wtxid must be suppressed by recentRejects
+        with mininode_lock:
+            attacker.getdatas.clear()
+        attacker.send_message(msg_inv([CInv(MSG_WTX, wtxid_malleated)]))
+        attacker.sync_with_ping()
+        with mininode_lock:
+            assert_equal(len(attacker.getdatas), 0)
+
+        # 3. Honest peer announces and sends the valid wtxid (same txid!) -> must NOT be blackholed
+        honest.send_message(msg_inv([CInv(MSG_WTX, wtxid_valid)]))
+        wait_until(
+            lambda: any(
+                i.type == MSG_WTX and i.hash == wtxid_valid for i in honest.getdatas
+            ),
+            lock=mininode_lock,
+        )
+        honest.send_message(msg_witness_tx(ctx_valid))
+        honest.sync_with_ping()
+        assert ctx_valid.rehash() in node.getrawmempool()
+
+        node.disconnect_p2ps()
+
     def run_test(self):
+        for node in self.nodes:
+            node.setmocktime(0)
+
         # Setup the p2p connections
         self.peers = []
         for node in self.nodes:
@@ -209,6 +462,13 @@ class TxDownloadTest(DefiTestFramework):
         self.test_inv_block()
 
         self.test_tx_requests()
+
+        self.nodes[0].disconnect_p2ps()
+        self.nodes[1].disconnect_p2ps()
+
+        self.test_wtxidrelay_handshake()
+        self.test_wtxid_relay_and_mempool()
+        self.test_witness_malleation_not_blackholed()
 
 
 if __name__ == "__main__":
