@@ -11,6 +11,7 @@
 #define DEFI_PROTOCOL_H
 
 #include <netaddress.h>
+#include <primitives/transaction.h>
 #include <serialize.h>
 #include <uint256.h>
 #include <version.h>
@@ -239,6 +240,12 @@ extern const char *BLOCKTXN;
 
 extern const char *ANCHORAUTH;
 extern const char *ANCHORCONFIRM;
+/**
+ * Indicates that a node prefers to receive new transaction announcements via
+ * "wtx" invs (by wtxid) rather than by txid.
+ * @since protocol version 70040 as described by BIP 339.
+ */
+extern const char *WTXIDRELAY;
 };
 
 /* Get a vector of all valid message types (see above) */
@@ -377,6 +384,7 @@ enum GetDataMsg
     MSG_ANCHOR_AUTH = 5,
     MSG_ANCHOR_CONFIRM_OLD = 6,
     MSG_ANCHOR_CONFIRM = 7,
+    MSG_WTX = 8,                                      //!< Defined in BIP 339 (shifted from 5 due to anchor msgs)
     MSG_WITNESS_BLOCK = MSG_BLOCK | MSG_WITNESS_FLAG, //!< Defined in BIP144
     MSG_WITNESS_TX = MSG_TX | MSG_WITNESS_FLAG,       //!< Defined in BIP144
     MSG_FILTERED_WITNESS_BLOCK = MSG_FILTERED_BLOCK | MSG_WITNESS_FLAG,
@@ -403,9 +411,17 @@ public:
     std::string GetCommand() const;
     std::string ToString() const;
 
+    bool IsMsgTx() const { return type == MSG_TX; }
+    bool IsMsgWtx() const { return type == MSG_WTX; }
+    bool IsMsgWitnessTx() const { return type == MSG_WITNESS_TX; }
+    bool IsGenTxMsg() const { return type == MSG_TX || type == MSG_WTX || type == MSG_WITNESS_TX; }
+
 public:
     int type;
     uint256 hash;
 };
+
+/** Convert a TX/WITNESS_TX/WTX CInv to a GenTxid. */
+GenTxid ToGenTxid(const CInv& inv);
 
 #endif // DEFI_PROTOCOL_H

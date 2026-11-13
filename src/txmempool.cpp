@@ -975,6 +975,23 @@ TxMempoolInfo CTxMemPool::info(const uint256 &hash) const {
     return GetInfo(i);
 }
 
+TxMempoolInfo CTxMemPool::info(const GenTxid &gtxid) const {
+    LOCK(cs);
+    if (gtxid.IsWtxid()) {
+        const auto &wtxid_index = mapTx.get<index_by_wtxid>();
+        auto i = wtxid_index.find(gtxid.GetHash());
+        if (i == wtxid_index.end()) {
+            return TxMempoolInfo();
+        }
+        return GetInfo(mapTx.project<0>(i));
+    }
+    indexed_transaction_set::const_iterator i = mapTx.find(gtxid.GetHash());
+    if (i == mapTx.end()) {
+        return TxMempoolInfo();
+    }
+    return GetInfo(i);
+}
+
 void CTxMemPool::PrioritiseTransaction(const uint256 &hash, const CAmount &nFeeDelta) {
     {
         LOCK(cs);
