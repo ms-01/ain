@@ -2040,6 +2040,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         if (pfrom->fInbound)
             PushNodeVersion(pfrom, connman, GetAdjustedTime());
 
+        if (nSendVersion >= WTXID_RELAY_VERSION) {
+            connman->PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::WTXIDRELAY));
+        }
+
         connman->PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::VERACK));
 
         pfrom->nServices = nServices;
@@ -2190,6 +2194,27 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             });
         }
 
+        return true;
+    }
+
+    // BIP 339 defines feature negotiation of wtxid relay, which must happen between
+    // VERSION and VERACK to avoid relay problems from switching after a connection is up.
+    if (strCommand == NetMsgType::WTXIDRELAY) {
+        if (pfrom->fSuccessfullyConnected) {
+            // Disconnect peers that send a wtxidrelay message after VERACK.
+            LogPrint(BCLog::NET, "wtxidrelay received after verack, peer=%d\n", pfrom->GetId());
+            pfrom->fDisconnect = true;
+            return true;
+        }
+        if (std::min(pfrom->nVersion.load(), PROTOCOL_VERSION) >= WTXID_RELAY_VERSION) {
+            if (!pfrom->m_wtxid_relay) {
+                pfrom->m_wtxid_relay = true;
+            } else {
+                LogPrint(BCLog::NET, "ignoring duplicate wtxidrelay from peer=%d\n", pfrom->GetId());
+            }
+        } else {
+            LogPrint(BCLog::NET, "ignoring wtxidrelay due to old version=%d from peer=%d\n", pfrom->nVersion.load(), pfrom->GetId());
+        }
         return true;
     }
 
