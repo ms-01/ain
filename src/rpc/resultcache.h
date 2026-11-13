@@ -32,7 +32,7 @@ public:
     void Init(RPCCacheMode mode);
     std::optional<UniValue> TryGet(const JSONRPCRequest &request);
     const UniValue& Set(const JSONRPCRequest &request, const UniValue &value);
-    bool InvalidateCaches();
+    bool InvalidateCaches(bool force = false);
 
 private:
     AtomicMutex aMutex;
