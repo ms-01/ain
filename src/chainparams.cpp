@@ -144,6 +144,7 @@ public:
         consensus.DF22MetachainHeight = 3462000; // Nov 15th, 2023.
         consensus.DF23Height = 4006000; // May 23th, 2024.
         consensus.DF24Height = 4463000; // Oct 29th, 2024.
+        consensus.DF25Height = std::numeric_limits<int>::max();
         // Height from which on an overflowing transfer sum is rejected.
         // Below this height the historical behaviour is kept, so that already
         // mined blocks stay valid.
@@ -447,6 +448,7 @@ public:
         consensus.DF22MetachainHeight = 1150040;
         consensus.DF23Height = 1507200;
         consensus.DF24Height = 1810800;
+        consensus.DF25Height = std::numeric_limits<int>::max();
         // TODO(testnet): set to a height above the current testnet tip
         // before the v4.2.6 release.
         consensus.nBalanceOverflowHeight = std::numeric_limits<int>::max();
@@ -675,6 +677,7 @@ public:
         consensus.DF22MetachainHeight = 1586750;
         consensus.DF23Height = 1985600;
         consensus.DF24Height = 2241000;
+        consensus.DF25Height = std::numeric_limits<int>::max();
         // TODO(changi): set to a height above the current changi tip
         // before the v4.2.6 release.
         consensus.nBalanceOverflowHeight = std::numeric_limits<int>::max();
@@ -897,6 +900,7 @@ public:
         consensus.DF22MetachainHeight = 1586750;
         consensus.DF23Height = std::numeric_limits<int>::max();
         consensus.DF24Height = std::numeric_limits<int>::max();
+        consensus.DF25Height = std::numeric_limits<int>::max();
         consensus.nBalanceOverflowHeight = std::numeric_limits<int>::max();
         consensus.nMNVersionGateHeight = std::numeric_limits<int>::max();
 
@@ -1121,6 +1125,7 @@ public:
         consensus.DF22MetachainHeight = 10000000;
         consensus.DF23Height = 10000000;
         consensus.DF24Height = 10000000;
+        consensus.DF25Height = 1;
         // On regtest the strict rule is active from the start, so that the
         // existing tests (e.g. feature_account_overflow.py) keep seeing the
         // fixed behaviour. Use -balanceoverflowheight to test the legacy
@@ -1398,6 +1403,7 @@ void SetupCommonArgActivationParams(Consensus::Params &consensus) {
     UpdateHeightValidation("Metachain", "-metachainheight", consensus.DF22MetachainHeight);
     UpdateHeightValidation("DF23 Upgrade Height", "-df23height", consensus.DF23Height);
     UpdateHeightValidation("DF24 Upgrade Height", "-df24height", consensus.DF24Height);
+    UpdateHeightValidation("DF25 Upgrade Height", "-df25height", consensus.DF25Height);
     // Overflow of a transfer sum is rejected from this height on. The value
     // is a consensus constant - it must be identical on every node, so the
     // override is only evaluated on regtest and mocknet (both call

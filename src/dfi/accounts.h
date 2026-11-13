@@ -203,6 +203,9 @@ public:
     virtual Res AddBalance(const CScript &owner, CTokenAmount amount);
     virtual Res SubBalance(const CScript &owner, CTokenAmount amount);
 
+    void SetEnforceAccountMaxMoney(bool enforce) { enforceAccountMaxMoney = enforce; }
+    bool GetEnforceAccountMaxMoney() const { return enforceAccountMaxMoney; }
+
     Res AddBalances(const CScript &owner, const CBalances &balances);
     Res SubBalances(const CScript &owner, const CBalances &balances);
 
@@ -248,6 +251,7 @@ public:
     };
 
 private:
+    bool enforceAccountMaxMoney{false};
     Res SetBalance(const CScript &owner, CTokenAmount amount);
 };
 

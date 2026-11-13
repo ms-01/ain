@@ -580,5 +580,95 @@ BOOST_AUTO_TEST_CASE(apply_a2a_duplicate_recipient_script)
     BOOST_CHECK_EQUAL(view.GetBalance(recipient, dfi).nValue, 1);
 }
 
+BOOST_AUTO_TEST_CASE(apply_a2a_account_max_money_boundary)
+{
+    Consensus::Params consensus = Params().GetConsensus();
+    consensus.DF1AMKHeight = 0;
+    consensus.nBalanceOverflowHeight = 0;
+    constexpr int activation = 100;
+    consensus.DF25Height = activation;
+
+    LOCK(cs_main);
+    for (const auto height : {99U, 100U, 101U}) {
+        // 0: recipient would exceed MAX_MONEY (MAX_MONEY + 1)
+        // 1: recipient reaches exact MAX_MONEY (control, must always succeed)
+        for (int scenario = 0; scenario < 2; ++scenario) {
+            BOOST_TEST_CONTEXT("height=" << height << ", scenario=" << scenario) {
+                BlockContext blockCtx{height, 0, consensus};
+                auto &view = blockCtx.GetView();
+                CCoinsViewCache coins(&::ChainstateActive().CoinsTip());
+
+                CScript owner, recipient;
+                owner << OP_3;
+                recipient << OP_1;
+                const DCT_ID dfi{};
+                const CAmount initialRecipient = scenario == 0 ? MAX_MONEY : (MAX_MONEY - 1);
+                BOOST_REQUIRE(view.AddBalance(owner, {dfi, 10}).ok);
+                BOOST_REQUIRE(view.AddBalance(recipient, {dfi, initialRecipient}).ok);
+
+                const COutPoint auth(uint256S("0xcafe"), 0);
+                coins.AddCoin(auth, Coin({1, owner, dfi}, 1, false), false);
+
+                CAccountToAccountMessage message{};
+                message.from = owner;
+                message.to = {{recipient, CBalances{{{dfi, 1}}}}};
+                CMutableTransaction raw;
+                raw.vin = {CTxIn(auth)};
+                raw.vout = {CTxOut(0, CreateMetaA2A(message))};
+                const CTransaction tx(raw);
+                auto txCtx = TransactionContext{coins, tx, blockCtx};
+
+                const auto result = ApplyCustomTx(blockCtx, txCtx);
+                if (scenario == 1 || height < activation) {
+                    BOOST_REQUIRE_MESSAGE(result.ok, result.msg);
+                    BOOST_CHECK_EQUAL(view.GetBalance(owner, dfi).nValue, 9);
+                    BOOST_CHECK_EQUAL(view.GetBalance(recipient, dfi).nValue, initialRecipient + 1);
+                } else {
+                    BOOST_REQUIRE(!result.ok);
+                    BOOST_CHECK_NE(result.code & (uint32_t)CustomTxErrCodes::AccountBalanceOutOfRange, 0U);
+                    BOOST_CHECK_EQUAL(view.GetBalance(owner, dfi).nValue, 10);
+                    BOOST_CHECK_EQUAL(view.GetBalance(recipient, dfi).nValue, initialRecipient);
+                }
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(apply_a2a_account_max_money_disabled_int_max)
+{
+    Consensus::Params consensus = Params().GetConsensus();
+    consensus.DF1AMKHeight = 0;
+    consensus.DF25Height = std::numeric_limits<int>::max();
+
+    LOCK(cs_main);
+    for (const auto height : {10000000U, std::numeric_limits<uint32_t>::max()}) {
+        BlockContext blockCtx{height, 0, consensus};
+        auto &view = blockCtx.GetView();
+        CScript owner;
+        owner << OP_1;
+        const DCT_ID dfi{};
+        BOOST_REQUIRE(view.AddBalance(owner, {dfi, MAX_MONEY}).ok);
+        BOOST_REQUIRE(view.AddBalance(owner, {dfi, 1}).ok);
+        BOOST_CHECK_EQUAL(view.GetBalance(owner, dfi).nValue, MAX_MONEY + 1);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(apply_a2a_account_max_money_non_dfi_token)
+{
+    Consensus::Params consensus = Params().GetConsensus();
+    consensus.DF1AMKHeight = 0;
+    consensus.DF25Height = 1;
+
+    LOCK(cs_main);
+    BlockContext blockCtx{100U, 0, consensus};
+    auto &view = blockCtx.GetView();
+    CScript owner;
+    owner << OP_1;
+    const DCT_ID customToken{1};
+    BOOST_REQUIRE(view.AddBalance(owner, {customToken, MAX_MONEY}).ok);
+    BOOST_REQUIRE(view.AddBalance(owner, {customToken, 1}).ok);
+    BOOST_CHECK_EQUAL(view.GetBalance(owner, customToken).nValue, MAX_MONEY + 1);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 

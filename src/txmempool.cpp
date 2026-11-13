@@ -636,13 +636,17 @@ void CTxMemPool::resetAccountsView() {
  * transactions that were accepted under the legacy rules are not valid
  * under the strict rules anymore.
  */
-static bool MempoolRulesChangedBetween(int fromHeight, int toHeight) {
-    const auto activation = Params().GetConsensus().nBalanceOverflowHeight;
+static bool HeightCrossed(int activation, int fromHeight, int toHeight) {
     if (activation == std::numeric_limits<int>::max()) {
-        // The check is disabled, the rules never change.
         return false;
     }
     return fromHeight < activation && activation <= toHeight;
+}
+
+static bool MempoolRulesChangedBetween(int fromHeight, int toHeight) {
+    const auto &consensus = Params().GetConsensus();
+    return HeightCrossed(consensus.nBalanceOverflowHeight, fromHeight, toHeight) ||
+           HeightCrossed(consensus.DF25Height, fromHeight, toHeight);
 }
 
 /**
@@ -1358,7 +1362,8 @@ void CTxMemPool::rebuildAccountsView(int height, const CCoinsViewCache &coinsCac
             };
             auto res = ApplyCustomTx(blockCtx, txCtx);
 
-            if (!res && (res.code & (CustomTxErrCodes::Fatal | CustomTxErrCodes::TransferSumOverflow))) {
+            if (!res && (res.code & (CustomTxErrCodes::Fatal | CustomTxErrCodes::TransferSumOverflow |
+                                     CustomTxErrCodes::AccountBalanceOutOfRange))) {
                 // A transaction with an overflow of the transfer sum was accepted
                 // below the activation height and is not valid anymore. Drop it
                 // instead of keeping it in the mempool, where it would never be
