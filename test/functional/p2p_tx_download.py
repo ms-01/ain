@@ -8,7 +8,10 @@ Test transaction download behavior
 
 from test_framework.messages import (
     CInv,
+    COutPoint,
     CTransaction,
+    CTxIn,
+    CTxInWitness,
     FromHex,
     MSG_TX,
     MSG_TYPE_MASK,
@@ -21,6 +24,10 @@ from test_framework.messages import (
     msg_verack,
     msg_witness_tx,
     msg_wtxidrelay,
+)
+from test_framework.script import (
+    CScript,
+    OP_CHECKSIG,
 )
 from test_framework.mininode import (
     P2PInterface,
@@ -534,6 +541,85 @@ class TxDownloadTest(DefiTestFramework):
 
         node.disconnect_p2ps()
 
+    def test_recent_confirmed_wtxid_suppressed(self):
+        self.log.info(
+            "Test that MSG_WTX INVs for recently confirmed transactions are suppressed"
+        )
+        node = self.nodes[0]
+        raw_hex, ctx = self._create_segwit_tx(node)
+        wtxid = ctx.calc_sha256(True)
+        node.sendrawtransaction(raw_hex)
+        node.generate(1)
+
+        wtxid_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        wtxid_peer.sync_with_ping()
+        with mininode_lock:
+            wtxid_peer.getdatas.clear()
+        wtxid_peer.send_message(msg_inv([CInv(MSG_WTX, wtxid)]))
+        wtxid_peer.sync_with_ping()
+        with mininode_lock:
+            assert_equal(len(wtxid_peer.getdatas), 0)
+
+        node.disconnect_p2ps()
+
+    def test_inputs_not_standard_rejects_txid(self):
+        self.log.info(
+            "Test that TX_INPUTS_NOT_STANDARD inserts both wtxid and txid into recentRejects"
+        )
+        node = self.nodes[0]
+        redeem_script = CScript([OP_CHECKSIG] * 16)
+        p2sh_addr = node.decodescript(redeem_script.hex())["p2sh"]
+        p2sh_txid = node.sendtoaddress(p2sh_addr, 1.0)
+        p2sh_raw = node.getrawtransaction(p2sh_txid, True)
+        node.generate(1)
+        p2sh_vout = next(
+            v["n"]
+            for v in p2sh_raw["vout"]
+            if p2sh_addr in v["scriptPubKey"].get("addresses", [])
+        )
+
+        _, ctx = self._create_segwit_tx(node)
+        ctx.vin.append(
+            CTxIn(COutPoint(int(p2sh_txid, 16), p2sh_vout), CScript([redeem_script]))
+        )
+        ctx.wit.vtxinwit.append(CTxInWitness())
+        ctx.rehash()
+        txid = int(ctx.rehash(), 16)
+        wtxid = ctx.calc_sha256(True)
+        assert txid != wtxid
+
+        wtxid_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        legacy_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70039, send_wtxidrelay=False)
+        )
+        wtxid_peer.sync_with_ping()
+        legacy_peer.sync_with_ping()
+
+        wtxid_peer.send_message(msg_inv([CInv(MSG_WTX, wtxid)]))
+        wait_until(
+            lambda: any(
+                i.type == MSG_WTX and i.hash == wtxid for i in wtxid_peer.getdatas
+            ),
+            lock=mininode_lock,
+        )
+        with node.assert_debug_log(expected_msgs=["bad-txns-nonstandard-inputs"]):
+            wtxid_peer.send_message(msg_witness_tx(ctx))
+            wtxid_peer.sync_with_ping()
+
+        # Legacy peer announcing by txid must now be suppressed by recentRejects
+        with mininode_lock:
+            legacy_peer.getdatas.clear()
+        legacy_peer.send_message(msg_inv([CInv(MSG_TX, txid)]))
+        legacy_peer.sync_with_ping()
+        with mininode_lock:
+            assert_equal(len(legacy_peer.getdatas), 0)
+
+        node.disconnect_p2ps()
+
     def run_test(self):
         for node in self.nodes:
             node.setmocktime(0)
@@ -564,6 +650,8 @@ class TxDownloadTest(DefiTestFramework):
         self.test_witness_malleation_not_blackholed()
         self.test_maprelay_cross_relay_and_inv_filtering()
         self.test_legacy_peer_recent_rejects()
+        self.test_recent_confirmed_wtxid_suppressed()
+        self.test_inputs_not_standard_rejects_txid()
 
 
 if __name__ == "__main__":

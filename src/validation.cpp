@@ -751,7 +751,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams &chainparams,
 
         // Check for non-standard pay-to-script-hash in inputs
         if (fRequireStandard && !isEVMTx && !AreInputsStandard(tx, view)) {
-            return state.Invalid(ValidationInvalidReason::TX_NOT_STANDARD, false, "bad-txns-nonstandard-inputs");
+            return state.Invalid(ValidationInvalidReason::TX_INPUTS_NOT_STANDARD, false, "bad-txns-nonstandard-inputs");
         }
 
         // Check for non-standard witness in P2WSH
