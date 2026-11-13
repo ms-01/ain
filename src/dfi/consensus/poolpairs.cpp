@@ -98,7 +98,7 @@ Res CPoolPairsConsensus::operator()(const CCreatePoolPairMessage &obj) const {
         }
     }
 
-    return mnview.SetPoolPair(tokenId, height, poolPair);
+    return mnview.SetPoolPair(*tokenId, height, poolPair);
 }
 
 Res CPoolPairsConsensus::operator()(const CUpdatePoolPairMessage &obj) const {

@@ -324,7 +324,7 @@ UniValue vmmap(const JSONRPCRequest &request) {
             if (!evmBlockHash.val.has_value()) {
                 throwInvalidParam(evmBlockHash.msg);
             }
-            auto hash = uint256S(evmBlockHash);
+            auto hash = uint256S(*evmBlockHash);
             CrossBoundaryResult result;
             uint64_t blockNumber = evm_try_get_block_number_by_hash(result, hash.GetByteArray());
             crossBoundaryOkOrThrow(result);

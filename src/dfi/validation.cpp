@@ -742,7 +742,7 @@ static void ProcessLoanEvents(const CBlockIndex *pindex, CCustomCSView &cache, c
 
                     {
                         std::unique_lock lock{lv.m};
-                        lv.vaults.push_back(VaultWithCollateralInfo{vaultId, collaterals, vaultAssets, *vault});
+                        lv.vaults.push_back(VaultWithCollateralInfo{vaultId, collaterals, *vaultAssets, *vault});
                     }
                     markCompleted();
                 });

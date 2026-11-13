@@ -69,7 +69,7 @@ struct ResVal : public Res {
 
     operator bool() const { return ok; }
 
-    operator T() const {
+    explicit operator T() const {
         assert(ok);
         return *val;
     }

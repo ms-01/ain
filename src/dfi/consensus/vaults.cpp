@@ -355,7 +355,7 @@ Res CVaultsConsensus::operator()(const CWithdrawFromVaultMessage &obj) const {
                         scheme->ratio);
                 }
 
-                if (auto res = CollateralPctCheck(hasDUSDLoans, vaultAssets, scheme->ratio); !res) {
+                if (auto res = CollateralPctCheck(hasDUSDLoans, *vaultAssets, scheme->ratio); !res) {
                     return res;
                 }
             }

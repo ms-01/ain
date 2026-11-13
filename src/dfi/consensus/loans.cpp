@@ -831,7 +831,7 @@ Res CLoansConsensus::operator()(const CLoanTakeLoanMessage &obj) const {
                             scheme->ratio);
         }
 
-        if (auto res = CollateralPctCheck(hasDUSDLoans, vaultAssets, scheme->ratio); !res) {
+        if (auto res = CollateralPctCheck(hasDUSDLoans, *vaultAssets, scheme->ratio); !res) {
             return res;
         }
     }

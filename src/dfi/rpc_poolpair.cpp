@@ -1261,7 +1261,11 @@ UniValue testpoolswap(const JSONRPCRequest &request) {
             }
 
             for (const auto &id : poolArray.getValues()) {
-                poolIds.push_back(DCT_ID::FromString(id.getValStr()));
+                auto poolId = DCT_ID::FromString(id.getValStr());
+                if (!poolId) {
+                    throw JSONRPCError(RPC_INVALID_PARAMETER, poolId.msg);
+                }
+                poolIds.push_back(*poolId);
             }
         }
 
