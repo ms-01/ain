@@ -1223,6 +1223,7 @@ static UniValue pruneblockchain(const JSONRPCRequest& request)
     }
 
     PruneBlockFilesManual(height);
+    GetRPCResultCache().InvalidateCaches(true);
     const CBlockIndex* block = ::ChainActive().Tip();
     assert(block);
     while (block->pprev && (block->pprev->nStatus & BLOCK_HAVE_DATA)) {

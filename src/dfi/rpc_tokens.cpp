@@ -575,7 +575,8 @@ UniValue gettoken(const JSONRPCRequest &request) {
         auto res = tokenToJSON(*view, id, *token, true);
         return GetRPCResultCache().Set(request, res);
     }
-    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Token not found");
+    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                       "Token not found (for non-DAT tokens, use the numeric token id or <SYMBOL>#<ID>)");
 }
 
 UniValue getcustomtx(const JSONRPCRequest &request) {

@@ -14,10 +14,10 @@ std::string GetKey(const JSONRPCRequest &request) {
     return ss.str();
 }
 
-bool RPCResultCache::InvalidateCaches() {
+bool RPCResultCache::InvalidateCaches(bool force) {
     std::unique_lock l{aMutex};
     auto height = GetLastValidatedHeight();
-    if (cacheHeight != height) {
+    if (force || cacheHeight != height) {
         LogPrint(BCLog::RPCCACHE, "RPCCache: clear\n");
         if (cacheMap.size()) cacheMap.clear();
         cacheHeight = height;

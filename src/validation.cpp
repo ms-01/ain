@@ -2531,7 +2531,9 @@ void ReverseGeneralCoinbaseTx(CCustomCSView &mnview, int height, const Consensus
                                 AttributeTypes::Param, ParamIDs::Feature, DFIPKeys::GovernanceEnabled};
 
                             if (!attributes->GetValue(enabledKey, false)) {
-                                mnview.SubBalance(consensus.foundationShareScript, {DCT_ID{0}, subsidy});
+                                if (auto res = mnview.SubBalance(consensus.foundationShareScript, {DCT_ID{0}, subsidy}); !res) {
+                                    LogPrintf("%s: SubBalance failed for foundationShareScript: %s\n", __func__, res.msg);
+                                }
 
                                 continue;
                             }
@@ -2541,7 +2543,9 @@ void ReverseGeneralCoinbaseTx(CCustomCSView &mnview, int height, const Consensus
                                 AttributeTypes::Param, ParamIDs::Feature, DFIPKeys::EmissionUnusedFund};
 
                             if (attributes->GetValue(enabledKey, false)) {
-                                mnview.SubBalance(consensus.unusedEmission, {DCT_ID{0}, subsidy});
+                                if (auto res = mnview.SubBalance(consensus.unusedEmission, {DCT_ID{0}, subsidy}); !res) {
+                                    LogPrintf("%s: SubBalance failed for unusedEmission: %s\n", __func__, res.msg);
+                                }
                             } else {
                                 mnview.SubCommunityBalance(CommunityAccountType::Unallocated, subsidy);
                             }

@@ -30,6 +30,14 @@
 
 #define MILLI 0.001
 
+namespace {
+inline void CheckOrLog(const char *func, const Res &res) {
+    if (!res) {
+        LogPrintf("%s: %s\n", func, res.msg);
+    }
+}
+}  // namespace
+
 using LoanTokenCollection = std::vector<std::pair<DCT_ID, CLoanSetLoanTokenImplementation>>;
 
 struct NullPoolSwapData {
@@ -294,7 +302,7 @@ static void ProcessICXEvents(const CBlockIndex *pindex, CCustomCSView &cache, co
                         "Can't subtract balance from order (%s) txidaddr: %s\n", order->creationTx.GetHex(), res.msg);
                 } else {
                     cache.CalculateOwnerRewards(order->ownerAddress, pindex->nHeight);
-                    cache.AddBalance(order->ownerAddress, amount);
+                    CheckOrLog(__func__, cache.AddBalance(order->ownerAddress, amount));
                 }
             }
 
@@ -333,7 +341,7 @@ static void ProcessICXEvents(const CBlockIndex *pindex, CCustomCSView &cache, co
                         "Can't subtract takerFee from offer (%s) txidAddr: %s\n", offer->creationTx.GetHex(), res.msg);
                 } else {
                     cache.CalculateOwnerRewards(offer->ownerAddress, pindex->nHeight);
-                    cache.AddBalance(offer->ownerAddress, takerFee);
+                    CheckOrLog(__func__, cache.AddBalance(offer->ownerAddress, takerFee));
                 }
             }
 
@@ -370,7 +378,7 @@ static void ProcessICXEvents(const CBlockIndex *pindex, CCustomCSView &cache, co
                 if (!cache.ExistedICXSubmitEXTHTLC(dfchtlc->offerTx, isPreEunosPaya)) {
                     CTokenAmount makerDeposit{DCT_ID{0}, offer->takerFee};
                     cache.CalculateOwnerRewards(order->ownerAddress, pindex->nHeight);
-                    cache.AddBalance(order->ownerAddress, makerDeposit);
+                    CheckOrLog(__func__, cache.AddBalance(order->ownerAddress, makerDeposit));
                     refund = true;
                 }
             } else if (status == CICXSubmitDFCHTLC::STATUS_REFUNDED) {
@@ -394,7 +402,7 @@ static void ProcessICXEvents(const CBlockIndex *pindex, CCustomCSView &cache, co
                               res.msg);
                 } else {
                     cache.CalculateOwnerRewards(ownerAddress, pindex->nHeight);
-                    cache.AddBalance(ownerAddress, amount);
+                    CheckOrLog(__func__, cache.AddBalance(ownerAddress, amount));
                 }
 
                 cache.ICXCloseDFCHTLC(*dfchtlc, status);
@@ -429,7 +437,7 @@ static void ProcessICXEvents(const CBlockIndex *pindex, CCustomCSView &cache, co
                 if (!cache.ExistedICXSubmitDFCHTLC(exthtlc->offerTx, isPreEunosPaya)) {
                     CTokenAmount makerDeposit{DCT_ID{0}, offer->takerFee};
                     cache.CalculateOwnerRewards(order->ownerAddress, pindex->nHeight);
-                    cache.AddBalance(order->ownerAddress, makerDeposit);
+                    CheckOrLog(__func__, cache.AddBalance(order->ownerAddress, makerDeposit));
                     cache.ICXCloseEXTHTLC(*exthtlc, status);
                 }
             }
@@ -464,7 +472,7 @@ static void ProcessEunosEvents(const CBlockIndex *pindex, CCustomCSView &cache, 
                 return false;
             }
 
-            burnAmounts.Add({balance.nTokenId, balance.nValue});
+            CheckOrLog(__func__, burnAmounts.Add({balance.nTokenId, balance.nValue}));
 
             return true;
         },
@@ -481,13 +489,13 @@ static void ProcessEunosEvents(const CBlockIndex *pindex, CCustomCSView &cache, 
                     return false;
                 }
 
-                zeroAmounts.Add({balance.nTokenId, balance.nValue});
+                CheckOrLog(__func__, zeroAmounts.Add({balance.nTokenId, balance.nValue}));
 
                 return true;
             },
             BalanceKey{script, DCT_ID{}});
 
-        cache.SubBalances(script, zeroAmounts);
+        CheckOrLog(__func__, cache.SubBalances(script, zeroAmounts));
     }
 
     // Add any non-Tx burns to index as phantom Txs
@@ -496,7 +504,7 @@ static void ProcessEunosEvents(const CBlockIndex *pindex, CCustomCSView &cache, 
             // If amount cannot be deducted then burn skipped.
             auto result = cache.SubBalance(item.first, {subItem.first, subItem.second});
             if (result.ok) {
-                cache.AddBalance(consensus.burnAddress, {subItem.first, subItem.second});
+                CheckOrLog(__func__, cache.AddBalance(consensus.burnAddress, {subItem.first, subItem.second}));
 
                 // Add transfer as additional TX in block
                 cache.GetHistoryWriters().WriteAccountHistory({Params().GetConsensus().burnAddress,
@@ -583,7 +591,7 @@ std::vector<CAuctionBatch> CollectAuctionBatches(const CVaultAssets &vaultAssets
         for (const auto &tAmount : collBalances) {
             auto &maxCollBalance = maxCollBalances[tAmount.first];
             auto collValue = std::min(MultiplyAmounts(tAmount.second, chunk), maxCollBalance);
-            batch.collaterals.Add({tAmount.first, collValue});
+            CheckOrLog(__func__, batch.collaterals.Add({tAmount.first, collValue}));
             maxCollBalance -= collValue;
         }
         return batch;
@@ -622,13 +630,13 @@ std::vector<CAuctionBatch> CollectAuctionBatches(const CVaultAssets &vaultAssets
                 if (lastValue == collateral.second) {
                     // we fail to update any batch
                     // extreme small collateral going to first batch
-                    it->collaterals.Add({collateral.first, collateral.second});
+                    CheckOrLog(__func__, it->collaterals.Add({collateral.first, collateral.second}));
                     break;
                 }
                 lastValue = collateral.second;
             }
             if (it->collaterals.balances.count(collateral.first) > 0) {
-                it->collaterals.Add({collateral.first, 1});
+                CheckOrLog(__func__, it->collaterals.Add({collateral.first, 1}));
                 --collateral.second;
             }
             ++it;
@@ -774,7 +782,7 @@ static void ProcessLoanEvents(const CBlockIndex *pindex, CCustomCSView &cache, c
 
                     auto subInterest = TotalInterest(*rate, pindex->nHeight);
                     if (subInterest > 0) {
-                        totalInterest.Add({tokenId, subInterest});
+                        CheckOrLog(__func__, totalInterest.Add({tokenId, subInterest}));
                     }
 
                     // Remove loan from the vault
@@ -825,14 +833,14 @@ static void ProcessLoanEvents(const CBlockIndex *pindex, CCustomCSView &cache, c
                 CBalances totalLoanInBatches{};
                 for (auto i = 0u; i < batches.size(); i++) {
                     auto &batch = batches[i];
-                    totalLoanInBatches.Add(batch.loanAmount);
+                    CheckOrLog(__func__, totalLoanInBatches.Add(batch.loanAmount));
                     auto tokenId = batch.loanAmount.nTokenId;
                     auto interest = totalInterest.balances[tokenId];
                     if (interest > 0) {
                         auto balance = loanTokens->balances[tokenId];
                         auto interestPart = DivideAmounts(batch.loanAmount.nValue, balance);
                         batch.loanInterest = MultiplyAmounts(interestPart, interest);
-                        totalLoanInBatches.Sub({tokenId, batch.loanInterest});
+                        CheckOrLog(__func__, totalLoanInBatches.Sub({tokenId, batch.loanInterest}));
                     }
                     cache.StoreAuctionBatch({vaultId, i}, batch);
                 }
@@ -844,7 +852,8 @@ static void ProcessLoanEvents(const CBlockIndex *pindex, CCustomCSView &cache, c
                         const auto interest =
                             totalInterest.balances.count(tokenId) ? totalInterest.balances[tokenId] : 0;
                         if (totalLoanInBatches.balances[tokenId] > amount - interest) {
-                            balances.Add({tokenId, totalLoanInBatches.balances[tokenId] - (amount - interest)});
+                            CheckOrLog(__func__,
+                                       balances.Add({tokenId, totalLoanInBatches.balances[tokenId] - (amount - interest)}));
                         }
                     }
                 }
@@ -947,7 +956,7 @@ static void ProcessLoanEvents(const CBlockIndex *pindex, CCustomCSView &cache, c
                 } else {
                     // we should return loan including interest
                     view.AddLoanToken(vaultId, batch->loanAmount);
-                    balances.Add({batch->loanAmount.nTokenId, batch->loanInterest});
+                    CheckOrLog(__func__, balances.Add({batch->loanAmount.nTokenId, batch->loanInterest}));
 
                     // When tracking loan amounts remove interest.
                     if (const auto token = view.GetToken("DUSD"); token && token->first == batch->loanAmount.nTokenId) {
@@ -1264,8 +1273,8 @@ static void ProcessFutures(const CBlockIndex *pindex, CCustomCSView &cache, cons
                         view.AddMintedTokens(destId, total);
                         CTokenAmount destination{destId, total};
                         view.AddBalance(key.owner, destination);
-                        burned.Add(futuresValues.source);
-                        minted.Add(destination);
+                        CheckOrLog(__func__, burned.Add(futuresValues.source));
+                        CheckOrLog(__func__, minted.Add(destination));
                         dUsdToTokenSwapsCounter++;
                         LogPrint(BCLog::FUTURESWAP,
                                  "ProcessFutures (): Owner %s source %s destination %s\n",
@@ -1287,8 +1296,8 @@ static void ProcessFutures(const CBlockIndex *pindex, CCustomCSView &cache, cons
                     view.AddMintedTokens(tokenDUSD->first, total);
                     CTokenAmount destination{tokenDUSD->first, total};
                     view.AddBalance(key.owner, destination);
-                    burned.Add(futuresValues.source);
-                    minted.Add(destination);
+                    CheckOrLog(__func__, burned.Add(futuresValues.source));
+                    CheckOrLog(__func__, minted.Add(destination));
                     tokenTodUsdSwapsCounter++;
                     LogPrint(BCLog::FUTURESWAP,
                              "ProcessFutures (): Payment Owner %s source %s destination %s\n",
@@ -1335,7 +1344,7 @@ static void ProcessFutures(const CBlockIndex *pindex, CCustomCSView &cache, cons
 
         LogPrint(
             BCLog::FUTURESWAP, "%s: Refund Owner %s value %s\n", __func__, key.owner.GetHex(), value.source.ToString());
-        balances.Sub(value.source);
+        CheckOrLog(__func__, balances.Sub(value.source));
     }
 
     for (const auto &key : deletionPending) {
@@ -2287,7 +2296,7 @@ static void MigrateV1Remnants(const CCustomCSView &cache,
             continue;
         }
         balances.balances.erase(it);
-        balances.Add({newId, CalculateNewAmount(multiplier, amount)});
+        CheckOrLog(__func__, balances.Add({newId, CalculateNewAmount(multiplier, amount)}));
         break;
     }
     attributes.SetValue(attrKey, balances);
@@ -2546,10 +2555,10 @@ static void ExecuteTokenSplits(const CBlockIndex *pindex,
                 bool changed = false;
                 for (const auto &[tokenId, amount] : value.balances) {
                     if (tokenId.v == oldId) {
-                        newBalance.Add({newTokenId, CalculateNewAmount(multi, amount)});
+                        CheckOrLog(__func__, newBalance.Add({newTokenId, CalculateNewAmount(multi, amount)}));
                         changed = true;
                     } else {
-                        newBalance.Add({tokenId, amount});
+                        CheckOrLog(__func__, newBalance.Add({tokenId, amount}));
                     }
                 }
                 if (changed) {
@@ -2896,7 +2905,12 @@ static Res PaybackLoanWithTokenOrDUSDCollateral(
         CDataStructureV0 liveKey{AttributeTypes::Live, ParamIDs::Economy, EconomyKeys::PaybackTokens};
         auto balances = attributes->GetValue(liveKey, CTokenPayback{});
 
-        balances.tokensPayback.Add(CTokenAmount{loanTokenId, subAmount});
+        if (auto res = balances.tokensPayback.Add(CTokenAmount{loanTokenId, subAmount}); !res) {
+            if (Consensus::IsDF25Active(blockCtx.GetHeight(), blockCtx.GetConsensus())) {
+                return res;
+            }
+            CheckOrLog(__func__, res);
+        }
         attributes->SetValue(liveKey, balances);
         mnview.SetVariable(*attributes);
 
@@ -3168,7 +3182,12 @@ static Res PaybackWithSwappedCollateral(const DCT_ID &collId,
         }
         CTokenAmount moved = {collId, data.usedCollateralAmount};
         cache.SubVaultCollateral(data.vaultId, moved);
-        cache.AddBalance(contractAddressValue, moved);
+        if (auto res = cache.AddBalance(contractAddressValue, moved); !res) {
+            if (Consensus::IsDF25Active(blockCtx.GetHeight(), blockCtx.GetConsensus())) {
+                return res;
+            }
+            CheckOrLog(__func__, res);
+        }
         totalCollToSwap += moved.nValue;
         ++done;
         if (GetTimeMillis() - reportedTs > 3000) {
@@ -3202,7 +3221,12 @@ static Res PaybackWithSwappedCollateral(const DCT_ID &collId,
         CTokenAmount dusdResult = {
             dUsdToken.first, MultiplyDivideAmounts(availableDUSD.nValue, data.usedCollateralAmount, totalCollToSwap)};
         cache.AddVaultCollateral(data.vaultId, dusdResult);
-        cache.SubBalance(contractAddressValue, dusdResult);
+        if (auto res = cache.SubBalance(contractAddressValue, dusdResult); !res) {
+            if (Consensus::IsDF25Active(blockCtx.GetHeight(), blockCtx.GetConsensus())) {
+                return res;
+            }
+            CheckOrLog(__func__, res);
+        }
 
         // history entry
         VaultHistoryKey subCollKey{blockCtx.GetHeight(), data.vaultId, GetNextAccPosition(), {}};
@@ -3251,7 +3275,12 @@ static Res PaybackWithSwappedCollateral(const DCT_ID &collId,
             // burn excess DUSD from swap
             totalBurnedExcessDUSD += excessDUSD;
             cache.SubVaultCollateral(data.vaultId, {dUsdToken.first, excessDUSD});
-            cache.AddBalance(blockCtx.GetConsensus().burnAddress, {dUsdToken.first, excessDUSD});
+            if (auto res = cache.AddBalance(blockCtx.GetConsensus().burnAddress, {dUsdToken.first, excessDUSD}); !res) {
+                if (Consensus::IsDF25Active(blockCtx.GetHeight(), blockCtx.GetConsensus())) {
+                    return res;
+                }
+                CheckOrLog(__func__, res);
+            }
         }
     }
 
@@ -3291,7 +3320,13 @@ static Res ForceCloseAllAuctions(const CBlockIndex *pindex, CCustomCSView &cache
                 // return loan and collateral either way
                 // we should return loan including interest
                 view.AddLoanToken(vaultId, batch->loanAmount);
-                balances.Add({batch->loanAmount.nTokenId, batch->loanInterest});
+                if (auto addRes = balances.Add({batch->loanAmount.nTokenId, batch->loanInterest}); !addRes) {
+                    if (Consensus::IsDF25Active(pindex->nHeight, Params().GetConsensus())) {
+                        res = addRes;
+                        return false;
+                    }
+                    CheckOrLog(__func__, addRes);
+                }
 
                 // When tracking loan amounts remove interest.
                 if (const auto token = view.GetToken("DUSD"); token && token->first == batch->loanAmount.nTokenId) {
@@ -3642,7 +3677,7 @@ static Res ConvertAllLoanTokenForTokenLock(const CBlock &block,
             // TODO: normal token split requires token to be locked before
             CDataStructureV0 lockKey{AttributeTypes::Locks, ParamIDs::TokenID, id.v};
             attributes->SetValue(lockKey, true);
-            lockedTokens.Add({id, COIN});
+            CheckOrLog(__func__, lockedTokens.Add({id, COIN}));
             return true;
         },
         [&](const DCT_ID &id, const CPoolPair &token) {
@@ -3741,7 +3776,9 @@ static Res LockToken(CCustomCSView &cache,
     }
 
     auto currentLock = cache.GetTokenLockUserValue({owner});
-    currentLock.Add(tokenAmount);
+    if (auto res = currentLock.Add(tokenAmount); !res) {
+        return res;
+    }
     return cache.StoreTokenLockUserValues({owner}, currentLock);
 }
 
@@ -4122,7 +4159,7 @@ static void ProcessFuturesDUSD(const CBlockIndex *pindex, CCustomCSView &cache, 
 
             LogPrint(
                 BCLog::FUTURESWAP, "%s: Refund Owner %s value %s\n", __func__, key.owner.GetHex(), source.ToString());
-            balances.Sub(source);
+            CheckOrLog(__func__, balances.Sub(source));
         }
 
         if (!refunds.empty()) {
@@ -4166,8 +4203,8 @@ static void ProcessFuturesDUSD(const CBlockIndex *pindex, CCustomCSView &cache, 
             view.AddMintedTokens(tokenDUSD->first, total);
             CTokenAmount destination{tokenDUSD->first, total};
             view.AddBalance(key.owner, destination);
-            burned.Add({dfiID, amount});
-            minted.Add(destination);
+            CheckOrLog(__func__, burned.Add({dfiID, amount}));
+            CheckOrLog(__func__, minted.Add(destination));
             ++swapCounter;
             LogPrint(BCLog::FUTURESWAP,
                      "ProcessFuturesDUSD (): Payment Owner %s source %d destination %s\n",
@@ -4223,8 +4260,9 @@ static void ProcessNegativeInterest(const CBlockIndex *pindex, CCustomCSView &ca
 
                 const auto totalInterest = TotalInterest(*rate, pindex->nHeight);
                 if (totalInterest < 0) {
-                    negativeInterestBalances.Add(
-                        {tokenId, amount > std::abs(totalInterest) ? std::abs(totalInterest) : amount});
+                    CheckOrLog(__func__,
+                               negativeInterestBalances.Add(
+                                   {tokenId, amount > std::abs(totalInterest) ? std::abs(totalInterest) : amount}));
                 }
             }
         }
@@ -4250,7 +4288,7 @@ static void ProcessProposalEvents(const CBlockIndex *pindex, CCustomCSView &cach
     if (!attributes->GetValue(enabledKey, false)) {
         if (funds > 0) {
             cache.SubCommunityBalance(CommunityAccountType::CommunityDevFunds, funds);
-            cache.AddBalance(consensus.foundationShareScript, {DCT_ID{0}, funds});
+            CheckOrLog(__func__, cache.AddBalance(consensus.foundationShareScript, {DCT_ID{0}, funds}));
         }
 
         return;
@@ -4258,7 +4296,7 @@ static void ProcessProposalEvents(const CBlockIndex *pindex, CCustomCSView &cach
 
     auto balance = cache.GetBalance(consensus.foundationShareScript, DCT_ID{0});
     if (balance.nValue > 0) {
-        cache.SubBalance(consensus.foundationShareScript, balance);
+        CheckOrLog(__func__, cache.SubBalance(consensus.foundationShareScript, balance));
         cache.AddCommunityBalance(CommunityAccountType::CommunityDevFunds, balance.nValue);
     }
 
@@ -4383,7 +4421,7 @@ static void ProcessProposalEvents(const CBlockIndex *pindex, CCustomCSView &cach
                 auto res = cache.SubCommunityBalance(CommunityAccountType::CommunityDevFunds, prop.nAmount);
                 if (res) {
                     cache.CalculateOwnerRewards(prop.address, pindex->nHeight);
-                    cache.AddBalance(prop.address, {DCT_ID{0}, prop.nAmount});
+                    CheckOrLog(__func__, cache.AddBalance(prop.address, {DCT_ID{0}, prop.nAmount}));
                 } else {
                     LogPrintf("Fails to subtract community developement funds: %s\n", res.msg);
                 }
