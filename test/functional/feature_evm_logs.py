@@ -5,9 +5,14 @@
 # file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 """Test EVM contract"""
 
+import asyncio
+import json
+import websockets
+
 from test_framework.util import (
     assert_equal,
     int_to_eth_u256,
+    rpc_port,
 )
 from test_framework.test_framework import DefiTestFramework
 from test_framework.evm_contract import EVMContract
@@ -163,6 +168,70 @@ class EVMTestLogs(DefiTestFramework):
         receipt = self.nodes[0].eth_getTransactionReceipt(evmHash)
         assert_equal(receipt["gasUsed"], int_to_eth_u256(0))
 
+    def should_emit_removed_logs_on_reorg(self):
+        node = self.nodes[0]
+        ws_url = f"ws://127.0.0.1:{rpc_port(node.index, 4)}"
+
+        async def run_ws_reorg_check():
+            async with websockets.connect(ws_url) as ws:
+                await ws.send(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "eth_subscribe",
+                            "params": ["logs", {"address": self.contract.address}],
+                        }
+                    )
+                )
+                sub_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                sub_id = sub_resp["result"]
+
+                tx = self.contract.functions.store(20).build_transaction(
+                    {
+                        "chainId": node.w3.eth.chain_id,
+                        "from": self.evm_key_pair.address,
+                        "nonce": node.w3.eth.get_transaction_count(
+                            self.evm_key_pair.address
+                        ),
+                        "gasPrice": 10_000_000_000,
+                    }
+                )
+                signed = node.w3.eth.account.sign_transaction(
+                    tx, self.evm_key_pair.privkey
+                )
+                node.w3.eth.send_raw_transaction(signed.rawTransaction)
+
+                node.generate(1)
+                dvm_block_hash = node.getbestblockhash()
+                evm_block = node.eth_getBlockByNumber("latest")
+
+                added_msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                assert_equal(added_msg["method"], "eth_subscription")
+                assert_equal(added_msg["params"]["subscription"], sub_id)
+                added_log = added_msg["params"]["result"]
+                assert_equal(added_log["removed"], False)
+                assert_equal(added_log["blockHash"], evm_block["hash"])
+                assert_equal(added_log["blockNumber"], evm_block["number"])
+                assert_equal(added_log["transactionHash"], evm_block["transactions"][0])
+
+                # Trigger block disconnect / reorg; should emit log with removed=True
+                node.invalidateblock(dvm_block_hash)
+
+                removed_msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                assert_equal(removed_msg["method"], "eth_subscription")
+                assert_equal(removed_msg["params"]["subscription"], sub_id)
+                removed_log = removed_msg["params"]["result"]
+                assert_equal(removed_log["removed"], True)
+                assert_equal(removed_log["blockHash"], evm_block["hash"])
+                assert_equal(removed_log["blockNumber"], evm_block["number"])
+                assert_equal(
+                    removed_log["transactionHash"], evm_block["transactions"][0]
+                )
+                assert_equal(removed_log["logIndex"], "0x0")
+
+        asyncio.run(run_ws_reorg_check())
+
     def run_test(self):
         self.setup()
 
@@ -171,6 +240,8 @@ class EVMTestLogs(DefiTestFramework):
         self.should_contract_store_and_emit_logs()
 
         self.transferdomain_receipt_gas_used()
+
+        self.should_emit_removed_logs_on_reorg()
 
 
 if __name__ == "__main__":

@@ -277,15 +277,10 @@ impl FilterService {
     ///
     /// Returns a vector of transaction logs.
     ///
-    pub fn get_block_logs(
-        &self,
+    pub fn filter_logs(
         criteria: &FilterCriteria,
-        block_number: U256,
-    ) -> Result<Vec<LogIndex>> {
-        debug!("Getting logs for block {:#x?}", block_number);
-        // Possible for blocks to contain no logs, default to empty map.
-        let logs = self.storage.get_logs(&block_number)?.unwrap_or_default();
-
+        logs: std::collections::HashMap<ethereum_types::H160, Vec<LogIndex>>,
+    ) -> Vec<LogIndex> {
         // Filter by addresses
         let logs: Vec<LogIndex> = match &criteria.addresses {
             None => logs.into_iter().flat_map(|(_, log)| log).collect(),
@@ -297,7 +292,7 @@ impl FilterService {
         };
 
         // Filter by topics
-        let logs = match &criteria.topics {
+        match &criteria.topics {
             None => logs,
             Some(topics) => logs
                 .into_iter()
@@ -320,8 +315,18 @@ impl FilterService {
                         })
                 })
                 .collect(),
-        };
-        Ok(logs)
+        }
+    }
+
+    pub fn get_block_logs(
+        &self,
+        criteria: &FilterCriteria,
+        block_number: U256,
+    ) -> Result<Vec<LogIndex>> {
+        debug!("Getting logs for block {:#x?}", block_number);
+        // Possible for blocks to contain no logs, default to empty map.
+        let logs = self.storage.get_logs(&block_number)?.unwrap_or_default();
+        Ok(Self::filter_logs(criteria, logs))
     }
 
     /// Get all transaction logs from a specified criteria.
@@ -536,5 +541,59 @@ impl FilterService {
                 Ok(FilterResults::Transactions(out))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use ethereum_types::{H160, H256, U256};
+
+    use super::{FilterCriteria, FilterService};
+    use crate::log::LogIndex;
+
+    fn make_log(address: H160, topic: H256, removed: bool) -> LogIndex {
+        LogIndex {
+            block_hash: H256::zero(),
+            block_number: U256::from(1),
+            topics: vec![topic],
+            data: vec![],
+            log_index: U256::zero(),
+            address,
+            removed,
+            transaction_hash: H256::zero(),
+            transaction_index: U256::zero(),
+        }
+    }
+
+    #[test]
+    fn filter_logs_preserves_removed_flag_and_filters_address_and_topic() {
+        let addr_a = H160::from_low_u64_be(1);
+        let addr_b = H160::from_low_u64_be(2);
+        let topic_1 = H256::from_low_u64_be(10);
+        let topic_2 = H256::from_low_u64_be(20);
+
+        let mut logs = HashMap::new();
+        logs.insert(
+            addr_a,
+            vec![
+                make_log(addr_a, topic_1, true),
+                make_log(addr_a, topic_2, true),
+            ],
+        );
+        logs.insert(addr_b, vec![make_log(addr_b, topic_1, true)]);
+
+        let criteria = FilterCriteria {
+            addresses: Some(vec![addr_a]),
+            topics: Some(vec![vec![topic_1]]),
+            ..Default::default()
+        };
+
+        let filtered = FilterService::filter_logs(&criteria, logs);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].address, addr_a);
+        assert_eq!(filtered[0].topics, vec![topic_1]);
+        assert!(filtered[0].removed);
     }
 }

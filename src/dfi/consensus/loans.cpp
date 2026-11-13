@@ -857,7 +857,10 @@ Res CLoansConsensus::operator()(const CLoanPaybackLoanMessage &obj) const {
             loan = &loans[id];
         }
 
-        loan->Add({id, amount});
+        if (auto res = loan->Add({id, amount});
+            !res && Consensus::IsDF25Active(txCtx.GetHeight(), txCtx.GetConsensus())) {
+            return res;
+        }
     }
     return (*this)(CLoanPaybackLoanV2Message{obj.vaultId, obj.from, loans});
 }

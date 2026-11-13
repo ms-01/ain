@@ -13,7 +13,7 @@
 struct CBalances {
     TAmounts balances;
 
-    Res Add(CTokenAmount amount) {
+    [[nodiscard]] Res Add(CTokenAmount amount) {
         if (amount.nValue == 0) {
             return Res::Ok();
         }
@@ -29,7 +29,7 @@ struct CBalances {
         return Res::Ok();
     }
 
-    Res Sub(CTokenAmount amount) {
+    [[nodiscard]] Res Sub(CTokenAmount amount) {
         if (amount.nValue == 0) {
             return Res::Ok();
         }
@@ -60,7 +60,7 @@ struct CBalances {
         return CTokenAmount{amount.nTokenId, remainder};
     }
 
-    Res SubBalances(const TAmounts &other) {
+    [[nodiscard]] Res SubBalances(const TAmounts &other) {
         for (const auto &[tokenId, amount] : other) {
             if (auto res = Sub(CTokenAmount{tokenId, amount}); !res) {
                 return res;
@@ -80,7 +80,7 @@ struct CBalances {
         return remainderBalances;
     }
 
-    Res AddBalances(const TAmounts &other) {
+    [[nodiscard]] Res AddBalances(const TAmounts &other) {
         for (const auto &[tokenId, amount] : other) {
             if (auto res = Add(CTokenAmount{tokenId, amount}); !res) {
                 return res;
@@ -184,7 +184,7 @@ struct CStatsTokenBalances {
         return Res::Ok();
     }
 
-    Res AddBalances(const TAmounts &other) {
+    [[nodiscard]] Res AddBalances(const TAmounts &other) {
         for (const auto &[tokenId, amount] : other) {
             if (auto res = Add(CTokenAmount{tokenId, amount}); !res) {
                 return res;

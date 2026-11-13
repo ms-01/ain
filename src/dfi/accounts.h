@@ -200,14 +200,14 @@ public:
                         const BalanceKey &start = {});
     CTokenAmount GetBalance(const CScript &owner, DCT_ID tokenID) const;
 
-    virtual Res AddBalance(const CScript &owner, CTokenAmount amount);
-    virtual Res SubBalance(const CScript &owner, CTokenAmount amount);
+    [[nodiscard]] virtual Res AddBalance(const CScript &owner, CTokenAmount amount);
+    [[nodiscard]] virtual Res SubBalance(const CScript &owner, CTokenAmount amount);
 
     void SetEnforceAccountMaxMoney(bool enforce) { enforceAccountMaxMoney = enforce; }
     bool GetEnforceAccountMaxMoney() const { return enforceAccountMaxMoney; }
 
-    Res AddBalances(const CScript &owner, const CBalances &balances);
-    Res SubBalances(const CScript &owner, const CBalances &balances);
+    [[nodiscard]] Res AddBalances(const CScript &owner, const CBalances &balances);
+    [[nodiscard]] Res SubBalances(const CScript &owner, const CBalances &balances);
 
     uint32_t GetBalancesHeight(const CScript &owner);
     Res UpdateBalancesHeight(const CScript &owner, uint32_t height);
