@@ -7294,11 +7294,6 @@ public:
 };
 static CMainCleanup instance_of_cmaincleanup;
 
-static bool IsAccountMaxMoneyActive(const uint32_t height, const Consensus::Params &consensus) {
-    return consensus.DF25Height != std::numeric_limits<int>::max() &&
-           height >= static_cast<uint32_t>(consensus.DF25Height);
-}
-
 BlockContext::BlockContext(const uint32_t height,
                            const uint64_t time,
                            const Consensus::Params &consensus,
@@ -7314,7 +7309,7 @@ BlockContext::BlockContext(const uint32_t height,
       time(time),
       consensus(consensus) {
     if (this->view) {
-        this->view->SetEnforceAccountMaxMoney(IsAccountMaxMoneyActive(height, consensus));
+        this->view->SetEnforceAccountMaxMoney(Consensus::IsDF25Active(height, consensus));
     }
 }
 
@@ -7326,7 +7321,7 @@ BlockContext::BlockContext(BlockContext &other, CCustomCSView &otherView)
       height(other.GetHeight()),
       time(other.GetTime()),
       consensus(other.GetConsensus()) {
-    view->SetEnforceAccountMaxMoney(IsAccountMaxMoneyActive(height, consensus));
+    view->SetEnforceAccountMaxMoney(Consensus::IsDF25Active(height, consensus));
 }
 
 CCustomCSView &BlockContext::GetView() {
@@ -7334,7 +7329,7 @@ CCustomCSView &BlockContext::GetView() {
         cache = std::make_shared<CCustomCSView>(*pcustomcsview);
         view = cache.get();
     }
-    view->SetEnforceAccountMaxMoney(IsAccountMaxMoneyActive(height, consensus));
+    view->SetEnforceAccountMaxMoney(Consensus::IsDF25Active(height, consensus));
     return *view;
 }
 
@@ -7367,7 +7362,7 @@ const Consensus::Params &BlockContext::GetConsensus() const {
 
 void BlockContext::SetView(CCustomCSView &other) {
     view = &other;
-    view->SetEnforceAccountMaxMoney(IsAccountMaxMoneyActive(height, consensus));
+    view->SetEnforceAccountMaxMoney(Consensus::IsDF25Active(height, consensus));
 }
 
 void BlockContext::SetEVMPreValidate(const bool other) {

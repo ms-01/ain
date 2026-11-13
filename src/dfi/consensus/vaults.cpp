@@ -435,7 +435,9 @@ Res CVaultsConsensus::operator()(const CAuctionBidMessage &obj) const {
 
         // immediate refund previous bid
         CalculateOwnerRewards(bid->first);
-        mnview.AddBalance(bid->first, bid->second);
+        if (auto res = mnview.AddBalance(bid->first, bid->second); !res && Consensus::IsDF25Active(height, consensus)) {
+            return res;
+        }
     }
     // check balance
     CalculateOwnerRewards(obj.from);

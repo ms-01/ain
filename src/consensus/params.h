@@ -250,6 +250,11 @@ struct Params {
 
     uint64_t evmChainId;
 };
+
+inline bool IsDF25Active(const uint32_t height, const Params &consensus) {
+    return consensus.DF25Height != std::numeric_limits<int>::max() &&
+           height >= static_cast<uint32_t>(consensus.DF25Height);
+}
 } // namespace Consensus
 
 #endif // DEFI_CONSENSUS_PARAMS_H
