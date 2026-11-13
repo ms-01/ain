@@ -156,6 +156,11 @@ namespace {
     std::unique_ptr<CRollingBloomFilter> recentRejects GUARDED_BY(cs_main);
     uint256 hashRecentRejectsChainTip GUARDED_BY(cs_main);
 
+    /** Rolling bloom filter of recently confirmed txids and wtxids so AlreadyHave
+     *  suppresses redundant MSG_WTX requests for already-mined transactions. */
+    CCriticalSection cs_recent_confirmed;
+    std::unique_ptr<CRollingBloomFilter> recentConfirmed GUARDED_BY(cs_recent_confirmed);
+
     /** Blocks that are in flight, and that are in the queue to be downloaded. */
     struct QueuedBlock {
         uint256 hash;
@@ -1066,6 +1071,7 @@ static bool MaybePunishNode(NodeId nodeid, const CValidationState& state, bool v
     case ValidationInvalidReason::RECENT_CONSENSUS_CHANGE:
     case ValidationInvalidReason::BLOCK_TIME_FUTURE:
     case ValidationInvalidReason::TX_NOT_STANDARD:
+    case ValidationInvalidReason::TX_INPUTS_NOT_STANDARD:
     case ValidationInvalidReason::TX_MISSING_INPUTS:
     case ValidationInvalidReason::TX_PREMATURE_SPEND:
     case ValidationInvalidReason::TX_WITNESS_MUTATED:
@@ -1108,6 +1114,10 @@ PeerLogicValidation::PeerLogicValidation(CConnman* connmanIn, BanMan* banman, CS
     : connman(connmanIn), m_banman(banman), m_stale_tip_check_time(0) {
     // Initialize global variables that cannot be constructed at startup.
     recentRejects.reset(new CRollingBloomFilter(120000, 0.000001));
+    {
+        LOCK(cs_recent_confirmed);
+        recentConfirmed.reset(new CRollingBloomFilter(48000, 0.000001));
+    }
 
     const Consensus::Params& consensusParams = Params().GetConsensus();
     // Stale tip checking and peer eviction are on two different timers, but we
@@ -1123,6 +1133,18 @@ PeerLogicValidation::PeerLogicValidation(CConnman* connmanIn, BanMan* banman, CS
  * block. Also save the time of the last tip update.
  */
 void PeerLogicValidation::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindex, const std::vector<CTransactionRef>& vtxConflicted) {
+    {
+        LOCK(cs_recent_confirmed);
+        if (recentConfirmed) {
+            for (const CTransactionRef& ptx : pblock->vtx) {
+                recentConfirmed->insert(ptx->GetHash());
+                if (ptx->HasWitness()) {
+                    recentConfirmed->insert(ptx->GetWitnessHash());
+                }
+            }
+        }
+    }
+
     LOCK(g_cs_orphans);
 
     std::vector<uint256> vOrphanErase;
@@ -1282,6 +1304,17 @@ void PeerLogicValidation::BlockChecked(const CBlock& block, const CValidationSta
 //
 
 
+static void InsertRecentReject(const CTransaction& tx, ValidationInvalidReason reason) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+{
+    assert(recentRejects);
+    recentRejects->insert(tx.GetWitnessHash());
+    // When inputs failed policy (independent of witness), also suppress legacy
+    // txid announcements and orphan parent fetches by txid.
+    if (reason == ValidationInvalidReason::TX_INPUTS_NOT_STANDARD && tx.HasWitness()) {
+        recentRejects->insert(tx.GetHash());
+    }
+}
+
 bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
     switch (inv.type)
@@ -1307,8 +1340,14 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
             }
             const CCoinsViewCache& coins_cache = ::ChainstateActive().CoinsTip();
             const GenTxid gtxid = ToGenTxid(inv);
+            bool fRecentConfirmed = false;
+            {
+                LOCK(cs_recent_confirmed);
+                fRecentConfirmed = recentConfirmed && recentConfirmed->contains(inv.hash);
+            }
 
-            return recentRejects->contains(inv.hash) ||
+            return fRecentConfirmed ||
+                   recentRejects->contains(inv.hash) ||
                    mempool.exists(gtxid) ||
                    (!gtxid.IsWtxid() && (coins_cache.HaveCoinInCache(COutPoint(inv.hash, 0)) || // Best effort: only try output 0 and 1
                                          coins_cache.HaveCoinInCache(COutPoint(inv.hash, 1))));
@@ -1937,8 +1976,7 @@ void static ProcessOrphanTx(CConnman* connman, std::set<uint256>& orphan_work_se
             if (orphan_state.GetReason() != ValidationInvalidReason::TX_WITNESS_MUTATED) {
                 // Do not use rejection cache for witness-stripped transactions,
                 // as they can have been malleated. Key by wtxid per BIP 339.
-                assert(recentRejects);
-                recentRejects->insert(orphanTx.GetWitnessHash());
+                InsertRecentReject(orphanTx, orphan_state.GetReason());
             }
             EraseOrphanTx(orphanHash);
             done = true;
@@ -2375,6 +2413,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             if (interruptMsgProc)
                 return true;
 
+            if ((inv.IsMsgWtx() && !pfrom->m_wtxid_relay) ||
+                ((inv.IsMsgTx() || inv.type == MSG_WITNESS_TX) && pfrom->m_wtxid_relay)) {
+                LogPrint(BCLog::NET, "ignoring %s inv incompatible with wtxidrelay=%d from peer=%d\n",
+                         inv.ToString(), pfrom->m_wtxid_relay, pfrom->GetId());
+                continue;
+            }
+
             bool fAlreadyHave = AlreadyHave(inv);
             LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n", inv.ToString(), fAlreadyHave ? "have" : "new", pfrom->GetId());
 
@@ -2744,8 +2789,12 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         const GenTxid txid_gen = GenTxid::Txid(tx.GetHash());
         const GenTxid wtxid_gen = GenTxid::Wtxid(tx.GetWitnessHash());
+        const CInv wtx_inv(MSG_WTX, tx.GetWitnessHash());
         CInv inv(pfrom->m_wtxid_relay ? MSG_WTX : MSG_TX, pfrom->m_wtxid_relay ? tx.GetWitnessHash() : tx.GetHash());
         pfrom->AddInventoryKnown(inv);
+        if (pfrom->m_wtxid_relay) {
+            pfrom->AddInventoryKnown(CInv(MSG_TX, tx.GetHash()));
+        }
 
         LOCK2(cs_main, g_cs_orphans);
 
@@ -2762,7 +2811,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         std::list<CTransactionRef> lRemovedTxn;
 
-        if (!AlreadyHave(inv) &&
+        if (!AlreadyHave(wtx_inv) &&
             AcceptToMemoryPool(mempool, state, ptx, &fMissingInputs, &lRemovedTxn, false /* bypass_limits */, 0 /* nAbsurdFee */)) {
             mempool.xcheck(&::ChainstateActive().CoinsTip(), pcustomcsview.get(), chainparams);
             RelayTransaction(tx.GetHash(), *connman);
@@ -2823,8 +2872,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             if (state.GetReason() != ValidationInvalidReason::TX_WITNESS_MUTATED) {
                 // Do not use rejection cache for witness-stripped transactions,
                 // as they can have been malleated. Key by wtxid per BIP 339.
-                assert(recentRejects);
-                recentRejects->insert(tx.GetWitnessHash());
+                InsertRecentReject(tx, state.GetReason());
                 if (RecursiveDynamicUsage(*ptx) < 100000) {
                     AddToCompactExtraTransactions(ptx);
                 }
@@ -4100,6 +4148,9 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                         if (!pto->pfilter->IsRelevantAndUpdate(*txinfo.tx)) continue;
                     }
                     pto->filterInventoryKnown.insert(inv.hash);
+                    if (pto->m_wtxid_relay) {
+                        pto->filterInventoryKnown.insert(hash);
+                    }
                     vInv.push_back(inv);
                     if (vInv.size() == MAX_INV_SZ) {
                         connman->PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
@@ -4166,16 +4217,25 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                             vRelayExpiration.pop_front();
                         }
 
-                        auto ret = mapRelay.insert(std::make_pair(ToGenTxid(inv), std::move(txinfo.tx)));
-                        if (ret.second) {
-                            vRelayExpiration.push_back(std::make_pair(nNow + 15 * 60 * 1000000, ret.first));
-                        }
+                        // Key mapRelay by both txid and wtxid so GETDATA requests from
+                        // legacy and wtxid-relay peers (and orphan parent lookups) both hit.
+                        auto insert_relay = [&](const GenTxid& gtxid) {
+                            auto ret = mapRelay.insert(std::make_pair(gtxid, txinfo.tx));
+                            if (ret.second) {
+                                vRelayExpiration.push_back(std::make_pair(nNow + 15 * 60 * 1000000, ret.first));
+                            }
+                        };
+                        insert_relay(GenTxid::Txid(hash));
+                        insert_relay(GenTxid::Wtxid(txinfo.tx->GetWitnessHash()));
                     }
                     if (vInv.size() == MAX_INV_SZ) {
                         connman->PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
                         vInv.clear();
                     }
                     pto->filterInventoryKnown.insert(hash);
+                    if (pto->m_wtxid_relay) {
+                        pto->filterInventoryKnown.insert(inv.hash);
+                    }
                 }
             }
         }
