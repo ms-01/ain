@@ -73,12 +73,17 @@ BOOST_AUTO_TEST_CASE(neg_token_balances)
     }
 }
 
-CScript CreateMetaA2A(CAccountToAccountMessage const & msg) {
+template <typename T>
+CScript CreateMeta(CustomTxType type, const T &msg) {
     CDataStream markedMetadata(DfTxMarker, SER_NETWORK, PROTOCOL_VERSION);
-    markedMetadata << static_cast<unsigned char>(CustomTxType::AccountToAccount) << msg;
+    markedMetadata << static_cast<unsigned char>(type) << msg;
     CScript scriptMeta;
     scriptMeta << OP_RETURN << ToByteVector(markedMetadata);
     return scriptMeta;
+}
+
+CScript CreateMetaA2A(CAccountToAccountMessage const & msg) {
+    return CreateMeta(CustomTxType::AccountToAccount, msg);
 }
 
 CScript CreateRawMetaA2ADuplicateKey(const CScript &from, const CScript &toScript, CAmount amount1, CAmount amount2, DCT_ID tokenId) {
@@ -668,6 +673,93 @@ BOOST_AUTO_TEST_CASE(apply_a2a_account_max_money_non_dfi_token)
     BOOST_REQUIRE(view.AddBalance(owner, {customToken, MAX_MONEY}).ok);
     BOOST_REQUIRE(view.AddBalance(owner, {customToken, 1}).ok);
     BOOST_CHECK_EQUAL(view.GetBalance(owner, customToken).nValue, MAX_MONEY + 1);
+}
+
+BOOST_AUTO_TEST_CASE(apply_df25_auction_bid_refund_max_money)
+{
+    Consensus::Params consensus = Params().GetConsensus();
+    consensus.DF1AMKHeight = 0;
+    consensus.DF10EunosPayaHeight = 0;
+    consensus.DF11FortCanningHeight = 0;
+    consensus.DF12FortCanningMuseumHeight = 0;
+    constexpr int activation = 100;
+    consensus.DF25Height = activation;
+
+    LOCK(cs_main);
+    for (const auto height : {99U, 100U}) {
+        BOOST_TEST_CONTEXT("height=" << height) {
+            BlockContext blockCtx{height, 0, consensus};
+            auto &view = blockCtx.GetView();
+            CCoinsViewCache coins(&::ChainstateActive().CoinsTip());
+
+            CScript vaultOwner, prevBidder, newBidder;
+            vaultOwner << OP_1;
+            prevBidder << OP_2;
+            newBidder << OP_3;
+            const DCT_ID dfi{};
+            const CVaultId vaultId = uint256S("0x1234");
+
+            CVaultData vault{};
+            vault.ownerAddress = vaultOwner;
+            vault.schemeId = "MIN150";
+            vault.isUnderLiquidation = true;
+            BOOST_REQUIRE(view.StoreVault(vaultId, vault).ok);
+
+            CAuctionData auction{};
+            auction.batchCount = 1;
+            auction.liquidationHeight = height + 10;
+            auction.liquidationPenalty = 0;
+            BOOST_REQUIRE(view.StoreAuction(vaultId, auction).ok);
+
+            CAuctionBatch batch{};
+            batch.loanAmount = {dfi, 100};
+            BOOST_REQUIRE(view.StoreAuctionBatch({vaultId, 0}, batch).ok);
+            BOOST_REQUIRE(view.StoreAuctionBid({vaultId, 0}, {prevBidder, {dfi, 100}}).ok);
+
+            BOOST_REQUIRE(view.AddBalance(prevBidder, {dfi, MAX_MONEY}).ok);
+            BOOST_REQUIRE(view.AddBalance(newBidder, {dfi, 200}).ok);
+
+            const COutPoint auth(uint256S("0xbeef"), 0);
+            coins.AddCoin(auth, Coin({1, newBidder, dfi}, 1, false), false);
+
+            CAuctionBidMessage bidMsg{vaultId, 0, newBidder, {dfi, 102}};
+            CMutableTransaction raw;
+            raw.vin = {CTxIn(auth)};
+            raw.vout = {CTxOut(0, CreateMeta(CustomTxType::AuctionBid, bidMsg))};
+            const CTransaction tx(raw);
+            auto txCtx = TransactionContext{coins, tx, blockCtx};
+
+            const auto result = ApplyCustomTx(blockCtx, txCtx);
+            if (height < activation) {
+                BOOST_REQUIRE_MESSAGE(result.ok, result.msg);
+                BOOST_CHECK_EQUAL(view.GetBalance(prevBidder, dfi).nValue, MAX_MONEY + 100);
+                BOOST_CHECK_EQUAL(view.GetBalance(newBidder, dfi).nValue, 98);
+            } else {
+                BOOST_REQUIRE(!result.ok);
+                BOOST_CHECK_NE(result.code & (uint32_t)CustomTxErrCodes::AccountBalanceOutOfRange, 0U);
+                BOOST_CHECK_EQUAL(view.GetBalance(prevBidder, dfi).nValue, MAX_MONEY);
+                BOOST_CHECK_EQUAL(view.GetBalance(newBidder, dfi).nValue, 200);
+                auto storedBid = view.GetAuctionBid({vaultId, 0});
+                BOOST_REQUIRE(storedBid.has_value());
+                BOOST_CHECK(storedBid->first == prevBidder);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(stats_token_balances_no_overflow_ub)
+{
+    CStatsTokenBalances stats;
+    const DCT_ID dfi{};
+    const auto maxVal = std::numeric_limits<CAmount>::max();
+    const auto minVal = std::numeric_limits<CAmount>::min();
+
+    BOOST_REQUIRE(stats.Add({dfi, maxVal}).ok);
+    BOOST_REQUIRE(stats.Add({dfi, 1}).ok);
+    BOOST_CHECK_EQUAL(stats.balances[dfi], minVal);
+
+    BOOST_REQUIRE(stats.Sub({dfi, 1}).ok);
+    BOOST_CHECK_EQUAL(stats.balances[dfi], maxVal);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

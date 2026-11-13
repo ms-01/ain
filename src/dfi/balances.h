@@ -101,14 +101,6 @@ struct CBalances {
         return str;
     }
 
-    static CBalances Sum(const std::vector<CTokenAmount> &tokens) {
-        CBalances res;
-        for (const auto &token : tokens) {
-            res.Add(token);
-        }
-        return res;
-    }
-
     friend bool operator==(const CBalances &a, const CBalances &b) { return a.balances == b.balances; }
 
     friend bool operator!=(const CBalances &a, const CBalances &b) { return a.balances != b.balances; }
@@ -164,7 +156,9 @@ struct CStatsTokenBalances {
             return Res::Ok();
         }
 
-        balances[amount.nTokenId] += amount.nValue;
+        const auto a = static_cast<uint64_t>(balances[amount.nTokenId]);
+        const auto b = static_cast<uint64_t>(amount.nValue);
+        balances[amount.nTokenId] = static_cast<CAmount>(a + b);
 
         return Res::Ok();
     }
@@ -174,7 +168,9 @@ struct CStatsTokenBalances {
             return Res::Ok();
         }
 
-        balances[amount.nTokenId] -= amount.nValue;
+        const auto a = static_cast<uint64_t>(balances[amount.nTokenId]);
+        const auto b = static_cast<uint64_t>(amount.nValue);
+        balances[amount.nTokenId] = static_cast<CAmount>(a - b);
 
         return Res::Ok();
     }
@@ -207,14 +203,6 @@ struct CStatsTokenBalances {
             str += CTokenAmount{kv.first, kv.second}.ToString();
         }
         return str;
-    }
-
-    static CStatsTokenBalances Sum(const std::vector<CTokenAmount> &tokens) {
-        CStatsTokenBalances res;
-        for (const auto &token : tokens) {
-            res.Add(token);
-        }
-        return res;
     }
 
     friend bool operator==(const CStatsTokenBalances &a, const CStatsTokenBalances &b) {
