@@ -13,7 +13,7 @@
 struct CBalances {
     TAmounts balances;
 
-    Res Add(CTokenAmount amount) {
+    [[nodiscard]] Res Add(CTokenAmount amount) {
         if (amount.nValue == 0) {
             return Res::Ok();
         }
@@ -29,7 +29,7 @@ struct CBalances {
         return Res::Ok();
     }
 
-    Res Sub(CTokenAmount amount) {
+    [[nodiscard]] Res Sub(CTokenAmount amount) {
         if (amount.nValue == 0) {
             return Res::Ok();
         }
@@ -60,7 +60,7 @@ struct CBalances {
         return CTokenAmount{amount.nTokenId, remainder};
     }
 
-    Res SubBalances(const TAmounts &other) {
+    [[nodiscard]] Res SubBalances(const TAmounts &other) {
         for (const auto &[tokenId, amount] : other) {
             if (auto res = Sub(CTokenAmount{tokenId, amount}); !res) {
                 return res;
@@ -80,7 +80,7 @@ struct CBalances {
         return remainderBalances;
     }
 
-    Res AddBalances(const TAmounts &other) {
+    [[nodiscard]] Res AddBalances(const TAmounts &other) {
         for (const auto &[tokenId, amount] : other) {
             if (auto res = Add(CTokenAmount{tokenId, amount}); !res) {
                 return res;
@@ -99,14 +99,6 @@ struct CBalances {
             str += CTokenAmount{kv.first, kv.second}.ToString();
         }
         return str;
-    }
-
-    static CBalances Sum(const std::vector<CTokenAmount> &tokens) {
-        CBalances res;
-        for (const auto &token : tokens) {
-            res.Add(token);
-        }
-        return res;
     }
 
     friend bool operator==(const CBalances &a, const CBalances &b) { return a.balances == b.balances; }
@@ -164,7 +156,9 @@ struct CStatsTokenBalances {
             return Res::Ok();
         }
 
-        balances[amount.nTokenId] += amount.nValue;
+        const auto a = static_cast<uint64_t>(balances[amount.nTokenId]);
+        const auto b = static_cast<uint64_t>(amount.nValue);
+        balances[amount.nTokenId] = static_cast<CAmount>(a + b);
 
         return Res::Ok();
     }
@@ -174,7 +168,9 @@ struct CStatsTokenBalances {
             return Res::Ok();
         }
 
-        balances[amount.nTokenId] -= amount.nValue;
+        const auto a = static_cast<uint64_t>(balances[amount.nTokenId]);
+        const auto b = static_cast<uint64_t>(amount.nValue);
+        balances[amount.nTokenId] = static_cast<CAmount>(a - b);
 
         return Res::Ok();
     }
@@ -188,7 +184,7 @@ struct CStatsTokenBalances {
         return Res::Ok();
     }
 
-    Res AddBalances(const TAmounts &other) {
+    [[nodiscard]] Res AddBalances(const TAmounts &other) {
         for (const auto &[tokenId, amount] : other) {
             if (auto res = Add(CTokenAmount{tokenId, amount}); !res) {
                 return res;
@@ -207,14 +203,6 @@ struct CStatsTokenBalances {
             str += CTokenAmount{kv.first, kv.second}.ToString();
         }
         return str;
-    }
-
-    static CStatsTokenBalances Sum(const std::vector<CTokenAmount> &tokens) {
-        CStatsTokenBalances res;
-        for (const auto &token : tokens) {
-            res.Add(token);
-        }
-        return res;
     }
 
     friend bool operator==(const CStatsTokenBalances &a, const CStatsTokenBalances &b) {

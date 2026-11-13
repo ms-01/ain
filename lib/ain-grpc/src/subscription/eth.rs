@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use ain_evm::{
-    evm::EVMServices, filters::FilterCriteria, storage::traits::BlockStorage,
+    evm::EVMServices,
+    filters::{FilterCriteria, FilterService},
+    storage::traits::BlockStorage,
     subscription::Notification,
 };
 use anyhow::format_err;
@@ -79,54 +81,56 @@ impl MetachainPubSubServer for MetachainPubSubModule {
                 self.tokio_runtime.spawn(fut);
             }
             Subscription::Logs => {
+                let criteria = params
+                    .as_ref()
+                    .map(|p| {
+                        let topics = p.topics.as_ref().map(|topics| match topics {
+                            SubscriptionParamsTopics::VecOfHashes(inputs) => inputs
+                                .iter()
+                                .flatten()
+                                .map(|input| vec![*input])
+                                .collect(),
+                            SubscriptionParamsTopics::VecOfHashVecs(inputs) => inputs
+                                .iter()
+                                .map(|hashes| hashes.iter().flatten().copied().collect())
+                                .collect(),
+                        });
+                        FilterCriteria {
+                            addresses: p.address.clone(),
+                            topics,
+                            ..Default::default()
+                        }
+                    })
+                    .unwrap_or_default();
                 let fut = async move {
                     while !sink.is_closed() {
-                        if let Notification::Block(hash) = rx.recv().await? {
-                            if let Some(block) = handler.storage.get_block_by_hash(&hash)? {
-                                let criteria = params
-                                    .as_ref()
-                                    .map(|p| {
-                                        let topics = p.topics.as_ref().map(|topics| match topics {
-                                            SubscriptionParamsTopics::VecOfHashes(inputs) => inputs
-                                                .iter()
-                                                .flatten()
-                                                .map(|input| vec![*input])
-                                                .collect(),
-                                            SubscriptionParamsTopics::VecOfHashVecs(inputs) => {
-                                                inputs
-                                                    .iter()
-                                                    .map(|hashes| {
-                                                        hashes.iter().flatten().copied().collect()
-                                                    })
-                                                    .collect()
-                                            }
-                                        });
-                                        FilterCriteria {
-                                            addresses: p.address.clone(),
-                                            topics,
-                                            ..Default::default()
-                                        }
-                                    })
-                                    .unwrap_or_default();
-                                let logs = handler
-                                    .filters
-                                    .get_block_logs(&criteria, block.header.number)?;
-                                let mut disconnect = false;
-                                for log in logs {
-                                    if !sink.send(&PubSubResult::Log(Box::new(log.into())))? {
-                                        disconnect = true;
-                                        break;
-                                    }
+                        let logs = match rx.recv().await? {
+                            Notification::Block(hash) => {
+                                if let Some(block) = handler.storage.get_block_by_hash(&hash)? {
+                                    handler
+                                        .filters
+                                        .get_block_logs(&criteria, block.header.number)?
+                                } else {
+                                    return Err(format_err!(
+                                        "failed to retrieve block from storage with block hash: {:x?}",
+                                        hash
+                                    ));
                                 }
-                                if disconnect {
-                                    break;
-                                }
-                            } else {
-                                return Err(format_err!(
-                                    "failed to retrieve block from storage with block hash: {:x?}",
-                                    hash
-                                ));
                             }
+                            Notification::LogsRemoved(logs) => {
+                                FilterService::filter_logs(&criteria, logs)
+                            }
+                            Notification::Transaction(_) => continue,
+                        };
+                        let mut disconnect = false;
+                        for log in logs {
+                            if !sink.send(&PubSubResult::Log(Box::new(log.into())))? {
+                                disconnect = true;
+                                break;
+                            }
+                        }
+                        if disconnect {
+                            break;
                         }
                     }
                     debug!("Ws connection ended, thread closing");

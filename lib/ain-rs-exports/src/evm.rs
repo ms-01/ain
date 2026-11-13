@@ -7,7 +7,7 @@ use ain_evm::{
     evm::FinalizedBlockInfo,
     fee::{calculate_max_tip_gas_fee, calculate_min_rbf_tip_gas_fee},
     services::SERVICES,
-    storage::traits::{BlockStorage, Rollback, TransactionStorage},
+    storage::traits::{BlockStorage, LogStorage, Rollback, TransactionStorage},
     subscription::Notification,
     transaction::{
         self,
@@ -557,7 +557,25 @@ fn evm_try_unsafe_commit_block(template: &BlockTemplateWrapper) -> Result<()> {
 fn evm_try_disconnect_latest_block() -> Result<()> {
     SERVICES.evm.core.clear_account_nonce();
     SERVICES.evm.block.clear_last_suggested_fee_tip_cache();
-    SERVICES.evm.storage.disconnect_latest_block()
+    let removed_logs = match SERVICES.evm.storage.get_latest_block()? {
+        Some(block) => SERVICES.evm.storage.get_logs(&block.header.number)?,
+        None => None,
+    };
+    SERVICES.evm.storage.disconnect_latest_block()?;
+    if let Some(mut logs) = removed_logs {
+        if !logs.is_empty() {
+            for entries in logs.values_mut() {
+                for log in entries.iter_mut() {
+                    log.removed = true;
+                }
+            }
+            SERVICES
+                .evm
+                .subscriptions
+                .send(ain_evm::subscription::Notification::LogsRemoved(logs))?;
+        }
+    }
+    Ok(())
 }
 
 #[ffi_fallible]

@@ -831,7 +831,7 @@ Res CLoansConsensus::operator()(const CLoanTakeLoanMessage &obj) const {
                             scheme->ratio);
         }
 
-        if (auto res = CollateralPctCheck(hasDUSDLoans, vaultAssets, scheme->ratio); !res) {
+        if (auto res = CollateralPctCheck(hasDUSDLoans, *vaultAssets, scheme->ratio); !res) {
             return res;
         }
     }
@@ -857,7 +857,10 @@ Res CLoansConsensus::operator()(const CLoanPaybackLoanMessage &obj) const {
             loan = &loans[id];
         }
 
-        loan->Add({id, amount});
+        if (auto res = loan->Add({id, amount});
+            !res && Consensus::IsDF25Active(txCtx.GetHeight(), txCtx.GetConsensus())) {
+            return res;
+        }
     }
     return (*this)(CLoanPaybackLoanV2Message{obj.vaultId, obj.from, loans});
 }
@@ -1135,16 +1138,23 @@ Res CLoansConsensus::operator()(const CLoanPaybackLoanV2Message &obj) const {
 
                 auto penalty = MultiplyAmounts(subInToken, COIN - penaltyPct);
 
+                const bool isDF25 = Consensus::IsDF25Active(height, consensus);
                 if (paybackTokenId == DCT_ID{0}) {
                     CDataStructureV0 liveKey{AttributeTypes::Live, ParamIDs::Economy, EconomyKeys::PaybackDFITokens};
                     auto balances = attributes->GetValue(liveKey, CBalances{});
-                    balances.Add({loanTokenId, subAmount});
-                    balances.Add({paybackTokenId, penalty});
+                    if (auto res = balances.Add({loanTokenId, subAmount}); !res && isDF25) {
+                        return res;
+                    }
+                    if (auto res = balances.Add({paybackTokenId, penalty}); !res && isDF25) {
+                        return res;
+                    }
                     attributes->SetValue(liveKey, balances);
 
                     liveKey.key = EconomyKeys::PaybackDFITokensPrincipal;
                     balances = attributes->GetValue(liveKey, CBalances{});
-                    balances.Add({loanTokenId, subLoan});
+                    if (auto res = balances.Add({loanTokenId, subLoan}); !res && isDF25) {
+                        return res;
+                    }
                     attributes->SetValue(liveKey, balances);
 
                     LogPrint(BCLog::LOAN,
@@ -1164,8 +1174,12 @@ Res CLoansConsensus::operator()(const CLoanPaybackLoanV2Message &obj) const {
                     CDataStructureV0 liveKey{AttributeTypes::Live, ParamIDs::Economy, EconomyKeys::PaybackTokens};
                     auto balances = attributes->GetValue(liveKey, CTokenPayback{});
 
-                    balances.tokensPayback.Add(CTokenAmount{loanTokenId, subAmount});
-                    balances.tokensFee.Add(CTokenAmount{paybackTokenId, penalty});
+                    if (auto res = balances.tokensPayback.Add(CTokenAmount{loanTokenId, subAmount}); !res && isDF25) {
+                        return res;
+                    }
+                    if (auto res = balances.tokensFee.Add(CTokenAmount{paybackTokenId, penalty}); !res && isDF25) {
+                        return res;
+                    }
                     attributes->SetValue(liveKey, balances);
 
                     LogPrint(BCLog::LOAN,

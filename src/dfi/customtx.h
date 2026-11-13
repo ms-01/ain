@@ -22,6 +22,8 @@ enum CustomTxErrCodes : uint32_t {
     // mempool to drop transactions that were accepted below the activation
     // height and are not valid anymore above it.
     TransferSumOverflow = 2048,
+    // A DFI account balance would exceed MAX_MONEY (height >= nAccountMaxMoneyHeight).
+    AccountBalanceOutOfRange = 4096,
     Fatal = uint32_t(1) << 31  // not allowed to fail
 };
 

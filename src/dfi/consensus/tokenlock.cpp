@@ -51,6 +51,8 @@ Res CTokenLockConsensus::operator()(const CReleaseLockMessage &obj) const {
     const auto contractAddressValue = blockCtx.GetConsensus().smartContracts.at(SMART_CONTRACT_TOKENLOCK);
     std::vector<CTokenLockUserKey> todelete{};
 
+    const bool isDF25 = Consensus::IsDF25Active(blockCtx.GetHeight(), blockCtx.GetConsensus());
+    Res loopRes = Res::Ok();
     CBalances totalReleasedFunds;
     mnview.ForEachTokenLockUserValues([&](const auto &key, const auto &value) {
         const auto &owner = key.owner;
@@ -62,11 +64,20 @@ Res CTokenLockConsensus::operator()(const CReleaseLockMessage &obj) const {
         for (const auto &[tokenId, amount] : value.balances) {
             const CTokenAmount moved = {tokenId, releaseAmount(amount)};
 
-            view.AddBalance(owner, moved);
-            totalReleasedFunds.Add(moved);
+            if (auto res = view.AddBalance(owner, moved); !res && isDF25) {
+                loopRes = res;
+                return false;
+            }
+            if (auto res = totalReleasedFunds.Add(moved); !res && isDF25) {
+                loopRes = res;
+                return false;
+            }
             auto updated = amount - moved.nValue;
             if (updated > 0) {
-                newBalance.Add({tokenId, updated});
+                if (auto res = newBalance.Add({tokenId, updated}); !res && isDF25) {
+                    loopRes = res;
+                    return false;
+                }
                 gotNew = true;
             }
         }
@@ -78,11 +89,16 @@ Res CTokenLockConsensus::operator()(const CReleaseLockMessage &obj) const {
         }
         return true;
     });
+    if (!loopRes) {
+        return loopRes;
+    }
 
     CAccountsHistoryWriter view(
         mnview, blockCtx.GetHeight(), txCtx.GetTxn(), tx.GetHash(), uint8_t(CustomTxType::TokenLockRelease));
     for (const auto &[tokenId, amount] : totalReleasedFunds.balances) {
-        view.SubBalance(contractAddressValue, {tokenId, amount});
+        if (auto res = view.SubBalance(contractAddressValue, {tokenId, amount}); !res && isDF25) {
+            return res;
+        }
     }
     view.Flush();
 

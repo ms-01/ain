@@ -7307,7 +7307,11 @@ BlockContext::BlockContext(const uint32_t height,
       evmPreValidate(prevalidate),
       height(height),
       time(time),
-      consensus(consensus) {}
+      consensus(consensus) {
+    if (this->view) {
+        this->view->SetEnforceAccountMaxMoney(Consensus::IsDF25Active(height, consensus));
+    }
+}
 
 BlockContext::BlockContext(BlockContext &other, CCustomCSView &otherView)
     : view(&otherView),
@@ -7316,13 +7320,16 @@ BlockContext::BlockContext(BlockContext &other, CCustomCSView &otherView)
       evmPreValidate(other.GetEVMPreValidate()),
       height(other.GetHeight()),
       time(other.GetTime()),
-      consensus(other.GetConsensus()) {}
+      consensus(other.GetConsensus()) {
+    view->SetEnforceAccountMaxMoney(Consensus::IsDF25Active(height, consensus));
+}
 
 CCustomCSView &BlockContext::GetView() {
     if (!view) {
         cache = std::make_shared<CCustomCSView>(*pcustomcsview);
         view = cache.get();
     }
+    view->SetEnforceAccountMaxMoney(Consensus::IsDF25Active(height, consensus));
     return *view;
 }
 
@@ -7355,6 +7362,7 @@ const Consensus::Params &BlockContext::GetConsensus() const {
 
 void BlockContext::SetView(CCustomCSView &other) {
     view = &other;
+    view->SetEnforceAccountMaxMoney(Consensus::IsDF25Active(height, consensus));
 }
 
 void BlockContext::SetEVMPreValidate(const bool other) {

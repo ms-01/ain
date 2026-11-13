@@ -105,6 +105,12 @@ struct Params {
     int DF23Height;
     int DF24Height;
     /**
+     * DF25 Upgrade Height: bundles consensus hardening rules for v4.2.7+
+     * (including DFI account balance MAX_MONEY enforcement).
+     * INT_MAX disables DF25 rules.
+     */
+    int DF25Height;
+    /**
      * Height from which on an overflowing sum of transfer amounts is
      * rejected. Below this height the previous behaviour is kept, so that
      * already mined blocks stay valid.
@@ -244,6 +250,11 @@ struct Params {
 
     uint64_t evmChainId;
 };
+
+inline bool IsDF25Active(const uint32_t height, const Params &consensus) {
+    return consensus.DF25Height != std::numeric_limits<int>::max() &&
+           height >= static_cast<uint32_t>(consensus.DF25Height);
+}
 } // namespace Consensus
 
 #endif // DEFI_CONSENSUS_PARAMS_H

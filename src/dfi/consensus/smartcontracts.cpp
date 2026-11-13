@@ -242,7 +242,10 @@ Res CSmartContractsConsensus::operator()(const CFutureSwapMessage &obj) const {
                 {height, obj.owner, std::numeric_limits<uint32_t>::max()});
 
             for (const auto &[key, value] : userFuturesValues) {
-                totalFutures.Add(value.source.nValue);
+                if (auto res = totalFutures.Add(value.source.nValue);
+                    !res && Consensus::IsDF25Active(height, consensus)) {
+                    return res;
+                }
                 mnview.EraseFuturesUserValues(key);
             }
         } else {
@@ -258,7 +261,9 @@ Res CSmartContractsConsensus::operator()(const CFutureSwapMessage &obj) const {
                 {height, obj.owner, std::numeric_limits<uint32_t>::max()});
 
             for (const auto &[key, amount] : userFuturesValues) {
-                totalFutures.Add(amount);
+                if (auto res = totalFutures.Add(amount); !res && Consensus::IsDF25Active(height, consensus)) {
+                    return res;
+                }
                 mnview.EraseFuturesDUSD(key);
             }
         }
@@ -349,7 +354,9 @@ Res CSmartContractsConsensus::operator()(const CFutureSwapMessage &obj) const {
                 return res;
             }
         }
-        balances.Add(obj.source);
+        if (auto res = balances.Add(obj.source); !res && Consensus::IsDF25Active(height, consensus)) {
+            return res;
+        }
     }
 
     attributes->SetValue(liveKey, balances);
