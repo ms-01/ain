@@ -2375,6 +2375,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             if (interruptMsgProc)
                 return true;
 
+            if ((inv.IsMsgWtx() && !pfrom->m_wtxid_relay) ||
+                ((inv.IsMsgTx() || inv.type == MSG_WITNESS_TX) && pfrom->m_wtxid_relay)) {
+                LogPrint(BCLog::NET, "ignoring %s inv incompatible with wtxidrelay=%d from peer=%d\n",
+                         inv.ToString(), pfrom->m_wtxid_relay, pfrom->GetId());
+                continue;
+            }
+
             bool fAlreadyHave = AlreadyHave(inv);
             LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n", inv.ToString(), fAlreadyHave ? "have" : "new", pfrom->GetId());
 
@@ -2744,8 +2751,12 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         const GenTxid txid_gen = GenTxid::Txid(tx.GetHash());
         const GenTxid wtxid_gen = GenTxid::Wtxid(tx.GetWitnessHash());
+        const CInv wtx_inv(MSG_WTX, tx.GetWitnessHash());
         CInv inv(pfrom->m_wtxid_relay ? MSG_WTX : MSG_TX, pfrom->m_wtxid_relay ? tx.GetWitnessHash() : tx.GetHash());
         pfrom->AddInventoryKnown(inv);
+        if (pfrom->m_wtxid_relay) {
+            pfrom->AddInventoryKnown(CInv(MSG_TX, tx.GetHash()));
+        }
 
         LOCK2(cs_main, g_cs_orphans);
 
@@ -2762,7 +2773,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         std::list<CTransactionRef> lRemovedTxn;
 
-        if (!AlreadyHave(inv) &&
+        if (!AlreadyHave(wtx_inv) &&
             AcceptToMemoryPool(mempool, state, ptx, &fMissingInputs, &lRemovedTxn, false /* bypass_limits */, 0 /* nAbsurdFee */)) {
             mempool.xcheck(&::ChainstateActive().CoinsTip(), pcustomcsview.get(), chainparams);
             RelayTransaction(tx.GetHash(), *connman);
@@ -4100,6 +4111,9 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                         if (!pto->pfilter->IsRelevantAndUpdate(*txinfo.tx)) continue;
                     }
                     pto->filterInventoryKnown.insert(inv.hash);
+                    if (pto->m_wtxid_relay) {
+                        pto->filterInventoryKnown.insert(hash);
+                    }
                     vInv.push_back(inv);
                     if (vInv.size() == MAX_INV_SZ) {
                         connman->PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
@@ -4166,16 +4180,25 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                             vRelayExpiration.pop_front();
                         }
 
-                        auto ret = mapRelay.insert(std::make_pair(ToGenTxid(inv), std::move(txinfo.tx)));
-                        if (ret.second) {
-                            vRelayExpiration.push_back(std::make_pair(nNow + 15 * 60 * 1000000, ret.first));
-                        }
+                        // Key mapRelay by both txid and wtxid so GETDATA requests from
+                        // legacy and wtxid-relay peers (and orphan parent lookups) both hit.
+                        auto insert_relay = [&](const GenTxid& gtxid) {
+                            auto ret = mapRelay.insert(std::make_pair(gtxid, txinfo.tx));
+                            if (ret.second) {
+                                vRelayExpiration.push_back(std::make_pair(nNow + 15 * 60 * 1000000, ret.first));
+                            }
+                        };
+                        insert_relay(GenTxid::Txid(hash));
+                        insert_relay(GenTxid::Wtxid(txinfo.tx->GetWitnessHash()));
                     }
                     if (vInv.size() == MAX_INV_SZ) {
                         connman->PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
                         vInv.clear();
                     }
                     pto->filterInventoryKnown.insert(hash);
+                    if (pto->m_wtxid_relay) {
+                        pto->filterInventoryKnown.insert(inv.hash);
+                    }
                 }
             }
         }

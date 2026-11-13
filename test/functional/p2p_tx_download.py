@@ -34,6 +34,7 @@ from test_framework.util import (
 from test_framework.address import ADDRESS_BCRT1_UNSPENDABLE
 
 import copy
+import os
 import time
 
 
@@ -441,6 +442,98 @@ class TxDownloadTest(DefiTestFramework):
 
         node.disconnect_p2ps()
 
+    def test_maprelay_cross_relay_and_inv_filtering(self):
+        self.log.info(
+            "Test mapRelay dual-key serving (txid -> wtxid) and INV filtering against m_wtxid_relay"
+        )
+        node = self.nodes[0]
+        raw_hex, ctx = self._create_segwit_tx(node)
+        txid = int(ctx.rehash(), 16)
+        wtxid = ctx.calc_sha256(True)
+        assert txid != wtxid
+
+        # 1. Relay tx while ONLY a legacy peer is connected (populates mapRelay)
+        legacy_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70039, send_wtxidrelay=False)
+        )
+        legacy_peer.sync_with_ping()
+        node.sendrawtransaction(raw_hex)
+        wait_until(
+            lambda: any(i.type == MSG_TX and i.hash == txid for i in legacy_peer.invs),
+            lock=mininode_lock,
+        )
+
+        # 2. Connect a wtxid peer AFTER the relay (timeLastMempoolReq == 0) and request MSG_WTX
+        wtxid_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        wtxid_peer.sync_with_ping()
+        wtxid_peer.send_message(msg_getdata([CInv(MSG_WTX, wtxid)]))
+        wait_until(
+            lambda: any(t.calc_sha256(True) == wtxid for t in wtxid_peer.txs),
+            lock=mininode_lock,
+        )
+
+        # 3. INV type incompatible with peer's wtxidrelay negotiation must be ignored
+        with mininode_lock:
+            legacy_peer.getdatas.clear()
+            wtxid_peer.getdatas.clear()
+        legacy_peer.send_message(msg_inv([CInv(MSG_WTX, 0xDEADBEEF)]))
+        wtxid_peer.send_message(msg_inv([CInv(MSG_TX, 0xDEADCAFE)]))
+        legacy_peer.sync_with_ping()
+        wtxid_peer.sync_with_ping()
+        with mininode_lock:
+            assert_equal(len(legacy_peer.getdatas), 0)
+            assert_equal(len(wtxid_peer.getdatas), 0)
+
+        node.disconnect_p2ps()
+
+    def test_legacy_peer_recent_rejects(self):
+        self.log.info(
+            "Test that a rejected SegWit tx sent by a legacy peer hits recentRejects (keyed by wtxid)"
+        )
+        node = self.nodes[0]
+        _, ctx_valid = self._create_segwit_tx(node)
+        ctx_malleated = copy.deepcopy(ctx_valid)
+        ctx_malleated.wit.vtxinwit[0].scriptWitness.stack[0] = b"\x00" * 71
+        wtxid_malleated = ctx_malleated.calc_sha256(True)
+
+        wtxid_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        legacy_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70039, send_wtxidrelay=False)
+        )
+        wtxid_peer.sync_with_ping()
+        legacy_peer.sync_with_ping()
+
+        # 1. Reject via wtxid_peer -> populates recentRejects with wtxid_malleated
+        wtxid_peer.send_message(msg_inv([CInv(MSG_WTX, wtxid_malleated)]))
+        wait_until(
+            lambda: any(
+                i.type == MSG_WTX and i.hash == wtxid_malleated
+                for i in wtxid_peer.getdatas
+            ),
+            lock=mininode_lock,
+        )
+        with node.assert_debug_log(expected_msgs=["mandatory-script-verify-flag"]):
+            wtxid_peer.send_message(msg_witness_tx(ctx_malleated))
+            wtxid_peer.sync_with_ping()
+
+        # 2. Legacy peer sends the exact same rejected tx -> must hit recentRejects without re-validating
+        debug_log = os.path.join(node.datadir, node.chain, "debug.log")
+        with open(debug_log, encoding="utf-8") as dl:
+            dl.seek(0, 2)
+            prev_size = dl.tell()
+        legacy_peer.send_message(msg_witness_tx(ctx_malleated))
+        legacy_peer.sync_with_ping()
+        with open(debug_log, encoding="utf-8") as dl:
+            dl.seek(prev_size)
+            new_log = dl.read()
+        assert "mandatory-script-verify-flag" not in new_log
+
+        node.disconnect_p2ps()
+
     def run_test(self):
         for node in self.nodes:
             node.setmocktime(0)
@@ -469,6 +562,8 @@ class TxDownloadTest(DefiTestFramework):
         self.test_wtxidrelay_handshake()
         self.test_wtxid_relay_and_mempool()
         self.test_witness_malleation_not_blackholed()
+        self.test_maprelay_cross_relay_and_inv_filtering()
+        self.test_legacy_peer_recent_rejects()
 
 
 if __name__ == "__main__":
