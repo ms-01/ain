@@ -88,6 +88,8 @@ static_assert(INBOUND_PEER_TX_DELAY >= MAX_GETDATA_RANDOM_DELAY,
 "To preserve security, MAX_GETDATA_RANDOM_DELAY should not exceed INBOUND_PEER_DELAY");
 /** Limit to avoid sending big packets. Not used in processing incoming GETDATA for compatibility */
 static const unsigned int MAX_GETDATA_SZ = 1000;
+/** Capacity of recentConfirmed rolling bloom filter, scaled 10x over Bitcoin Core for DeFiChain's 64M block weight and 30s block cadence. */
+static constexpr unsigned int RECENT_CONFIRMED_FILTER_SIZE = 480000;
 
 double maxAddrRatePerSecond;
 size_t maxAddrProcessingTokenBucket;
@@ -1135,7 +1137,7 @@ PeerLogicValidation::PeerLogicValidation(CConnman* connmanIn, BanMan* banman, CS
     recentRejects.reset(new CRollingBloomFilter(120000, 0.000001));
     {
         LOCK(cs_recent_confirmed);
-        recentConfirmed.reset(new CRollingBloomFilter(48000, 0.000001));
+        recentConfirmed.reset(new CRollingBloomFilter(RECENT_CONFIRMED_FILTER_SIZE, 0.000001));
     }
 
     const Consensus::Params& consensusParams = Params().GetConsensus();
