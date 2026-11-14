@@ -1149,9 +1149,12 @@ PeerLogicValidation::PeerLogicValidation(CConnman* connmanIn, BanMan* banman, CS
     scheduler.scheduleEvery(std::bind(&PeerLogicValidation::CheckForStaleTipAndEvictPeers, this, consensusParams), EXTRA_PEER_CHECK_INTERVAL * 1000);
 }
 
+void static ProcessOrphanTx(CConnman* connman, std::set<uint256>& orphan_work_set, std::list<CTransactionRef>& removed_txn, const CChainParams& chainparams) EXCLUSIVE_LOCKS_REQUIRED(cs_main, g_cs_orphans);
+
 /**
  * Evict orphan txn pool entries (EraseOrphanTx) based on a newly connected
- * block. Also save the time of the last tip update.
+ * block, and re-evaluate orphans whose missing parents were confirmed.
+ * Also save the time of the last tip update.
  */
 void PeerLogicValidation::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindex, const std::vector<CTransactionRef>& vtxConflicted) {
     {
@@ -1166,32 +1169,59 @@ void PeerLogicValidation::BlockConnected(const std::shared_ptr<const CBlock>& pb
         }
     }
 
-    LOCK(g_cs_orphans);
+    std::set<uint256> orphan_work_set;
+    {
+        LOCK(g_cs_orphans);
 
-    std::vector<uint256> vOrphanErase;
+        std::vector<uint256> vOrphanErase;
 
-    for (const CTransactionRef& ptx : pblock->vtx) {
-        const CTransaction& tx = *ptx;
+        for (const CTransactionRef& ptx : pblock->vtx) {
+            const CTransaction& tx = *ptx;
 
-        // Which orphan pool entries must we evict?
-        for (const auto& txin : tx.vin) {
-            auto itByPrev = mapOrphanTransactionsByPrev.find(txin.prevout);
-            if (itByPrev == mapOrphanTransactionsByPrev.end()) continue;
-            for (auto mi = itByPrev->second.begin(); mi != itByPrev->second.end(); ++mi) {
-                const CTransaction& orphanTx = *(*mi)->second.tx;
-                const uint256& orphanHash = orphanTx.GetHash();
-                vOrphanErase.push_back(orphanHash);
+            // Which orphan pool entries must we evict?
+            for (const auto& txin : tx.vin) {
+                auto itByPrev = mapOrphanTransactionsByPrev.find(txin.prevout);
+                if (itByPrev == mapOrphanTransactionsByPrev.end()) continue;
+                for (auto mi = itByPrev->second.begin(); mi != itByPrev->second.end(); ++mi) {
+                    const CTransaction& orphanTx = *(*mi)->second.tx;
+                    const uint256& orphanHash = orphanTx.GetHash();
+                    vOrphanErase.push_back(orphanHash);
+                }
+            }
+        }
+
+        // Erase orphan transactions included or precluded by this block
+        if (vOrphanErase.size()) {
+            int nErased = 0;
+            for (const uint256& orphanHash : vOrphanErase) {
+                nErased += EraseOrphanTx(orphanHash);
+            }
+            LogPrint(BCLog::MEMPOOL, "Erased %d orphan tx included or conflicted by block\n", nErased);
+        }
+
+        // Queue remaining orphans whose missing parent outputs were just confirmed by this block
+        for (const CTransactionRef& ptx : pblock->vtx) {
+            const uint256& txid = ptx->GetHash();
+            for (unsigned int i = 0; i < ptx->vout.size(); ++i) {
+                auto itByPrev = mapOrphanTransactionsByPrev.find(COutPoint(txid, i));
+                if (itByPrev != mapOrphanTransactionsByPrev.end()) {
+                    for (const auto& elem : itByPrev->second) {
+                        orphan_work_set.insert(elem->first);
+                    }
+                }
             }
         }
     }
 
-    // Erase orphan transactions included or precluded by this block
-    if (vOrphanErase.size()) {
-        int nErased = 0;
-        for (const uint256& orphanHash : vOrphanErase) {
-            nErased += EraseOrphanTx(orphanHash);
+    if (!orphan_work_set.empty()) {
+        std::list<CTransactionRef> removed_txn;
+        LOCK2(cs_main, g_cs_orphans);
+        while (!orphan_work_set.empty()) {
+            ProcessOrphanTx(connman, orphan_work_set, removed_txn, Params());
         }
-        LogPrint(BCLog::MEMPOOL, "Erased %d orphan tx included or conflicted by block\n", nErased);
+        for (const CTransactionRef& removedTx : removed_txn) {
+            AddToCompactExtraTransactions(removedTx);
+        }
     }
 
     g_last_tip_update = GetTime();

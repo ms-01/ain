@@ -37,6 +37,8 @@ from test_framework.mininode import (
 from test_framework.test_framework import DefiTestFramework
 from test_framework.util import (
     assert_equal,
+    connect_nodes,
+    disconnect_nodes,
     wait_until,
 )
 from test_framework.address import ADDRESS_BCRT1_UNSPENDABLE
@@ -885,6 +887,75 @@ class TxDownloadTest(DefiTestFramework):
         node.setmocktime(0)
         node.disconnect_p2ps()
 
+    def test_orphan_reeval_on_block_connected(self):
+        self.log.info(
+            "Test that an orphan from a wtxidrelay peer is resolved when its parent is confirmed in a block"
+        )
+        node0 = self.nodes[0]
+        node1 = self.nodes[1]
+
+        # Create a confirmed funding UTXO on node0 and sync to node1
+        addr_parent = node0.getnewaddress("", "bech32")
+        node0.sendtoaddress(addr_parent, 1.0)
+        node0.generate(1)
+        self.sync_blocks()
+
+        utxo = next(
+            u for u in node0.listunspent() if u["address"] == addr_parent and u["amount"] == 1
+        )
+        addr_child = node0.getnewaddress("", "bech32")
+        parent_raw = node0.createrawtransaction(
+            inputs=[{"txid": utxo["txid"], "vout": utxo["vout"]}],
+            outputs={addr_child: 0.999},
+        )
+        parent_signed = node0.signrawtransactionwithwallet(parent_raw)
+        assert parent_signed["complete"]
+        ctx_parent = FromHex(CTransaction(), parent_signed["hex"])
+        parent_txid = ctx_parent.rehash()
+        script_pubkey = node0.getaddressinfo(addr_child)["scriptPubKey"]
+
+        child_raw = node0.createrawtransaction(
+            inputs=[{"txid": parent_txid, "vout": 0}],
+            outputs={ADDRESS_BCRT1_UNSPENDABLE: 0.998},
+        )
+        child_signed = node0.signrawtransactionwithwallet(
+            child_raw,
+            [
+                {
+                    "txid": parent_txid,
+                    "vout": 0,
+                    "scriptPubKey": script_pubkey,
+                    "amount": 0.999,
+                }
+            ],
+        )
+        assert child_signed["complete"]
+        ctx_child = FromHex(CTransaction(), child_signed["hex"])
+        child_txid = ctx_child.rehash()
+
+        # Disconnect node1 so parent_tx can be mined there without entering node0's mempool
+        disconnect_nodes(node0, 1)
+
+        wtxid_peer = node0.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        wtxid_peer.sync_with_ping()
+
+        with node0.assert_debug_log(expected_msgs=["stored orphan tx"]):
+            wtxid_peer.send_message(msg_witness_tx(ctx_child))
+            wtxid_peer.sync_with_ping()
+        assert child_txid not in node0.getrawmempool()
+
+        # Mine parent_tx on node1 and reconnect so node0 learns about parent via BlockConnected
+        node1.sendrawtransaction(parent_signed["hex"])
+        node1.generate(1)
+        connect_nodes(node0, 1)
+        self.sync_blocks()
+
+        wait_until(lambda: child_txid in node0.getrawmempool())
+
+        node0.disconnect_p2ps()
+
     def run_test(self):
         for node in self.nodes:
             node.setmocktime(0)
@@ -921,6 +992,7 @@ class TxDownloadTest(DefiTestFramework):
         self.test_orphan_parent_fetch_wtxid_vs_legacy()
         self.test_witness_mutated_vs_stripped_recent_rejects()
         self.test_txid_relay_delay()
+        self.test_orphan_reeval_on_block_connected()
 
 
 if __name__ == "__main__":
