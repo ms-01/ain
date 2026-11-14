@@ -12,6 +12,7 @@ from test_framework.messages import (
     CTransaction,
     CTxIn,
     CTxInWitness,
+    CTxOut,
     FromHex,
     MSG_TX,
     MSG_TYPE_MASK,
@@ -620,6 +621,71 @@ class TxDownloadTest(DefiTestFramework):
 
         node.disconnect_p2ps()
 
+    def test_orphan_wtxid_already_have(self):
+        self.log.info(
+            "Test that AlreadyHave(MSG_WTX) hits g_orphans_by_wtxid and cleans up on EraseOrphansFor"
+        )
+        node = self.nodes[0]
+
+        ctx = CTransaction()
+        ctx.vin.append(CTxIn(COutPoint(0x123456789ABCDEF, 0), b""))
+        ctx.vout.append(CTxOut(1000, CScript([0, b"\x00" * 20])))
+        ctx.wit.vtxinwit.append(CTxInWitness())
+        ctx.wit.vtxinwit[0].scriptWitness.stack = [b"dummy-witness"]
+        ctx.rehash()
+        txid = int(ctx.rehash(), 16)
+        wtxid = ctx.calc_sha256(True)
+        assert txid != wtxid
+
+        peer1 = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        peer2 = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        legacy_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70039, send_wtxidrelay=False)
+        )
+        peer1.sync_with_ping()
+        peer2.sync_with_ping()
+        legacy_peer.sync_with_ping()
+
+        with node.assert_debug_log(expected_msgs=["stored orphan tx"]):
+            peer1.send_message(msg_witness_tx(ctx))
+            peer1.sync_with_ping()
+
+        # Second wtxid peer announcing MSG_WTX for the stored orphan must be suppressed
+        with mininode_lock:
+            peer2.getdatas.clear()
+        peer2.send_message(msg_inv([CInv(MSG_WTX, wtxid)]))
+        peer2.sync_with_ping()
+        with mininode_lock:
+            assert_equal(len(peer2.getdatas), 0)
+
+        # Legacy peer announcing MSG_TX for the same orphan must still be suppressed
+        with mininode_lock:
+            legacy_peer.getdatas.clear()
+        legacy_peer.send_message(msg_inv([CInv(MSG_TX, txid)]))
+        legacy_peer.sync_with_ping()
+        with mininode_lock:
+            assert_equal(len(legacy_peer.getdatas), 0)
+
+        # Disconnecting peer1 erases its orphans from both maps
+        peers_before = len(node.getpeerinfo())
+        with node.assert_debug_log(expected_msgs=["Erased 1 orphan tx"]):
+            peer1.peer_disconnect()
+            wait_until(lambda: len(node.getpeerinfo()) == peers_before - 1)
+
+        with mininode_lock:
+            peer2.getdatas.clear()
+        peer2.send_message(msg_inv([CInv(MSG_WTX, wtxid)]))
+        wait_until(
+            lambda: any(i.type == MSG_WTX and i.hash == wtxid for i in peer2.getdatas),
+            lock=mininode_lock,
+        )
+
+        node.disconnect_p2ps()
+
     def run_test(self):
         for node in self.nodes:
             node.setmocktime(0)
@@ -652,6 +718,7 @@ class TxDownloadTest(DefiTestFramework):
         self.test_legacy_peer_recent_rejects()
         self.test_recent_confirmed_wtxid_suppressed()
         self.test_inputs_not_standard_rejects_txid()
+        self.test_orphan_wtxid_already_have()
 
 
 if __name__ == "__main__":

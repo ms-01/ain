@@ -100,6 +100,7 @@ struct COrphanTx {
 };
 CCriticalSection g_cs_orphans;
 std::map<uint256, COrphanTx> mapOrphanTransactions GUARDED_BY(g_cs_orphans);
+std::map<uint256, std::map<uint256, COrphanTx>::iterator> g_orphans_by_wtxid GUARDED_BY(g_cs_orphans);
 
 void EraseOrphansFor(NodeId peer);
 
@@ -883,6 +884,8 @@ bool AddOrphanTx(const CTransactionRef& tx, NodeId peer) EXCLUSIVE_LOCKS_REQUIRE
     auto ret = mapOrphanTransactions.emplace(hash, COrphanTx{tx, peer, GetTime() + ORPHAN_TX_EXPIRE_TIME, g_orphan_list.size()});
     assert(ret.second);
     g_orphan_list.push_back(ret.first);
+    // Allow for lookups in the orphan pool by wtxid, as well as txid
+    g_orphans_by_wtxid.emplace(tx->GetWitnessHash(), ret.first);
     for (const CTxIn& txin : tx->vin) {
         mapOrphanTransactionsByPrev[txin.prevout].insert(ret.first);
     }
@@ -919,6 +922,7 @@ int static EraseOrphanTx(uint256 hash) EXCLUSIVE_LOCKS_REQUIRED(g_cs_orphans)
         it_last->second.list_pos = old_pos;
     }
     g_orphan_list.pop_back();
+    g_orphans_by_wtxid.erase(it->second.tx->GetWitnessHash());
 
     mapOrphanTransactions.erase(it);
     return 1;
@@ -1336,7 +1340,7 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 
             {
                 LOCK(g_cs_orphans);
-                if (mapOrphanTransactions.count(inv.hash)) return true;
+                if (inv.IsMsgWtx() ? g_orphans_by_wtxid.count(inv.hash) : mapOrphanTransactions.count(inv.hash)) return true;
             }
             const CCoinsViewCache& coins_cache = ::ChainstateActive().CoinsTip();
             const GenTxid gtxid = ToGenTxid(inv);
@@ -4431,6 +4435,7 @@ public:
         // orphan transactions
         mapOrphanTransactions.clear();
         mapOrphanTransactionsByPrev.clear();
+        g_orphans_by_wtxid.clear();
     }
 };
 static CNetProcessingCleanup instance_of_cnetprocessingcleanup;
