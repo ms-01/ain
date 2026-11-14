@@ -1612,7 +1612,6 @@ void SetupCacheSizes(CacheSizes& cacheSizes) {
     totalCache = std::max(totalCache, nMinDbCache << 20); // total cache cannot be less than nMinDbCache
     totalCache = std::min(totalCache, nMaxDbCache << 20); // total cache cannot be greater than nMaxDbcache
 
-    cacheSizes.customCacheSize = totalCache; // used for customs
     cacheSizes.blockTreeDBCache = std::min(totalCache / 8, nMaxBlockDBCache << 20);
     totalCache -= cacheSizes.blockTreeDBCache;
     cacheSizes.txIndexCache = std::min(totalCache / 8, gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX) ? nMaxTxIndexCache << 20 : 0);
@@ -1626,12 +1625,19 @@ void SetupCacheSizes(CacheSizes& cacheSizes) {
         totalCache -= cacheSizes.filterIndexCache * n_indexes;
     }
 
+    // Budget across up to 5 DFI LevelDB instances (enhancedcs, history, burn, vault, spv) within -dbcache
+    constexpr int64_t nCustomDBCount = 5;
+    int64_t customDBTotal = std::min(totalCache / 8, nMaxCoinsDBCache << 20);
+    cacheSizes.customCacheSize = std::max<int64_t>(customDBTotal / nCustomDBCount, 1 << 18);
+    totalCache -= std::min(totalCache / 2, cacheSizes.customCacheSize * nCustomDBCount);
+
     cacheSizes.coinDBCache = std::min(totalCache / 2, (totalCache / 4) + (1 << 23)); // use 25%-50% of the remainder for disk cache
     cacheSizes.coinDBCache = std::min(cacheSizes.coinDBCache, nMaxCoinsDBCache << 20); // cap total coins db cache
     totalCache -= cacheSizes.coinDBCache;
 
-    nCoinCacheUsage = totalCache; // the rest goes to in-memory cache
-    nCustomMemUsage = std::max((totalCache >> 8), (nMinDbCache << 16)); // use significant less in-memory cache
+    // Split remaining in-memory budget proportionally (75% UTXO cache, 25% DFI custom state cache)
+    nCustomMemUsage = std::max<int64_t>(totalCache / 4, nMinDbCache << 16);
+    nCoinCacheUsage = std::max<int64_t>(totalCache - nCustomMemUsage, nMinDbCache << 16);
 
     int64_t nMempoolSizeMax = gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
 
@@ -1645,7 +1651,9 @@ void SetupCacheSizes(CacheSizes& cacheSizes) {
         LogPrintf("* Using %.1f MiB for %s block filter index database\n",
                   cacheSizes.filterIndexCache * (1.0 / 1024 / 1024), BlockFilterTypeName(filter_type));
     }
+    LogPrintf("* Using %.1f MiB per custom state database\n", cacheSizes.customCacheSize * (1.0 / 1024 / 1024));
     LogPrintf("* Using %.1f MiB for chain state database\n", cacheSizes.coinDBCache * (1.0 / 1024 / 1024));
+    LogPrintf("* Using %.1f MiB for in-memory custom state cache\n", nCustomMemUsage * (1.0 / 1024 / 1024));
     LogPrintf("* Using %.1f MiB for in-memory UTXO set (plus up to %.1f MiB of unused mempool space)\n", nCoinCacheUsage * (1.0 / 1024 / 1024), nMempoolSizeMax * (1.0 / 1024 / 1024));
 }
 
