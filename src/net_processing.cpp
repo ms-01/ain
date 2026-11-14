@@ -1079,6 +1079,7 @@ static bool MaybePunishNode(NodeId nodeid, const CValidationState& state, bool v
     case ValidationInvalidReason::TX_MISSING_INPUTS:
     case ValidationInvalidReason::TX_PREMATURE_SPEND:
     case ValidationInvalidReason::TX_WITNESS_MUTATED:
+    case ValidationInvalidReason::TX_WITNESS_STRIPPED:
     case ValidationInvalidReason::TX_CONFLICT:
     case ValidationInvalidReason::TX_MEMPOOL_POLICY:
         break;
@@ -1977,7 +1978,7 @@ void static ProcessOrphanTx(CConnman* connman, std::set<uint256>& orphan_work_se
             // Probably non-standard or insufficient fee
             LogPrint(BCLog::MEMPOOL, "   removed orphan tx %s\n", orphanHash.ToString());
             assert(IsTransactionReason(orphan_state.GetReason()));
-            if (orphan_state.GetReason() != ValidationInvalidReason::TX_WITNESS_MUTATED) {
+            if (orphan_state.GetReason() != ValidationInvalidReason::TX_WITNESS_STRIPPED) {
                 // Do not use rejection cache for witness-stripped transactions,
                 // as they can have been malleated. Key by wtxid per BIP 339.
                 InsertRecentReject(orphanTx, orphan_state.GetReason());
@@ -2878,15 +2879,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
         } else {
             assert(IsTransactionReason(state.GetReason()));
-            if (state.GetReason() != ValidationInvalidReason::TX_WITNESS_MUTATED) {
+            if (state.GetReason() != ValidationInvalidReason::TX_WITNESS_STRIPPED) {
                 // Do not use rejection cache for witness-stripped transactions,
                 // as they can have been malleated. Key by wtxid per BIP 339.
                 InsertRecentReject(tx, state.GetReason());
                 if (RecursiveDynamicUsage(*ptx) < 100000) {
                     AddToCompactExtraTransactions(ptx);
                 }
-            } else if (tx.HasWitness() && RecursiveDynamicUsage(*ptx) < 100000) {
-                AddToCompactExtraTransactions(ptx);
             }
 
             if (pfrom->HasPermission(PF_FORCERELAY)) {

@@ -46,6 +46,7 @@ enum class ValidationInvalidReason {
      * non-standard witnesses).
      */
     TX_WITNESS_MUTATED,
+    TX_WITNESS_STRIPPED,      //!< witness was stripped from a transaction
     /**
      * Tx already in mempool or conflicts with a tx in the chain
      * (if it conflicts with another tx in mempool, we use MEMPOOL_POLICY as it failed to reach the RBF threshold)
@@ -66,6 +67,7 @@ inline bool IsTransactionReason(ValidationInvalidReason r)
            r == ValidationInvalidReason::TX_PREMATURE_SPEND ||
            r == ValidationInvalidReason::TX_MISSING_INPUTS ||
            r == ValidationInvalidReason::TX_WITNESS_MUTATED ||
+           r == ValidationInvalidReason::TX_WITNESS_STRIPPED ||
            r == ValidationInvalidReason::TX_CONFLICT ||
            r == ValidationInvalidReason::TX_MEMPOOL_POLICY;
 }

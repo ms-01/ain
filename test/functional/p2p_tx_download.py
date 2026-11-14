@@ -742,6 +742,92 @@ class TxDownloadTest(DefiTestFramework):
 
         node.disconnect_p2ps()
 
+    def test_witness_mutated_vs_stripped_recent_rejects(self):
+        self.log.info(
+            "Test that TX_WITNESS_MUTATED caches wtxid in recentRejects while TX_WITNESS_STRIPPED does not"
+        )
+        node = self.nodes[0]
+
+        # Part A: bad-witness-nonstandard (TX_WITNESS_MUTATED) caches wtxid (not txid)
+        witness_script = CScript([1])
+        p2wsh_addr = node.decodescript(witness_script.hex())["segwit"]["addresses"][0]
+        p2wsh_txid = node.sendtoaddress(p2wsh_addr, 1.0)
+        p2wsh_raw = node.getrawtransaction(p2wsh_txid, True)
+        node.generate(1)
+        node.setmocktime(0)
+        p2wsh_vout = next(
+            v["n"]
+            for v in p2wsh_raw["vout"]
+            if p2wsh_addr in v["scriptPubKey"].get("addresses", [])
+        )
+
+        ctx_nonstd = CTransaction()
+        ctx_nonstd.vin.append(CTxIn(COutPoint(int(p2wsh_txid, 16), p2wsh_vout), b""))
+        ctx_nonstd.vout.append(CTxOut(90000000, CScript([0, b"\x02" * 20])))
+        ctx_nonstd.wit.vtxinwit.append(CTxInWitness())
+        # Exceeds MAX_STANDARD_P2WSH_STACK_ITEM_SIZE (80 bytes) -> bad-witness-nonstandard
+        ctx_nonstd.wit.vtxinwit[0].scriptWitness.stack = [b"\x00" * 81, witness_script]
+        ctx_nonstd.rehash()
+        txid_nonstd = int(ctx_nonstd.rehash(), 16)
+        wtxid_nonstd = ctx_nonstd.calc_sha256(True)
+        assert txid_nonstd != wtxid_nonstd
+
+        wtxid_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        legacy_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70039, send_wtxidrelay=False)
+        )
+        wtxid_peer.sync_with_ping()
+        legacy_peer.sync_with_ping()
+
+        with node.assert_debug_log(expected_msgs=["bad-witness-nonstandard"]):
+            wtxid_peer.send_message(msg_witness_tx(ctx_nonstd))
+            wtxid_peer.sync_with_ping()
+
+        # Re-announcing the same nonstandard wtxid must be suppressed by recentRejects
+        with mininode_lock:
+            wtxid_peer.getdatas.clear()
+        wtxid_peer.send_message(msg_inv([CInv(MSG_WTX, wtxid_nonstd)]))
+        wtxid_peer.sync_with_ping()
+        with mininode_lock:
+            assert_equal(len(wtxid_peer.getdatas), 0)
+
+        # txid must NOT be blackholed by TX_WITNESS_MUTATED
+        with mininode_lock:
+            legacy_peer.getdatas.clear()
+        legacy_peer.send_message(msg_inv([CInv(MSG_TX, txid_nonstd)]))
+        wait_until(
+            lambda: any(
+                (i.type & MSG_TYPE_MASK) == MSG_TX and i.hash == txid_nonstd
+                for i in legacy_peer.getdatas
+            ),
+            lock=mininode_lock,
+        )
+
+        # Part B: witness-stripped (TX_WITNESS_STRIPPED) must NOT be cached in recentRejects
+        _, ctx_valid = self._create_segwit_tx(node)
+        ctx_stripped = copy.deepcopy(ctx_valid)
+        ctx_stripped.wit.vtxinwit = []
+        txid_valid = int(ctx_stripped.rehash(), 16)
+        assert_equal(txid_valid, int(ctx_valid.rehash(), 16))
+
+        legacy_peer.send_message(msg_witness_tx(ctx_stripped))
+        legacy_peer.sync_with_ping()
+
+        with mininode_lock:
+            legacy_peer.getdatas.clear()
+        legacy_peer.send_message(msg_inv([CInv(MSG_TX, txid_valid)]))
+        wait_until(
+            lambda: any(
+                (i.type & MSG_TYPE_MASK) == MSG_TX and i.hash == txid_valid
+                for i in legacy_peer.getdatas
+            ),
+            lock=mininode_lock,
+        )
+
+        node.disconnect_p2ps()
+
     def run_test(self):
         for node in self.nodes:
             node.setmocktime(0)
@@ -776,6 +862,7 @@ class TxDownloadTest(DefiTestFramework):
         self.test_inputs_not_standard_rejects_txid()
         self.test_orphan_wtxid_already_have()
         self.test_orphan_parent_fetch_wtxid_vs_legacy()
+        self.test_witness_mutated_vs_stripped_recent_rejects()
 
 
 if __name__ == "__main__":
