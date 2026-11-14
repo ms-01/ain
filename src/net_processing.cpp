@@ -76,6 +76,8 @@ static constexpr int32_t MAX_PEER_TX_IN_FLIGHT = 100;
 static constexpr int32_t MAX_PEER_TX_ANNOUNCEMENTS = 2 * MAX_INV_SZ;
 /** How many microseconds to delay requesting transactions from inbound peers */
 static constexpr std::chrono::microseconds INBOUND_PEER_TX_DELAY{std::chrono::seconds{2}};
+/** How many microseconds to delay requesting transactions by txid when wtxidrelay peers exist */
+static constexpr std::chrono::microseconds TXID_RELAY_DELAY{std::chrono::seconds{2}};
 /** How long to wait (in microseconds) before downloading a transaction from an additional peer */
 static constexpr std::chrono::microseconds GETDATA_TX_INTERVAL{std::chrono::seconds{60}};
 /** Maximum delay (in microseconds) for transaction requests to avoid biasing some peers over others. */
@@ -182,6 +184,9 @@ namespace {
 
     /** Number of outbound peers with m_chain_sync.m_protect. */
     int g_outbound_peers_with_protect_from_disconnect GUARDED_BY(cs_main) = 0;
+
+    /** Number of connected peers that negotiated wtxidrelay. */
+    int g_wtxid_relay_peers GUARDED_BY(cs_main) = 0;
 
     /** When our tip was last updated. */
     std::atomic<int64_t> g_last_tip_update(0);
@@ -367,6 +372,9 @@ struct CNodeState {
 
     //! Whether this peer is a manual connection
     bool m_is_manual_connection;
+
+    //! Whether this peer negotiated BIP 339 wtxid relay
+    bool m_wtxid_relay{false};
 
     CNodeState(CAddress addrIn, std::string addrNameIn, bool is_inbound, bool is_manual) :
         address(addrIn), name(std::move(addrNameIn)), m_is_inbound(is_inbound),
@@ -740,6 +748,9 @@ std::chrono::microseconds CalculateTxGetDataTime(const GenTxid& gtxid, std::chro
         process_time = last_request_time + GETDATA_TX_INTERVAL + GetRandMicros(MAX_GETDATA_RANDOM_DELAY);
     }
 
+    // Delay txid requests while wtxidrelay peers are connected
+    if (!gtxid.IsWtxid() && g_wtxid_relay_peers > 0) process_time += TXID_RELAY_DELAY;
+
     // We delay processing announcements from inbound peers
     if (use_inbound_delay) process_time += INBOUND_PEER_TX_DELAY;
 
@@ -817,6 +828,8 @@ void PeerLogicValidation::FinalizeNode(NodeId nodeid, bool& fUpdateConnectionTim
     assert(nPeersWithValidatedDownloads >= 0);
     g_outbound_peers_with_protect_from_disconnect -= state->m_chain_sync.m_protect;
     assert(g_outbound_peers_with_protect_from_disconnect >= 0);
+    g_wtxid_relay_peers -= state->m_wtxid_relay;
+    assert(g_wtxid_relay_peers >= 0);
 
     mapNodeState.erase(nodeid);
 
@@ -826,6 +839,7 @@ void PeerLogicValidation::FinalizeNode(NodeId nodeid, bool& fUpdateConnectionTim
         assert(nPreferredDownload == 0);
         assert(nPeersWithValidatedDownloads == 0);
         assert(g_outbound_peers_with_protect_from_disconnect == 0);
+        assert(g_wtxid_relay_peers == 0);
     }
     LogPrint(BCLog::NET, "Cleared nodestate for peer=%d\n", nodeid);
 }
@@ -2232,6 +2246,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         // announcing existent anchor confirmations for new connected node:
         {
             LOCK(cs_main);
+            CNodeState* state = State(pfrom->GetId());
+            if (state && pfrom->m_wtxid_relay && !state->m_wtxid_relay) {
+                state->m_wtxid_relay = true;
+                ++g_wtxid_relay_peers;
+            }
             panchorAwaitingConfirms->ForEachConfirm([&connman, &msgMaker, &pfrom](const CAnchorConfirmMessage & confirm) {
                 CInv inv(MSG_ANCHOR_CONFIRM, confirm.GetHash());
                 LogPrint(BCLog::ANCHORING, "%s: inv: confirm message for NEW PEER, hash: %s, peer=%d\n", __func__, inv.hash.ToString(), pfrom->GetId());
