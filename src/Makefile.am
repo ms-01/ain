@@ -327,8 +327,7 @@ libdefi_util_a-clientversion.$(OBJEXT): obj/build.h
 libdefi_spv_a_CPPFLAGS = $(AM_CPPFLAGS) -Wpointer-arith -fpermissive \
   -I$(srcdir)/spv \
   -I$(srcdir)/spv/support \
-  -I$(srcdir)/secp256k1 \
-  -I$(srcdir)/secp256k1/src \
+  -I$(srcdir)/secp256k1/include \
   -Wno-format-extra-args
 
 libdefi_spv_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
@@ -383,12 +382,6 @@ libdefi_spv_a_SOURCES = \
 #  spv/support/BRFileService.h
 #  spv/bitcoin/BRWalletManager.cpp
 #  spv/bitcoin/BRWalletManager.h
-
-# for gen /secp256k1/src/ecmult_static_context.h
-LIBSECP256K1_GEN = $(srcdir)/secp256k1/src/ecmult_static_context.h
-nodist_libdefi_spv_a_SOURCES = $(LIBSECP256K1_GEN)
-BUILT_SOURCES = $(LIBSECP256K1_GEN)
-$(LIBSECP256K1_GEN): $(LIBSECP256K1)
 
 # server: shared between defid and defi-qt
 # Contains code accessing mempool and chain state that is meant to be separated

@@ -6,6 +6,7 @@
 
 #include <bech32.h>
 #include <key_io.h>
+#include <spv/support/BRKey.h>
 #include <uint256.h>
 #include <util/system.h>
 #include <util/strencodings.h>
@@ -477,6 +478,35 @@ BOOST_AUTO_TEST_CASE(erc55_key_test)
     BOOST_CHECK(erc55_addr2 == EncodeDestination(erc55_addr2_script_dest));
     BOOST_CHECK(erc55_addr1C == EncodeDestination(erc55_addr1C_script_dest));
     BOOST_CHECK(erc55_addr2C == EncodeDestination(erc55_addr2C_script_dest));
+}
+
+BOOST_AUTO_TEST_CASE(spv_brkey_smoke)
+{
+    UInt256 secret{};
+    secret.u8[31] = 1;
+    UInt256 md{};
+    md.u8[0] = 0x42;
+
+    BRKey key{};
+    BOOST_CHECK_EQUAL(BRKeySetSecret(&key, &secret, 1), 1);
+
+    uint8_t pub[33]{};
+    BOOST_CHECK_EQUAL(BRKeyPubKey(&key, pub, sizeof(pub)), 33U);
+
+    uint8_t derSig[73]{};
+    size_t sigLen = BRKeySign(&key, derSig, sizeof(derSig), md);
+    BOOST_CHECK(sigLen > 0 && sigLen <= sizeof(derSig));
+    BOOST_CHECK_EQUAL(BRKeyVerify(&key, md, derSig, sigLen), 1);
+
+    uint8_t compactSig[65]{};
+    size_t compactLen = BRKeyCompactSign(&key, compactSig, sizeof(compactSig), md);
+    BOOST_CHECK_EQUAL(compactLen, 65U);
+
+    BRKey recovered{};
+    BOOST_CHECK_EQUAL(BRKeyRecoverPubKey(&recovered, md, compactSig, compactLen), 1);
+    BOOST_CHECK_EQUAL(BRKeyPubKeyMatch(&key, &recovered), 1);
+
+    BRKeyClean(&key);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
