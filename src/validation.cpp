@@ -997,7 +997,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams &chainparams,
                 !CheckInputs(
                     tx, stateDummy, view, true, scriptVerifyFlags & ~SCRIPT_VERIFY_CLEANSTACK, true, false, txdata)) {
                 // Only the witness is missing, so the transaction itself may be fine.
-                state.Invalid(ValidationInvalidReason::TX_WITNESS_MUTATED,
+                state.Invalid(ValidationInvalidReason::TX_WITNESS_STRIPPED,
                               false,
                               state.GetRejectReason(),
                               state.GetDebugMessage());
