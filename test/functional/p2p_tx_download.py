@@ -114,13 +114,17 @@ class WtxidP2PConn(P2PInterface):
 GETDATA_TX_INTERVAL = 60  # seconds
 MAX_GETDATA_RANDOM_DELAY = 2  # seconds
 INBOUND_PEER_TX_DELAY = 2  # seconds
+TXID_RELAY_DELAY = 2  # seconds
 MAX_GETDATA_IN_FLIGHT = 100
 TX_EXPIRY_INTERVAL = GETDATA_TX_INTERVAL * 10
 
 # Python test constants
 NUM_INBOUND = 10
 MAX_GETDATA_INBOUND_WAIT = (
-    GETDATA_TX_INTERVAL + MAX_GETDATA_RANDOM_DELAY + INBOUND_PEER_TX_DELAY
+    GETDATA_TX_INTERVAL
+    + MAX_GETDATA_RANDOM_DELAY
+    + INBOUND_PEER_TX_DELAY
+    + TXID_RELAY_DELAY
 )
 
 
@@ -828,6 +832,59 @@ class TxDownloadTest(DefiTestFramework):
 
         node.disconnect_p2ps()
 
+    def test_txid_relay_delay(self):
+        self.log.info(
+            "Test that txid GETDATA is delayed by TXID_RELAY_DELAY (2s) when wtxidrelay peers are connected"
+        )
+        node = self.nodes[0]
+        mocktime = int(time.time())
+        node.setmocktime(mocktime)
+
+        wtxid_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        legacy_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70039, send_wtxidrelay=False)
+        )
+        wtxid_peer.sync_with_ping()
+        legacy_peer.sync_with_ping()
+
+        with mininode_lock:
+            wtxid_peer.getdatas.clear()
+            legacy_peer.getdatas.clear()
+
+        fake_txid = 0xCAFEBABE1111
+        fake_wtxid = 0xCAFEBABE2222
+        legacy_peer.send_message(msg_inv([CInv(MSG_TX, fake_txid)]))
+        wtxid_peer.send_message(msg_inv([CInv(MSG_WTX, fake_wtxid)]))
+        legacy_peer.sync_with_ping()
+        wtxid_peer.sync_with_ping()
+
+        # After INBOUND_PEER_TX_DELAY (2s), MSG_WTX is requested, while MSG_TX still waits for TXID_RELAY_DELAY (2s).
+        node.setmocktime(mocktime + 2)
+        wait_until(
+            lambda: any(
+                i.type == MSG_WTX and i.hash == fake_wtxid for i in wtxid_peer.getdatas
+            ),
+            lock=mininode_lock,
+        )
+        legacy_peer.sync_with_ping()
+        with mininode_lock:
+            assert_equal(len(legacy_peer.getdatas), 0)
+
+        # After INBOUND_PEER_TX_DELAY + TXID_RELAY_DELAY (4s), MSG_TX is requested.
+        node.setmocktime(mocktime + 4)
+        wait_until(
+            lambda: any(
+                (i.type & MSG_TYPE_MASK) == MSG_TX and i.hash == fake_txid
+                for i in legacy_peer.getdatas
+            ),
+            lock=mininode_lock,
+        )
+
+        node.setmocktime(0)
+        node.disconnect_p2ps()
+
     def run_test(self):
         for node in self.nodes:
             node.setmocktime(0)
@@ -863,6 +920,7 @@ class TxDownloadTest(DefiTestFramework):
         self.test_orphan_wtxid_already_have()
         self.test_orphan_parent_fetch_wtxid_vs_legacy()
         self.test_witness_mutated_vs_stripped_recent_rejects()
+        self.test_txid_relay_delay()
 
 
 if __name__ == "__main__":
