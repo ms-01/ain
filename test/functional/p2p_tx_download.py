@@ -686,6 +686,62 @@ class TxDownloadTest(DefiTestFramework):
 
         node.disconnect_p2ps()
 
+    def test_orphan_parent_fetch_wtxid_vs_legacy(self):
+        self.log.info(
+            "Test that orphan parent txid fetches are skipped for m_wtxid_relay peers but sent to legacy peers"
+        )
+        node = self.nodes[0]
+
+        parent_txid_1 = 0x1111111111111111111111111111111111111111111111111111111111111111
+        ctx_wtxid = CTransaction()
+        ctx_wtxid.vin.append(CTxIn(COutPoint(parent_txid_1, 0), b""))
+        ctx_wtxid.vout.append(CTxOut(1000, CScript([0, b"\x00" * 20])))
+        ctx_wtxid.wit.vtxinwit.append(CTxInWitness())
+        ctx_wtxid.wit.vtxinwit[0].scriptWitness.stack = [b"wtxid-orphan"]
+        ctx_wtxid.rehash()
+
+        parent_txid_2 = 0x2222222222222222222222222222222222222222222222222222222222222222
+        ctx_legacy = CTransaction()
+        ctx_legacy.vin.append(CTxIn(COutPoint(parent_txid_2, 0), b""))
+        ctx_legacy.vout.append(CTxOut(1000, CScript([0, b"\x01" * 20])))
+        ctx_legacy.wit.vtxinwit.append(CTxInWitness())
+        ctx_legacy.wit.vtxinwit[0].scriptWitness.stack = [b"legacy-orphan"]
+        ctx_legacy.rehash()
+
+        wtxid_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70040, send_wtxidrelay=True)
+        )
+        legacy_peer = node.add_p2p_connection(
+            WtxidP2PConn(version=70039, send_wtxidrelay=False)
+        )
+        wtxid_peer.sync_with_ping()
+        legacy_peer.sync_with_ping()
+
+        with mininode_lock:
+            wtxid_peer.getdatas.clear()
+            legacy_peer.getdatas.clear()
+
+        with node.assert_debug_log(expected_msgs=["stored orphan tx"]):
+            wtxid_peer.send_message(msg_witness_tx(ctx_wtxid))
+            wtxid_peer.sync_with_ping()
+
+        with mininode_lock:
+            assert_equal(len(wtxid_peer.getdatas), 0)
+
+        with node.assert_debug_log(expected_msgs=["stored orphan tx"]):
+            legacy_peer.send_message(msg_witness_tx(ctx_legacy))
+            legacy_peer.sync_with_ping()
+
+        wait_until(
+            lambda: any(
+                (i.type & MSG_TYPE_MASK) == MSG_TX and i.hash == parent_txid_2
+                for i in legacy_peer.getdatas
+            ),
+            lock=mininode_lock,
+        )
+
+        node.disconnect_p2ps()
+
     def run_test(self):
         for node in self.nodes:
             node.setmocktime(0)
@@ -719,6 +775,7 @@ class TxDownloadTest(DefiTestFramework):
         self.test_recent_confirmed_wtxid_suppressed()
         self.test_inputs_not_standard_rejects_txid()
         self.test_orphan_wtxid_already_have()
+        self.test_orphan_parent_fetch_wtxid_vs_legacy()
 
 
 if __name__ == "__main__":
