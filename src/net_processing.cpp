@@ -2899,18 +2899,15 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 }
             }
             if (!fRejectedParents) {
-                if (!pfrom->m_wtxid_relay) {
-                    uint32_t nFetchFlags = GetFetchFlags(pfrom);
-                    const auto current_time = GetTime<std::chrono::microseconds>();
+                uint32_t nFetchFlags = GetFetchFlags(pfrom);
+                const auto current_time = GetTime<std::chrono::microseconds>();
 
-                    for (const CTxIn& txin : tx.vin) {
-                        // Here, we only have the txid (and not wtxid) of the
-                        // inputs, so we only request parents from
-                        // non-wtxid-relay peers.
-                        CInv _inv(MSG_TX | nFetchFlags, txin.prevout.hash);
-                        pfrom->AddInventoryKnown(_inv);
-                        if (!AlreadyHave(_inv)) RequestTx(State(pfrom->GetId()), ToGenTxid(_inv), current_time);
-                    }
+                for (const CTxIn& txin : tx.vin) {
+                    // Request missing parents by txid regardless of m_wtxid_relay
+                    // (TXID_RELAY_DELAY gives in-flight MSG_WTX announcements priority).
+                    CInv _inv(MSG_TX | nFetchFlags, txin.prevout.hash);
+                    pfrom->AddInventoryKnown(_inv);
+                    if (!AlreadyHave(_inv)) RequestTx(State(pfrom->GetId()), ToGenTxid(_inv), current_time);
                 }
                 AddOrphanTx(ptx, pfrom->GetId());
 

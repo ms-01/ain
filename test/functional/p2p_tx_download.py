@@ -694,9 +694,11 @@ class TxDownloadTest(DefiTestFramework):
 
     def test_orphan_parent_fetch_wtxid_vs_legacy(self):
         self.log.info(
-            "Test that orphan parent txid fetches are skipped for m_wtxid_relay peers but sent to legacy peers"
+            "Test that orphan parent txid fetches are sent to both m_wtxid_relay and legacy peers after TXID_RELAY_DELAY"
         )
         node = self.nodes[0]
+        mocktime = int(time.time())
+        node.setmocktime(mocktime)
 
         parent_txid_1 = 0x1111111111111111111111111111111111111111111111111111111111111111
         ctx_wtxid = CTransaction()
@@ -731,21 +733,33 @@ class TxDownloadTest(DefiTestFramework):
             wtxid_peer.send_message(msg_witness_tx(ctx_wtxid))
             wtxid_peer.sync_with_ping()
 
-        with mininode_lock:
-            assert_equal(len(wtxid_peer.getdatas), 0)
-
         with node.assert_debug_log(expected_msgs=["stored orphan tx"]):
             legacy_peer.send_message(msg_witness_tx(ctx_legacy))
             legacy_peer.sync_with_ping()
 
+        # After INBOUND_PEER_TX_DELAY (2s), parent txid fetches still wait for TXID_RELAY_DELAY (2s).
+        node.setmocktime(mocktime + 2)
+        wtxid_peer.sync_with_ping()
+        legacy_peer.sync_with_ping()
+        with mininode_lock:
+            assert_equal(len(wtxid_peer.getdatas), 0)
+            assert_equal(len(legacy_peer.getdatas), 0)
+
+        # After INBOUND_PEER_TX_DELAY + TXID_RELAY_DELAY (4s), both peers request their orphan parents.
+        node.setmocktime(mocktime + 4)
         wait_until(
             lambda: any(
+                (i.type & MSG_TYPE_MASK) == MSG_TX and i.hash == parent_txid_1
+                for i in wtxid_peer.getdatas
+            )
+            and any(
                 (i.type & MSG_TYPE_MASK) == MSG_TX and i.hash == parent_txid_2
                 for i in legacy_peer.getdatas
             ),
             lock=mininode_lock,
         )
 
+        node.setmocktime(0)
         node.disconnect_p2ps()
 
     def test_witness_mutated_vs_stripped_recent_rejects(self):
