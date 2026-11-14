@@ -194,7 +194,7 @@ namespace {
     std::atomic<int64_t> g_last_tip_update(0);
 
     /** Relay map */
-    typedef std::map<GenTxid, CTransactionRef> MapRelay;
+    typedef std::map<uint256, CTransactionRef> MapRelay;
     MapRelay mapRelay GUARDED_BY(cs_main);
     /** Expiration-time ordered list of (expire time, relay map entry) pairs. */
     std::deque<std::pair<int64_t, MapRelay::iterator>> vRelayExpiration GUARDED_BY(cs_main);
@@ -1691,14 +1691,13 @@ void static ProcessGetData(CNode* pfrom, const CChainParams& chainparams, CConnm
 
             // Send stream from relay memory
             bool push = false;
-            const GenTxid gtxid = ToGenTxid(inv);
-            auto mi = mapRelay.find(gtxid);
+            auto mi = mapRelay.find(inv.hash);
             int nSendFlags = (inv.IsMsgTx() ? SERIALIZE_TRANSACTION_NO_WITNESS : 0);
             if (mi != mapRelay.end()) {
                 connman->PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *mi->second));
                 push = true;
             } else if (pfrom->timeLastMempoolReq) {
-                auto txinfo = mempool.info(gtxid);
+                auto txinfo = mempool.info(ToGenTxid(inv));
                 // To protect privacy, do not answer getdata using the mempool when
                 // that TX couldn't have been INVed in reply to a MEMPOOL request.
                 if (txinfo.tx && txinfo.nTime <= pfrom->timeLastMempoolReq) {
@@ -4276,16 +4275,20 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                             vRelayExpiration.pop_front();
                         }
 
-                        // Key mapRelay by both txid and wtxid so GETDATA requests from
-                        // legacy and wtxid-relay peers (and orphan parent lookups) both hit.
-                        auto insert_relay = [&](const GenTxid& gtxid) {
-                            auto ret = mapRelay.insert(std::make_pair(gtxid, txinfo.tx));
+                        // Key mapRelay by txid (and wtxid if distinct) so GETDATA requests from
+                        // legacy and wtxid-relay peers (and orphan parent lookups) both hit
+                        // without duplicating entries for non-witness transactions.
+                        auto insert_relay = [&](const uint256& relay_hash) {
+                            auto ret = mapRelay.insert(std::make_pair(relay_hash, txinfo.tx));
                             if (ret.second) {
                                 vRelayExpiration.push_back(std::make_pair(nNow + 15 * 60 * 1000000, ret.first));
                             }
                         };
-                        insert_relay(GenTxid::Txid(hash));
-                        insert_relay(GenTxid::Wtxid(txinfo.tx->GetWitnessHash()));
+                        insert_relay(hash);
+                        const uint256& wtxid = txinfo.tx->GetWitnessHash();
+                        if (wtxid != hash) {
+                            insert_relay(wtxid);
+                        }
                     }
                     if (vInv.size() == MAX_INV_SZ) {
                         connman->PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));

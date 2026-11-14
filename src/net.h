@@ -868,8 +868,10 @@ public:
         }
     }
 
+    /** Queue an inventory item to send; transaction inventories must be pushed as MSG_TX (by txid). */
     void PushInventory(const CInv& inv)
     {
+        assert(!inv.IsMsgWtx());
         LOCK(cs_inventory);
         if (inv.type == MSG_TX) {
             if (!filterInventoryKnown.contains(inv.hash)) {
