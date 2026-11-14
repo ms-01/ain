@@ -35,6 +35,8 @@ struct CacheSizes {
     int64_t coinDBCache;
 };
 
+void SetupCacheSizes(CacheSizes& cacheSizes);
+
 namespace boost
 {
 class thread_group;
