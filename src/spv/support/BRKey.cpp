@@ -58,8 +58,7 @@
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #pragma GCC diagnostic pop
 #endif
-#include "../secp256k1/src/basic-config.h"
-#include "../secp256k1/include/secp256k1_recovery.h"
+#include <secp256k1_recovery.h>
 
 static std::once_flag _rand_once;
 
