@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use ain_evm::{backend::Overlay, bytes::Bytes, trace::service::AccessListInfo};
 use ethereum::{AccessList, AccessListItem, Account};
 use ethereum_types::{H160, H256, U256};
-use jsonrpsee::core::Error;
+use jsonrpsee::types::ErrorObjectOwned;
 use serde::Deserialize;
 
 use crate::errors::RPCError;
@@ -47,7 +47,7 @@ enum TxType {
 }
 
 impl TryFrom<U256> for TxType {
-    type Error = Error;
+    type Error = ErrorObjectOwned;
 
     fn try_from(v: U256) -> Result<Self, Self::Error> {
         match v {
@@ -59,7 +59,7 @@ impl TryFrom<U256> for TxType {
     }
 }
 
-fn guess_tx_type(req: &CallRequest) -> Result<TxType, Error> {
+fn guess_tx_type(req: &CallRequest) -> Result<TxType, ErrorObjectOwned> {
     if let Some(tx_type) = req.transaction_type {
         return TxType::try_from(tx_type);
     }
@@ -84,7 +84,7 @@ fn guess_tx_type(req: &CallRequest) -> Result<TxType, Error> {
 }
 
 impl CallRequest {
-    pub fn get_effective_gas_price(&self) -> Result<Option<U256>, Error> {
+    pub fn get_effective_gas_price(&self) -> Result<Option<U256>, ErrorObjectOwned> {
         match guess_tx_type(self)? {
             TxType::Legacy | TxType::EIP2930 => {
                 if let Some(gas_price) = self.gas_price {
@@ -109,7 +109,7 @@ impl CallRequest {
     // We accept "data" and "input" for backwards-compatibility reasons.
     //  "input" is the newer name and should be preferred by clients.
     // 	Issue detail: https://github.com/ethereum/go-ethereum/issues/15628
-    pub fn get_data(&self) -> Result<Bytes, Error> {
+    pub fn get_data(&self) -> Result<Bytes, ErrorObjectOwned> {
         if self.data.is_some() && self.input.is_some() {
             return Err(RPCError::InvalidDataInput.into());
         }

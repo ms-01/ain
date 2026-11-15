@@ -33,7 +33,7 @@ use ain_evm::services::{IS_SERVICES_INIT_CALL, SERVICES};
 use ain_ocean::SERVICES as OCEAN_SERVICES;
 use anyhow::{format_err, Result};
 use hyper::{header::HeaderValue, Method};
-use jsonrpsee::core::server::rpc_module::Methods;
+use jsonrpsee::Methods;
 use jsonrpsee_server::ServerBuilder;
 use log::info;
 use logging::CppLogTarget;
@@ -98,7 +98,7 @@ pub fn init_network_json_rpc_service(addr: String) -> Result<()> {
 
     let server = services.runtime().block_on(
         ServerBuilder::default()
-            .set_middleware(middleware)
+            .set_http_middleware(middleware)
             .max_connections(max_connections)
             .max_response_body_size(max_response_size)
             .custom_tokio_runtime(services.runtime().handle().clone())
@@ -115,10 +115,7 @@ pub fn init_network_json_rpc_service(addr: String) -> Result<()> {
     methods.merge(MetachainNetRPCModule::new(Arc::clone(&services.evm)).into_rpc())?;
     methods.merge(MetachainWeb3RPCModule::new(Arc::clone(&services.evm)).into_rpc())?;
 
-    services
-        .json_rpc_handles
-        .lock()
-        .push(server.start(methods)?);
+    services.json_rpc_handles.lock().push(server.start(methods));
     Ok(())
 }
 
@@ -202,7 +199,7 @@ pub fn init_network_subscriptions_service(addr: String) -> Result<()> {
     services
         .websocket_handles
         .lock()
-        .push(server.start(methods)?);
+        .push(server.start(methods));
     Ok(())
 }
 

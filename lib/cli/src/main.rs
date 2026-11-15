@@ -129,7 +129,7 @@ pub enum MetachainCLI {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), jsonrpsee::core::Error> {
+async fn main() -> Result<(), jsonrpsee::core::ClientError> {
     let opt = Opt::from_args();
 
     let client = {
