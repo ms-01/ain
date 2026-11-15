@@ -3219,6 +3219,7 @@ dependencies = [
 name = "metachain-cli"
 version = "0.1.0"
 dependencies = [
+ "ain-evm",
  "ain-grpc",
  "ethereum",
  "ethereum-types",
