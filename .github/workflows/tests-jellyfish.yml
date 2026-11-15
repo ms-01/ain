@@ -37,7 +37,7 @@ jobs:
 
     - name: Restore cpp build cache
       id: cpp-cache-restore
-      uses: actions/cache/restore@v3
+      uses: actions/cache/restore@v4
       with:
         path: |
           ./build/depends
@@ -60,7 +60,7 @@ jobs:
       run: ./make.sh deploy && ./make.sh package
 
     - name: Upload binaries
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: defi-bins
         path: ./build/defichain-${{ env.BUILD_VERSION }}-${{ env.TARGET }}.${{ env.PKG_TYPE }}
@@ -84,7 +84,7 @@ jobs:
         run: ./make.sh ci-export-vars
 
       - name: Download binaries
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: defi-bins
           path: ./build/
@@ -101,7 +101,7 @@ jobs:
           ref: 'main'
           path: jellyfish
 
-      - uses: actions/setup-node@v3
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
 

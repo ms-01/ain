@@ -53,7 +53,7 @@ jobs:
 
     - name: Restore cpp build cache
       id: cpp-cache-restore
-      uses: actions/cache/restore@v3
+      uses: actions/cache/restore@v4
       with:
         path: |
           ./build/depends

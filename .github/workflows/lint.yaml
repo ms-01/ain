@@ -23,11 +23,11 @@ env:
 jobs:
   generic:
     name: Lint
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     env:
       BUILD_VERSION: latest # Computed
       GITHUB_PULL_REQUEST: ${{ github.event.number }}
-      PYTHON: 3.8
+      PYTHON: 3.12
     steps:
     - name: Checkout
       uses: actions/checkout@v4
