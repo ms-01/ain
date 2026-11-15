@@ -1,258 +1,169 @@
-#![cfg(test_off)]
+use ain_evm::bytes::Bytes;
+use ethereum_types::{H160, H256, U256};
+use jsonrpsee::types::ErrorObjectOwned;
 
-use std::{str::FromStr, sync::Arc};
+use crate::call_request::CallRequest;
+use crate::errors::RPCError;
+use crate::utils::{format_address, format_h256, format_u256, try_get_reverted_error_or_default};
 
-use ain_evm::{handler::Handlers, transaction::SignedTx};
-use ethereum::{BlockV2, PartialHeader};
-use ethereum_types::{H160, U256};
+const CUSTOM_ERROR_CODE: i32 = -32001;
+const REVERT_ERROR_CODE: i32 = 3;
 
-use crate::codegen::types::*;
+fn call_request(data: Option<Bytes>, input: Option<Bytes>) -> CallRequest {
+    CallRequest {
+        data,
+        input,
+        ..Default::default()
+    }
+}
 
-const ALICE: &str = "0x0000000000000000000000000000000000000000";
-const BOB: &str = "0x0000000000000000000000000000000000000001";
+/// Builds ABI-encoded revert data: 4 byte selector, 32 byte offset, 32 byte length and the
+/// reason string.
+fn revert_data(reason: &str) -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend_from_slice(&[0x08, 0xc3, 0x79, 0xa0]); // Error(string) selector
+    data.extend_from_slice(&[0u8; 31]);
+    data.push(0x20); // offset of the string
+    data.extend_from_slice(&[0u8; 24]);
+    data.extend_from_slice(&(reason.len() as u64).to_be_bytes()); // 32 byte string length
+    data.extend_from_slice(reason.as_bytes());
+    data
+}
 
-#[test]
-fn should_call() {
-    let handler = Arc::new(Handlers::new());
-    let tx_info = EthTransactionInfo {
-        from: Some(ALICE.to_string()),
-        to: Some(BOB.to_string()),
-        gas: Default::default(),
-        price: Default::default(),
-        value: Default::default(),
-        data: Some("0x2394872".to_string()),
-        nonce: Default::default(),
-    };
-    let input = EthCallInput {
-        transaction_info: Some(tx_info),
-        block_number: "latest".to_string(),
-    };
-    let res = EthService::Eth_Call(handler, input.into());
-    assert!(res.is_ok());
+fn error_code(error: &ErrorObjectOwned) -> i32 {
+    error.code()
 }
 
 #[test]
-fn should_get_balance() {
-    let handler = Arc::new(Handlers::new());
-    let input = EthGetBalanceInput {
-        address: ALICE.to_string(),
-        block_number: "latest".to_string(),
-    };
+fn call_request_data_precedence() {
+    // `data` wins when it is the only payload set.
+    let request = call_request(Some(Bytes::new(vec![1, 2, 3])), None);
+    assert_eq!(request.get_data().unwrap(), Bytes::new(vec![1, 2, 3]));
 
-    let res = EthService::Eth_GetBalance(handler.clone(), input.clone().into());
-    assert_eq!(res.unwrap().balance, "0");
+    // `input` is used when `data` is absent.
+    let request = call_request(None, Some(Bytes::new(vec![4, 5])));
+    assert_eq!(request.get_data().unwrap(), Bytes::new(vec![4, 5]));
 
-    let ctx = handler.evm.get_queue_id();
+    // Without any payload an empty payload is returned.
+    let request = call_request(None, None);
+    assert_eq!(request.get_data().unwrap(), Bytes::default());
 
-    handler
-        .evm
-        .add_balance(ctx, H160::from_str(ALICE).unwrap(), U256::from(1337));
-
-    let _ = handler.finalize_block(ctx, true, 0, None);
-
-    let res2 = EthService::Eth_GetBalance(handler, input.into());
-    assert_eq!(res2.unwrap().balance, "1337");
-}
-
-#[test]
-fn should_get_block_by_hash() {
-    let handler = Arc::new(Handlers::new());
-    let block = BlockV2::new(
-        PartialHeader {
-            parent_hash: Default::default(),
-            beneficiary: Default::default(),
-            state_root: Default::default(),
-            receipts_root: Default::default(),
-            logs_bloom: Default::default(),
-            difficulty: Default::default(),
-            number: Default::default(),
-            gas_limit: Default::default(),
-            gas_used: Default::default(),
-            timestamp: 0,
-            extra_data: vec![],
-            mix_hash: Default::default(),
-            nonce: Default::default(),
-        },
-        Vec::new(),
-        Vec::new(),
-    );
-    handler.block.connect_block(&block);
-    handler.storage.put_block(block.clone());
-
-    let block = handler
-        .block
-        .get_block_by_hash(block.header.hash())
-        .unwrap();
-
-    let input = EthGetBlockByHashInput {
-        hash: format!("{:x}", block.header.hash()),
-        full_transaction: false,
-    };
-    let res = EthService::Eth_GetBlockByHash(handler.clone(), input.clone().into());
+    // Both fields set at the same time are rejected.
+    let request = call_request(Some(Bytes::new(vec![1])), Some(Bytes::new(vec![2])));
+    let error = request.get_data().unwrap_err();
+    assert_eq!(error_code(&error), CUSTOM_ERROR_CODE);
     assert_eq!(
-        format!("{}", res.unwrap().hash),
-        format!("0x{:x}", block.header.hash())
+        error.message(),
+        "Custom error: data and input fields are mutually exclusive"
     );
 }
 
 #[test]
-fn should_get_transaction_by_hash() {
-    let handler = Arc::new(Handlers::new());
-    let signed_tx: SignedTx = "f86b02830186a0830186a094a8f7c4c78c36e54c3950ad58dad24ca5e0191b2989056bc75e2d631000008025a0b0842b0c78dd7fc33584ec9a81ab5104fe70169878de188ba6c11fe7605e298aa0735dc483f625f17d68d1e1fae779b7160612628e6dde9eecf087892fe60bba4e".try_into().unwrap();
-    let tx_hashes = vec![signed_tx.clone().transaction];
-    let block = BlockV2::new(
-        PartialHeader {
-            parent_hash: Default::default(),
-            beneficiary: Default::default(),
-            state_root: Default::default(),
-            receipts_root: Default::default(),
-            logs_bloom: Default::default(),
-            difficulty: Default::default(),
-            number: Default::default(),
-            gas_limit: Default::default(),
-            gas_used: Default::default(),
-            timestamp: 0,
-            extra_data: vec![],
-            mix_hash: Default::default(),
-            nonce: Default::default(),
-        },
-        tx_hashes,
-        Vec::new(),
+fn call_request_effective_gas_price() {
+    // Legacy transactions use the gas price as is.
+    let mut request = call_request(None, None);
+    request.gas_price = Some(U256::from(100));
+    assert_eq!(
+        request.get_effective_gas_price().unwrap(),
+        Some(U256::from(100))
     );
 
-    handler.block.connect_block(&block);
-    handler.storage.put_block(block.clone());
+    // A zero gas price means "no gas price".
+    request.gas_price = Some(U256::zero());
+    assert_eq!(request.get_effective_gas_price().unwrap(), None);
 
-    let input = EthGetTransactionByHashInput {
-        hash: format!("{:x}", signed_tx.hash()),
-    };
-
-    let res = EthService::Eth_GetTransactionByHash(handler.clone(), input.clone().into()).unwrap();
-
-    assert_eq!(res.from.parse::<H160>().unwrap(), signed_tx.sender);
-    assert_eq!(res.to.parse::<H160>().ok(), signed_tx.to());
-    assert_eq!(res.gas, signed_tx.gas_limit().as_u64());
+    // EIP-1559 transactions use the max fee per gas.
+    let mut request = call_request(None, None);
+    request.max_fee_per_gas = Some(U256::from(200));
+    request.max_priority_fee_per_gas = Some(U256::from(1));
     assert_eq!(
-        U256::from_str_radix(&res.price, 10).unwrap(),
-        signed_tx.gas_price()
+        request.get_effective_gas_price().unwrap(),
+        Some(U256::from(200))
     );
+
+    request.max_fee_per_gas = Some(U256::zero());
+    assert_eq!(request.get_effective_gas_price().unwrap(), None);
+
+    // A gas price combined with the EIP-1559 fee fields is ambiguous.
+    let mut request = call_request(None, None);
+    request.gas_price = Some(U256::from(100));
+    request.max_fee_per_gas = Some(U256::from(200));
+    let error = request.get_effective_gas_price().unwrap_err();
+    assert_eq!(error_code(&error), CUSTOM_ERROR_CODE);
     assert_eq!(
-        U256::from_str_radix(&res.value, 10).unwrap(),
-        signed_tx.value()
+        error.message(),
+        "Custom error: both gasPrice and (maxFeePerGas or maxPriorityFeePerGas) specified"
     );
-    assert_eq!(res.data, hex::encode(signed_tx.data()));
+
+    // A max fee per gas without a priority fee is incomplete.
+    let mut request = call_request(None, None);
+    request.max_fee_per_gas = Some(U256::from(200));
+    let error = request.get_effective_gas_price().unwrap_err();
+    assert_eq!(error_code(&error), CUSTOM_ERROR_CODE);
+
+    // Unknown transaction types are rejected.
+    let mut request = call_request(None, None);
+    request.transaction_type = Some(U256::from(3));
+    let error = request.get_effective_gas_price().unwrap_err();
+    assert_eq!(error_code(&error), CUSTOM_ERROR_CODE);
     assert_eq!(
-        U256::from_str_radix(&res.nonce, 10).unwrap(),
-        signed_tx.nonce()
+        error.message(),
+        "Custom error: invalid transaction type specified"
     );
 }
 
 #[test]
-fn should_get_transaction_by_block_hash_and_index() {
-    let handler = Arc::new(Handlers::new());
-    let signed_tx: SignedTx = "f86b02830186a0830186a094a8f7c4c78c36e54c3950ad58dad24ca5e0191b2989056bc75e2d631000008025a0b0842b0c78dd7fc33584ec9a81ab5104fe70169878de188ba6c11fe7605e298aa0735dc483f625f17d68d1e1fae779b7160612628e6dde9eecf087892fe60bba4e".try_into().unwrap();
-    let tx_hashes = vec![signed_tx.clone().transaction];
-    let block = BlockV2::new(
-        PartialHeader {
-            parent_hash: Default::default(),
-            beneficiary: Default::default(),
-            state_root: Default::default(),
-            receipts_root: Default::default(),
-            logs_bloom: Default::default(),
-            difficulty: Default::default(),
-            number: Default::default(),
-            gas_limit: Default::default(),
-            gas_used: Default::default(),
-            timestamp: 0,
-            extra_data: vec![],
-            mix_hash: Default::default(),
-            nonce: Default::default(),
-        },
-        tx_hashes,
-        Vec::new(),
-    );
+fn rpc_error_mapping() {
+    let error: ErrorObjectOwned = RPCError::BlockNotFound.into();
+    assert_eq!(error_code(&error), CUSTOM_ERROR_CODE);
+    assert_eq!(error.message(), "Custom error: header not found");
 
-    handler.block.connect_block(&block);
-    handler.storage.put_block(block.clone());
-
-    let input = EthGetTransactionByBlockHashAndIndexInput {
-        block_hash: format!("{:x}", block.header.hash()),
-        index: String::from("0"),
-    };
-
-    let res =
-        EthService::Eth_GetTransactionByBlockHashAndIndex(handler.clone(), input.clone().into())
-            .unwrap();
-
-    assert_eq!(res.from.parse::<H160>().unwrap(), signed_tx.sender);
-    assert_eq!(res.to.parse::<H160>().ok(), signed_tx.to());
-    assert_eq!(res.gas, signed_tx.gas_limit().as_u64());
+    let error: ErrorObjectOwned = RPCError::InvalidTransactionType.into();
+    assert_eq!(error_code(&error), CUSTOM_ERROR_CODE);
     assert_eq!(
-        U256::from_str_radix(&res.price, 10).unwrap(),
-        signed_tx.gas_price()
+        error.message(),
+        "Custom error: invalid transaction type specified"
     );
+
+    let error: ErrorObjectOwned = RPCError::InsufficientFunds.into();
+    assert_eq!(error_code(&error), CUSTOM_ERROR_CODE);
     assert_eq!(
-        U256::from_str_radix(&res.value, 10).unwrap(),
-        signed_tx.value()
+        error.message(),
+        "Custom error: insufficient funds for transfer"
     );
-    assert_eq!(res.data, hex::encode(signed_tx.data()));
-    assert_eq!(
-        U256::from_str_radix(&res.nonce, 10).unwrap(),
-        signed_tx.nonce()
-    );
+
+    // Revert errors carry their own error code and keep the revert payload as data.
+    let error: ErrorObjectOwned =
+        RPCError::RevertError("execution reverted".to_string(), "0x01".to_string()).into();
+    assert_eq!(error_code(&error), REVERT_ERROR_CODE);
+    assert_eq!(error.message(), "execution reverted");
+    assert_eq!(error.data().unwrap().to_string(), "\"0x01\"");
 }
 
 #[test]
-fn should_get_transaction_by_block_number_and_index() {
-    let handler = Arc::new(Handlers::new());
-    let signed_tx: SignedTx = "f86b02830186a0830186a094a8f7c4c78c36e54c3950ad58dad24ca5e0191b2989056bc75e2d631000008025a0b0842b0c78dd7fc33584ec9a81ab5104fe70169878de188ba6c11fe7605e298aa0735dc483f625f17d68d1e1fae779b7160612628e6dde9eecf087892fe60bba4e".try_into().unwrap();
-    let tx_hashes = vec![signed_tx.clone().transaction];
-    let block = BlockV2::new(
-        PartialHeader {
-            parent_hash: Default::default(),
-            beneficiary: Default::default(),
-            state_root: Default::default(),
-            receipts_root: Default::default(),
-            logs_bloom: Default::default(),
-            difficulty: Default::default(),
-            number: Default::default(),
-            gas_limit: Default::default(),
-            gas_used: Default::default(),
-            timestamp: 0,
-            extra_data: vec![],
-            mix_hash: Default::default(),
-            nonce: Default::default(),
-        },
-        tx_hashes,
-        Vec::new(),
-    );
-
-    handler.block.connect_block(&block);
-    handler.storage.put_block(block.clone());
-
-    let input = EthGetTransactionByBlockNumberAndIndexInput {
-        block_number: format!("{:x}", block.header.number),
-        index: String::from("0"),
-    };
-
-    let res =
-        EthService::Eth_GetTransactionByBlockNumberAndIndex(handler.clone(), input.clone().into())
-            .unwrap();
-
-    assert_eq!(res.from.parse::<H160>().unwrap(), signed_tx.sender);
-    assert_eq!(res.to.parse::<H160>().ok(), signed_tx.to());
-    assert_eq!(res.gas, signed_tx.gas_limit().as_u64());
+fn utils_formatting_and_revert_reason() {
     assert_eq!(
-        U256::from_str_radix(&res.price, 10).unwrap(),
-        signed_tx.gas_price()
+        format_h256(H256::from_low_u64_be(0x1234)),
+        "0x0000000000000000000000000000000000000000000000000000000000001234"
     );
     assert_eq!(
-        U256::from_str_radix(&res.value, 10).unwrap(),
-        signed_tx.value()
+        format_address(H160::from_low_u64_be(0xabcd)),
+        "0x000000000000000000000000000000000000abcd"
     );
-    assert_eq!(res.data, hex::encode(signed_tx.data()));
+    assert_eq!(format_u256(U256::from(255)), "0xff");
+
+    // A revert reason is decoded from the ABI-encoded revert data.
     assert_eq!(
-        U256::from_str_radix(&res.nonce, 10).unwrap(),
-        signed_tx.nonce()
+        try_get_reverted_error_or_default(&revert_data("boom")),
+        "execution reverted: boom"
     );
+
+    // Truncated or non-UTF-8 payloads do not produce a reason.
+    assert_eq!(try_get_reverted_error_or_default(&[]), "");
+    assert_eq!(try_get_reverted_error_or_default(&[0u8; 40]), "");
+
+    let mut invalid = revert_data("boom");
+    let len = invalid.len();
+    invalid[len - 1] = 0xff;
+    assert_eq!(try_get_reverted_error_or_default(&invalid), "");
 }
