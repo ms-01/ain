@@ -399,14 +399,14 @@ UniValue listaccounts(const JSONRPCRequest &request) {
         if (request.params.size() > 0) {
             UniValue paginationObj = request.params[0].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
                 start = decodeBalanceKey(paginationObj["start"].get_str());
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
             if (!including_start) {
                 start.tokenID.v++;
@@ -531,14 +531,14 @@ UniValue getaccount(const JSONRPCRequest &request) {
         if (request.params.size() > 1) {
             UniValue paginationObj = request.params[1].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
-                start.v = (uint32_t)paginationObj["start"].get_int64();
+                start.v = (uint32_t)paginationObj["start"].getInt<int64_t>();
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
             if (!including_start) {
                 start.v++;
@@ -658,14 +658,14 @@ UniValue gettokenbalances(const JSONRPCRequest &request) {
         if (request.params.size() > 0) {
             UniValue paginationObj = request.params[0].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
-                start.v = (uint32_t)paginationObj["start"].get_int64();
+                start.v = (uint32_t)paginationObj["start"].getInt<int64_t>();
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
             if (!including_start) {
                 start.v++;
@@ -677,15 +677,15 @@ UniValue gettokenbalances(const JSONRPCRequest &request) {
     }
     bool indexed_amounts = false;
     if (request.params.size() > 1) {
-        indexed_amounts = request.params[1].getBool();
+        indexed_amounts = request.params[1].isTrue();
     }
     bool symbol_lookup = false;
     if (request.params.size() > 2) {
-        symbol_lookup = request.params[2].getBool();
+        symbol_lookup = request.params[2].isTrue();
     }
     auto evm_dfi_lookup = false;
     if (request.params.size() > 3) {
-        evm_dfi_lookup = request.params[3].getBool();
+        evm_dfi_lookup = request.params[3].isTrue();
     }
 
     UniValue ret(UniValue::VARR);
@@ -1339,10 +1339,10 @@ UniValue listaccounthistory(const JSONRPCRequest &request) {
                         true);
 
         if (!optionsObj["maxBlockHeight"].isNull()) {
-            maxBlockHeight = (uint32_t)optionsObj["maxBlockHeight"].get_int64();
+            maxBlockHeight = (uint32_t)optionsObj["maxBlockHeight"].getInt<int64_t>();
         }
         if (!optionsObj["depth"].isNull()) {
-            depth = (uint32_t)optionsObj["depth"].get_int64();
+            depth = (uint32_t)optionsObj["depth"].getInt<int64_t>();
         }
 
         if (!optionsObj["no_rewards"].isNull()) {
@@ -1375,10 +1375,10 @@ UniValue listaccounthistory(const JSONRPCRequest &request) {
             }
         }
         if (!optionsObj["limit"].isNull()) {
-            limit = (uint32_t)optionsObj["limit"].get_int64();
+            limit = (uint32_t)optionsObj["limit"].getInt<int64_t>();
         }
         if (!optionsObj["start"].isNull()) {
-            start = (uint32_t)optionsObj["start"].get_int64();
+            start = (uint32_t)optionsObj["start"].getInt<int64_t>();
             includingStart = false;
         }
         if (!optionsObj["including_start"].isNull()) {
@@ -1389,7 +1389,7 @@ UniValue listaccounthistory(const JSONRPCRequest &request) {
         }
 
         if (!optionsObj["txn"].isNull()) {
-            txn = (uint32_t)optionsObj["txn"].get_int64();
+            txn = (uint32_t)optionsObj["txn"].getInt<int64_t>();
         }
 
         if (!optionsObj["format"].isNull()) {
@@ -1632,8 +1632,8 @@ UniValue getaccounthistory(const JSONRPCRequest &request) {
     }
 
     auto owner = DecodeScript(request.params[0].getValStr());
-    uint32_t blockHeight = request.params[1].get_int();
-    uint32_t txn = request.params[2].get_int();
+    uint32_t blockHeight = request.params[1].getInt<int>();
+    uint32_t txn = request.params[2].getInt<int>();
 
     auto [view, accountView, vaultView] = GetSnapshots();
 
@@ -1710,11 +1710,11 @@ UniValue listburnhistory(const JSONRPCRequest &request) {
                         true);
 
         if (!optionsObj["maxBlockHeight"].isNull()) {
-            maxBlockHeight = (uint32_t)optionsObj["maxBlockHeight"].get_int64();
+            maxBlockHeight = (uint32_t)optionsObj["maxBlockHeight"].getInt<int64_t>();
         }
 
         if (!optionsObj["depth"].isNull()) {
-            depth = (uint32_t)optionsObj["depth"].get_int64();
+            depth = (uint32_t)optionsObj["depth"].getInt<int64_t>();
         }
 
         if (!optionsObj["token"].isNull()) {
@@ -1731,7 +1731,7 @@ UniValue listburnhistory(const JSONRPCRequest &request) {
         }
 
         if (!optionsObj["limit"].isNull()) {
-            limit = (uint32_t)optionsObj["limit"].get_int64();
+            limit = (uint32_t)optionsObj["limit"].getInt<int64_t>();
         }
 
         if (limit == 0) {
@@ -1887,7 +1887,7 @@ UniValue accounthistorycount(const JSONRPCRequest &request) {
                         true,
                         true);
 
-        noRewards = optionsObj["no_rewards"].getBool();
+        noRewards = optionsObj["no_rewards"].isTrue();
 
         if (!optionsObj["token"].isNull()) {
             tokenFilter = optionsObj["token"].get_str();
@@ -2366,7 +2366,7 @@ UniValue transferdomain(const JSONRPCRequest &request) {
         }
 
         if (!srcObj["domain"].isNull()) {
-            src.domain = srcObj["domain"].get_int();
+            src.domain = srcObj["domain"].getInt<int>();
         } else {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameters, src argument \"domain\" must not be null");
         }
@@ -2412,7 +2412,7 @@ UniValue transferdomain(const JSONRPCRequest &request) {
         }
 
         if (!dstObj["domain"].isNull()) {
-            dst.domain = dstObj["domain"].get_int();
+            dst.domain = dstObj["domain"].getInt<int>();
         } else {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameters, dst argument \"domain\" must not be null");
         }
@@ -2423,7 +2423,7 @@ UniValue transferdomain(const JSONRPCRequest &request) {
         // Single key check
         auto singlekeycheck = gArgs.GetBoolArg("-tdsinglekeycheck", true);
         if (!singlekeycheckObj.isNull()) {
-            singlekeycheck = singlekeycheckObj.getBool();
+            singlekeycheck = singlekeycheckObj.isTrue();
         }
         if (singlekeycheck) {
             auto dstKey = AddrToPubKey(pwallet, ScriptToString(dst.address));
@@ -2456,7 +2456,7 @@ UniValue transferdomain(const JSONRPCRequest &request) {
         uint64_t nonce = 0;
         bool useNonce = !nonceObj.isNull();
         if (useNonce) {
-            nonce = nonceObj.get_int64();
+            nonce = nonceObj.getInt<int64_t>();
         }
         const auto createResult = evm_try_create_and_sign_transfer_domain_tx(
             result,
@@ -3576,7 +3576,7 @@ UniValue logdvmstate(const JSONRPCRequest &request) {
     }
         .Check(request);
 
-    const auto fileSize = request.params[0].isNull() ? 1 : request.params[0].get_int64();
+    const auto fileSize = request.params[0].isNull() ? 1 : request.params[0].getInt<int64_t>();
     if (fileSize <= 0) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Size must be more then zero");
     }

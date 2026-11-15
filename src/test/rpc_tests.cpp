@@ -35,7 +35,7 @@ UniValue CallRPC(std::string args)
         return result;
     }
     catch (const UniValue& objError) {
-        throw std::runtime_error(find_value(objError, "message").get_str());
+        throw std::runtime_error(objError.find_value("message").get_str());
     }
 }
 
@@ -67,9 +67,9 @@ BOOST_AUTO_TEST_CASE(rpc_rawparams)
     BOOST_CHECK_THROW(CallRPC("decoderawtransaction DEADBEEF"), std::runtime_error);
     std::string rawtx = "0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000";
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("decoderawtransaction ")+rawtx));
-    BOOST_CHECK_EQUAL(find_value(r.get_obj(), "size").get_int(), 193);
-    BOOST_CHECK_EQUAL(find_value(r.get_obj(), "version").get_int(), 1);
-    BOOST_CHECK_EQUAL(find_value(r.get_obj(), "locktime").get_int(), 0);
+    BOOST_CHECK_EQUAL(r.get_obj().find_value("size").getInt<int>(), 193);
+    BOOST_CHECK_EQUAL(r.get_obj().find_value("version").getInt<int>(), 1);
+    BOOST_CHECK_EQUAL(r.get_obj().find_value("locktime").getInt<int>(), 0);
     BOOST_CHECK_THROW(CallRPC(std::string("decoderawtransaction ")+rawtx+" extra"), std::runtime_error);
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("decoderawtransaction ")+rawtx+" false"));
     BOOST_CHECK_THROW(r = CallRPC(std::string("decoderawtransaction ")+rawtx+" false extra"), std::runtime_error);
@@ -88,19 +88,19 @@ BOOST_AUTO_TEST_CASE(rpc_rawparams)
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("decodecustomtx ")+txHexString));
     // r should be {"txid":"cc0f352bc55c835892b22c670ead2a9082247e18ba3c258c6b4dc8f37cade693","type":"PoolSwap","valid":true,"results":{"fromAddress":"dKTimnyUteWgQCGaFe2m49MzYuU7sSVv2N","fromToken":"0","fromAmount":2.00000000,"toAddress":"dKTimnyUteWgQCGaFe2m49MzYuU7sSVv2N","toToken":"1","maxPrice": 1200000000.00000000}}
     //Check for the details
-    BOOST_CHECK_EQUAL(find_value(r.get_obj(), "txid").get_str(), "cc0f352bc55c835892b22c670ead2a9082247e18ba3c258c6b4dc8f37cade693");
-    BOOST_CHECK_EQUAL(find_value(r.get_obj(), "type").get_str(), "PoolSwap");
-    BOOST_CHECK_EQUAL(find_value(r.get_obj(), "valid").get_bool(), true);
+    BOOST_CHECK_EQUAL(r.get_obj().find_value("txid").get_str(), "cc0f352bc55c835892b22c670ead2a9082247e18ba3c258c6b4dc8f37cade693");
+    BOOST_CHECK_EQUAL(r.get_obj().find_value("type").get_str(), "PoolSwap");
+    BOOST_CHECK_EQUAL(r.get_obj().find_value("valid").get_bool(), true);
     UniValue resultsObj;
-    BOOST_CHECK_NO_THROW(resultsObj = find_value(r.get_obj(), "results").get_obj());
-    BOOST_CHECK_EQUAL(find_value(resultsObj, "fromAddress").get_str(), "dKTimnyUteWgQCGaFe2m49MzYuU7sSVv2N");
-    BOOST_CHECK_EQUAL(find_value(resultsObj, "fromToken").get_str(), "0");
-    BOOST_CHECK_EQUAL(find_value(resultsObj, "fromAmount").get_real(), 2.0);
-    BOOST_CHECK_EQUAL(find_value(resultsObj, "toAddress").get_str(), "dKTimnyUteWgQCGaFe2m49MzYuU7sSVv2N");
-    BOOST_CHECK_EQUAL(find_value(resultsObj, "toToken").get_str(), "1");
+    BOOST_CHECK_NO_THROW(resultsObj = r.get_obj().find_value("results").get_obj());
+    BOOST_CHECK_EQUAL(resultsObj.find_value("fromAddress").get_str(), "dKTimnyUteWgQCGaFe2m49MzYuU7sSVv2N");
+    BOOST_CHECK_EQUAL(resultsObj.find_value("fromToken").get_str(), "0");
+    BOOST_CHECK_EQUAL(resultsObj.find_value("fromAmount").get_real(), 2.0);
+    BOOST_CHECK_EQUAL(resultsObj.find_value("toAddress").get_str(), "dKTimnyUteWgQCGaFe2m49MzYuU7sSVv2N");
+    BOOST_CHECK_EQUAL(resultsObj.find_value("toToken").get_str(), "1");
     // After https://github.com/DeFiCh/ain/commit/307574033894dd4c889c0b39e7ac5f3833182145, 
     // max value is now capped at PoolPrice::getMaxValid()
-    BOOST_CHECK_EQUAL(find_value(resultsObj, "maxPrice").get_real(), 1200000000.00000000);
+    BOOST_CHECK_EQUAL(resultsObj.find_value("maxPrice").get_real(), 1200000000.00000000);
 
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("decodecustomtx ")+txHexString + " true"));
     BOOST_CHECK_THROW(CallRPC(std::string("decodecustomtx ")+txHexString+" extra"), std::runtime_error);
@@ -112,20 +112,20 @@ BOOST_AUTO_TEST_CASE(rpc_togglenetwork)
     UniValue r;
 
     r = CallRPC("getnetworkinfo");
-    bool netState = find_value(r.get_obj(), "networkactive").get_bool();
+    bool netState = r.get_obj().find_value("networkactive").get_bool();
     BOOST_CHECK_EQUAL(netState, true);
 
     BOOST_CHECK_NO_THROW(CallRPC("setnetworkactive false"));
     r = CallRPC("getnetworkinfo");
-    int numConnection = find_value(r.get_obj(), "connections").get_int();
+    int numConnection = r.get_obj().find_value("connections").getInt<int>();
     BOOST_CHECK_EQUAL(numConnection, 0);
 
-    netState = find_value(r.get_obj(), "networkactive").get_bool();
+    netState = r.get_obj().find_value("networkactive").get_bool();
     BOOST_CHECK_EQUAL(netState, false);
 
     BOOST_CHECK_NO_THROW(CallRPC("setnetworkactive true"));
     r = CallRPC("getnetworkinfo");
-    netState = find_value(r.get_obj(), "networkactive").get_bool();
+    netState = r.get_obj().find_value("networkactive").get_bool();
     BOOST_CHECK_EQUAL(netState, true);
 }
 
@@ -147,9 +147,9 @@ BOOST_AUTO_TEST_CASE(rpc_rawsign)
 //    interfaces.chain = interfaces::MakeChain();
 //    g_rpc_interfaces = &interfaces;
 //    r = CallRPC(std::string("signrawtransactionwithkey ")+notsigned+" [] "+prevout);
-//    BOOST_CHECK(find_value(r.get_obj(), "complete").get_bool() == false);
+//    BOOST_CHECK(r.get_obj().find_value("complete").get_bool() == false);
 //    r = CallRPC(std::string("signrawtransactionwithkey ")+notsigned+" ["+privkey1+","+privkey2+"] "+prevout);
-//    BOOST_CHECK(find_value(r.get_obj(), "complete").get_bool() == true);
+//    BOOST_CHECK(r.get_obj().find_value("complete").get_bool() == true);
 //    g_rpc_interfaces = nullptr;
 }
 
@@ -210,7 +210,7 @@ BOOST_AUTO_TEST_CASE(rpc_format_monetary_values)
 static UniValue ValueFromString(const std::string &str)
 {
     UniValue value;
-    BOOST_CHECK(value.setNumStr(str));
+    value.setNumStr(str);
     return value;
 }
 
@@ -278,7 +278,7 @@ BOOST_AUTO_TEST_CASE(rpc_ban)
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("listbanned")));
     UniValue ar = r.get_array();
     UniValue o1 = ar[0].get_obj();
-    UniValue adr = find_value(o1, "address");
+    UniValue adr = o1.find_value("address");
     BOOST_CHECK_EQUAL(adr.get_str(), "127.0.0.0/32");
     BOOST_CHECK_NO_THROW(CallRPC(std::string("setban 127.0.0.0 remove")));
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("listbanned")));
@@ -289,10 +289,10 @@ BOOST_AUTO_TEST_CASE(rpc_ban)
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("listbanned")));
     ar = r.get_array();
     o1 = ar[0].get_obj();
-    adr = find_value(o1, "address");
-    UniValue banned_until = find_value(o1, "banned_until");
+    adr = o1.find_value("address");
+    UniValue banned_until = o1.find_value("banned_until");
     BOOST_CHECK_EQUAL(adr.get_str(), "127.0.0.0/24");
-    BOOST_CHECK_EQUAL(banned_until.get_int64(), 9907731200); // absolute time check
+    BOOST_CHECK_EQUAL(banned_until.getInt<int64_t>(), 9907731200); // absolute time check
 
     BOOST_CHECK_NO_THROW(CallRPC(std::string("clearbanned")));
 
@@ -300,12 +300,12 @@ BOOST_AUTO_TEST_CASE(rpc_ban)
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("listbanned")));
     ar = r.get_array();
     o1 = ar[0].get_obj();
-    adr = find_value(o1, "address");
-    banned_until = find_value(o1, "banned_until");
+    adr = o1.find_value("address");
+    banned_until = o1.find_value("banned_until");
     BOOST_CHECK_EQUAL(adr.get_str(), "127.0.0.0/24");
     int64_t now = GetTime();
-    BOOST_CHECK(banned_until.get_int64() > now);
-    BOOST_CHECK(banned_until.get_int64()-now <= 200);
+    BOOST_CHECK(banned_until.getInt<int64_t>() > now);
+    BOOST_CHECK(banned_until.getInt<int64_t>()-now <= 200);
 
     // must throw an exception because 127.0.0.1 is in already banned subnet range
     BOOST_CHECK_THROW(r = CallRPC(std::string("setban 127.0.0.1 add")), std::runtime_error);
@@ -331,7 +331,7 @@ BOOST_AUTO_TEST_CASE(rpc_ban)
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("listbanned")));
     ar = r.get_array();
     o1 = ar[0].get_obj();
-    adr = find_value(o1, "address");
+    adr = o1.find_value("address");
     BOOST_CHECK_EQUAL(adr.get_str(), "fe80::202:b3ff:fe1e:8329/128");
 
     BOOST_CHECK_NO_THROW(CallRPC(std::string("clearbanned")));
@@ -339,7 +339,7 @@ BOOST_AUTO_TEST_CASE(rpc_ban)
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("listbanned")));
     ar = r.get_array();
     o1 = ar[0].get_obj();
-    adr = find_value(o1, "address");
+    adr = o1.find_value("address");
     BOOST_CHECK_EQUAL(adr.get_str(), "2001:db8::/30");
 
     BOOST_CHECK_NO_THROW(CallRPC(std::string("clearbanned")));
@@ -347,7 +347,7 @@ BOOST_AUTO_TEST_CASE(rpc_ban)
     BOOST_CHECK_NO_THROW(r = CallRPC(std::string("listbanned")));
     ar = r.get_array();
     o1 = ar[0].get_obj();
-    adr = find_value(o1, "address");
+    adr = o1.find_value("address");
     BOOST_CHECK_EQUAL(adr.get_str(), "2001:4d48:ac57:400:cacf:e9ff:fe1d:9c63/128");
 }
 
@@ -356,22 +356,22 @@ BOOST_AUTO_TEST_CASE(rpc_convert_values_generatetoaddress)
     UniValue result;
 
     BOOST_CHECK_NO_THROW(result = RPCConvertValues("generatetoaddress", {"101", "mkESjLZW66TmHhiFX8MCaBjrhZ543PPh9a"}));
-    BOOST_CHECK_EQUAL(result[0].get_int(), 101);
+    BOOST_CHECK_EQUAL(result[0].getInt<int>(), 101);
     BOOST_CHECK_EQUAL(result[1].get_str(), "mkESjLZW66TmHhiFX8MCaBjrhZ543PPh9a");
 
     BOOST_CHECK_NO_THROW(result = RPCConvertValues("generatetoaddress", {"101", "mhMbmE2tE9xzJYCV9aNC8jKWN31vtGrguU"}));
-    BOOST_CHECK_EQUAL(result[0].get_int(), 101);
+    BOOST_CHECK_EQUAL(result[0].getInt<int>(), 101);
     BOOST_CHECK_EQUAL(result[1].get_str(), "mhMbmE2tE9xzJYCV9aNC8jKWN31vtGrguU");
 
     BOOST_CHECK_NO_THROW(result = RPCConvertValues("generatetoaddress", {"1", "mkESjLZW66TmHhiFX8MCaBjrhZ543PPh9a", "9"}));
-    BOOST_CHECK_EQUAL(result[0].get_int(), 1);
+    BOOST_CHECK_EQUAL(result[0].getInt<int>(), 1);
     BOOST_CHECK_EQUAL(result[1].get_str(), "mkESjLZW66TmHhiFX8MCaBjrhZ543PPh9a");
-    BOOST_CHECK_EQUAL(result[2].get_int(), 9);
+    BOOST_CHECK_EQUAL(result[2].getInt<int>(), 9);
 
     BOOST_CHECK_NO_THROW(result = RPCConvertValues("generatetoaddress", {"1", "mhMbmE2tE9xzJYCV9aNC8jKWN31vtGrguU", "9"}));
-    BOOST_CHECK_EQUAL(result[0].get_int(), 1);
+    BOOST_CHECK_EQUAL(result[0].getInt<int>(), 1);
     BOOST_CHECK_EQUAL(result[1].get_str(), "mhMbmE2tE9xzJYCV9aNC8jKWN31vtGrguU");
-    BOOST_CHECK_EQUAL(result[2].get_int(), 9);
+    BOOST_CHECK_EQUAL(result[2].getInt<int>(), 9);
 }
 
 BOOST_AUTO_TEST_CASE(rpc_getblockstats_calculate_percentiles_by_weight)

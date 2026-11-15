@@ -193,7 +193,7 @@ CTransactionRef sign(CMutableTransaction &mtx, CWallet *const pwallet, CTransact
     pwallet->chain().findCoins(coins);  // LOCK2(cs_main, ::mempool.cs);
 
     UniValue signedVal = SignTransaction(mtx, prevtxs, pwallet, coins, false, {} /*hashType*/);
-    if (signedVal["complete"].getBool()) {
+    if (signedVal["complete"].isTrue()) {
         if (!DecodeHexTx(mtx, signedVal["hex"].get_str(), true)) {
             throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Can't decode signed auth TX");
         }
@@ -281,11 +281,11 @@ static std::vector<CTxIn> GetInputs(const UniValue &inputs) {
 
         uint256 txid = ParseHashO(o, "txid");
 
-        const UniValue &vout_v = find_value(o, "vout");
+        const UniValue &vout_v = o.find_value("vout");
         if (!vout_v.isNum()) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, missing vout key");
         }
-        int nOutput = vout_v.get_int();
+        int nOutput = vout_v.getInt<int>();
         if (nOutput < 0) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, vout must be positive");
         }
@@ -472,7 +472,7 @@ std::vector<CTxIn> GetAuthInputsSmart(CWalletCoinsUnlocker &pwallet,
         try {
             optAuthTx = CreateAuthTx(pwallet, notFoundYet, txVersion, coinSelectOpts);  // success or throw
         } catch (const UniValue &objError) {
-            throw JSONRPCError(objError["code"].get_int(), "Add-on auth TX failed: " + objError["message"].getValStr());
+            throw JSONRPCError(objError["code"].getInt<int>(), "Add-on auth TX failed: " + objError["message"].getValStr());
         }
         // if we are here - we've got signed optional auth tx - add all of the outputs into inputs (to do not miss any
         // coins for sure)
@@ -837,7 +837,7 @@ UniValue setgovheight(const JSONRPCRequest &request) {
     }
     varStream << name << *gv;
 
-    const uint32_t startHeight = request.params[1].get_int();
+    const uint32_t startHeight = request.params[1].getInt<int>();
 
     CDataStream metadata(DfTxMarker, SER_NETWORK, PROTOCOL_VERSION);
     metadata << static_cast<unsigned char>(CustomTxType::SetGovVariableHeight) << varStream << startHeight;
@@ -939,7 +939,7 @@ UniValue unsetgovheight(const JSONRPCRequest &request) {
         }
     }
 
-    const uint32_t unsetHeight = request.params[1].get_int();
+    const uint32_t unsetHeight = request.params[1].getInt<int>();
 
     CGovernanceUnsetHeightMessage unsetGovMsg{govs, unsetHeight};
 
@@ -1254,7 +1254,7 @@ UniValue isappliedcustomtx(const JSONRPCRequest &request) {
     result.setBool(false);
 
     uint256 txHash = ParseHashV(request.params[0], "txid");
-    int blockHeight = request.params[1].get_int();
+    int blockHeight = request.params[1].getInt<int>();
 
     CBlockIndex *blockindex;
     {

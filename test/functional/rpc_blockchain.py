@@ -258,7 +258,7 @@ class BlockchainTest(DefiTestFramework):
         # Test `getchaintxstats` invalid `nblocks`
         assert_raises_rpc_error(
             -1,
-            "JSON value is not an integer as expected",
+            "is not of expected type number",
             self.nodes[0].getchaintxstats,
             "",
         )
@@ -278,7 +278,7 @@ class BlockchainTest(DefiTestFramework):
         # Test `getchaintxstats` invalid `blockhash`
         assert_raises_rpc_error(
             -1,
-            "JSON value is not a string as expected",
+            "is not of expected type string",
             self.nodes[0].getchaintxstats,
             blockhash=0,
         )

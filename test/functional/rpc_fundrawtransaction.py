@@ -313,7 +313,7 @@ class RawTransactionsTest(DefiTestFramework):
         rawtx = self.nodes[2].createrawtransaction(inputs, outputs)
         assert_raises_rpc_error(
             -1,
-            "JSON value is not a string as expected",
+            "is not of expected type string",
             self.nodes[2].fundrawtransaction,
             rawtx,
             {"change_type": None},

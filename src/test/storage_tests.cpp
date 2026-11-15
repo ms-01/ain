@@ -19,7 +19,7 @@ class HasReason {
 public:
     explicit HasReason(const std::string& reason) : m_reason(reason) {}
     bool operator() (const UniValue& e) const {
-        return find_value(e, "message").get_str().find(m_reason) != std::string::npos;
+        return e.find_value("message").get_str().find(m_reason) != std::string::npos;
     };
 private:
     const std::string m_reason;
@@ -42,7 +42,7 @@ UniValue CallRPC(std::string args)
         return result;
     }
     catch (const UniValue& objError) {
-        throw std::runtime_error(find_value(objError, "message").get_str());
+        throw std::runtime_error(objError.find_value("message").get_str());
     }
 }
 

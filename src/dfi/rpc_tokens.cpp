@@ -113,18 +113,18 @@ UniValue createtoken(const JSONRPCRequest &request) {
     token.symbol = trim_ws(metaObj["symbol"].getValStr()).substr(0, CToken::MAX_TOKEN_SYMBOL_LENGTH);
     token.name = trim_ws(metaObj["name"].getValStr()).substr(0, CToken::MAX_TOKEN_NAME_LENGTH);
     token.flags =
-        metaObj["isDAT"].getBool() ? token.flags | (uint8_t)CToken::TokenFlags::DAT : token.flags;  // setting isDAT
+        metaObj["isDAT"].isTrue() ? token.flags | (uint8_t)CToken::TokenFlags::DAT : token.flags;  // setting isDAT
 
     if (token.name.empty()) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Token name should not be empty");
     }
 
     if (!metaObj["tradeable"].isNull()) {
-        token.flags = metaObj["tradeable"].getBool() ? token.flags | uint8_t(CToken::TokenFlags::Tradeable)
+        token.flags = metaObj["tradeable"].isTrue() ? token.flags | uint8_t(CToken::TokenFlags::Tradeable)
                                                      : token.flags & ~uint8_t(CToken::TokenFlags::Tradeable);
     }
     if (!metaObj["mintable"].isNull()) {
-        token.flags = metaObj["mintable"].getBool() ? token.flags | uint8_t(CToken::TokenFlags::Mintable)
+        token.flags = metaObj["mintable"].isTrue() ? token.flags | uint8_t(CToken::TokenFlags::Mintable)
                                                     : token.flags & ~uint8_t(CToken::TokenFlags::Mintable);
     }
 
@@ -142,7 +142,7 @@ UniValue createtoken(const JSONRPCRequest &request) {
     auto [view, accountView, vaultView] = GetSnapshots();
     CTransactionRef optAuthTx;
     std::set<CScript> auths;
-    const auto isDAT = metaObj["isDAT"].getBool();
+    const auto isDAT = metaObj["isDAT"].isTrue();
     rawTx.vin = GetAuthInputsSmart(
         pwallet, rawTx.nVersion, auths, isDAT, optAuthTx, txInputs, *view, request.metadata.coinSelectOpts, isDAT);
 
@@ -304,24 +304,24 @@ UniValue updatetoken(const JSONRPCRequest &request) {
         tokenImpl.name = trim_ws(metaObj["name"].getValStr()).substr(0, CToken::MAX_TOKEN_NAME_LENGTH);
     }
     if (!metaObj["isDAT"].isNull()) {
-        tokenImpl.flags = metaObj["isDAT"].getBool() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::DAT
+        tokenImpl.flags = metaObj["isDAT"].isTrue() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::DAT
                                                      : tokenImpl.flags & ~(uint8_t)CToken::TokenFlags::DAT;
     }
     if (!metaObj["tradeable"].isNull()) {
-        tokenImpl.flags = metaObj["tradeable"].getBool() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Tradeable
+        tokenImpl.flags = metaObj["tradeable"].isTrue() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Tradeable
                                                          : tokenImpl.flags & ~(uint8_t)CToken::TokenFlags::Tradeable;
     }
     if (!metaObj["mintable"].isNull()) {
-        tokenImpl.flags = metaObj["mintable"].getBool() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Mintable
+        tokenImpl.flags = metaObj["mintable"].isTrue() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Mintable
                                                         : tokenImpl.flags & ~(uint8_t)CToken::TokenFlags::Mintable;
     }
     if (!metaObj["finalize"].isNull()) {
         tokenImpl.flags =
-            metaObj["finalize"].getBool() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Finalized : tokenImpl.flags;
+            metaObj["finalize"].isTrue() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Finalized : tokenImpl.flags;
     }
     const auto isDeprecated = tokenImpl.IsDeprecated();
     if (!metaObj["deprecate"].isNull()) {
-        tokenImpl.flags = metaObj["deprecate"].getBool() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Deprecated
+        tokenImpl.flags = metaObj["deprecate"].isTrue() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Deprecated
                                                          : tokenImpl.flags & ~(uint8_t)CToken::TokenFlags::Deprecated;
     }
 
@@ -375,7 +375,7 @@ UniValue updatetoken(const JSONRPCRequest &request) {
                                                request.metadata.coinSelectOpts,
                                                foundationAuth);
             } else {
-                throw JSONRPCError(error["code"].get_int(), error["message"].getValStr());
+                throw JSONRPCError(error["code"].getInt<int>(), error["message"].getValStr());
             }
         }
     }
@@ -388,7 +388,7 @@ UniValue updatetoken(const JSONRPCRequest &request) {
                  << static_cast<CToken>(tokenImpl) << newCollateralAddress;
     } else if (targetHeight < Params().GetConsensus().DF2BayfrontHeight) {
         metadata << static_cast<unsigned char>(CustomTxType::UpdateToken) << tokenImpl.creationTx
-                 << metaObj["isDAT"].getBool();
+                 << metaObj["isDAT"].isTrue();
     } else {
         metadata << static_cast<unsigned char>(CustomTxType::UpdateTokenAny) << tokenImpl.creationTx
                  << static_cast<CToken>(tokenImpl);  // casting to base token's data
@@ -518,14 +518,14 @@ UniValue listtokens(const JSONRPCRequest &request) {
         if (request.params.size() > 0) {
             UniValue paginationObj = request.params[0].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
-                start.v = (uint32_t)paginationObj["start"].get_int();
+                start.v = (uint32_t)paginationObj["start"].getInt<int>();
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
             if (!including_start) {
                 ++start.v;

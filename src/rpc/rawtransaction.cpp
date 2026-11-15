@@ -159,7 +159,7 @@ static UniValue getrawtransaction(const JSONRPCRequest& request)
     // Accept either a bool (true) or a num (>=1) to indicate verbose output.
     bool fVerbose = false;
     if (!request.params[1].isNull()) {
-        fVerbose = request.params[1].isNum() ? (request.params[1].get_int() != 0) : request.params[1].get_bool();
+        fVerbose = request.params[1].isNum() ? (request.params[1].getInt<int>() != 0) : request.params[1].get_bool();
     }
 
     if (!request.params[2].isNull()) {
@@ -547,7 +547,7 @@ static UniValue decodescript(const JSONRPCRequest& request)
     ScriptPubKeyToUniv(script, r, /* fIncludeHex */ false);
 
     UniValue type;
-    type = find_value(r, "type");
+    type = r.find_value("type");
 
     if (type.isStr() && type.get_str() != "scripthash") {
         // P2SH cannot be wrapped in a P2SH. If this script is already a P2SH,

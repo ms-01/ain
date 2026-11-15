@@ -45,7 +45,7 @@ void RPCTypeCheckObj(const UniValue& o,
     bool fStrict)
 {
     for (const auto& t : typesExpected) {
-        const UniValue& v = find_value(o, t.first);
+        const UniValue& v = o.find_value(t.first);
         if (!fAllowNull && v.isNull())
             throw JSONRPCError(RPC_TYPE_ERROR, strprintf("Missing %s", t.first));
 
@@ -103,7 +103,7 @@ uint256 ParseHashV(const UniValue& v, std::string strName)
 }
 uint256 ParseHashO(const UniValue& o, std::string strKey)
 {
-    return ParseHashV(find_value(o, strKey), strKey);
+    return ParseHashV(o.find_value(strKey), strKey);
 }
 std::vector<unsigned char> ParseHexV(const UniValue& v, std::string strName)
 {
@@ -116,7 +116,7 @@ std::vector<unsigned char> ParseHexV(const UniValue& v, std::string strName)
 }
 std::vector<unsigned char> ParseHexO(const UniValue& o, std::string strKey)
 {
-    return ParseHexV(find_value(o, strKey), strKey);
+    return ParseHexV(o.find_value(strKey), strKey);
 }
 
 std::string HelpExampleCli(const std::string& methodname, const std::string& args)
@@ -271,7 +271,7 @@ UniValue DescribeAddress(const CTxDestination& dest)
 
 unsigned int ParseConfirmTarget(const UniValue& value, unsigned int max_target)
 {
-    int target = value.get_int();
+    int target = value.getInt<int>();
     if (target < 1 || (unsigned int)target > max_target) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Invalid conf_target, must be between %u - %u", 1, max_target));
     }
@@ -691,11 +691,11 @@ std::string RPCArg::ToString(const bool oneline) const
 static std::pair<int64_t, int64_t> ParseRange(const UniValue& value)
 {
     if (value.isNum()) {
-        return {0, value.get_int64()};
+        return {0, value.getInt<int64_t>()};
     }
     if (value.isArray() && value.size() == 2 && value[0].isNum() && value[1].isNum()) {
-        int64_t low = value[0].get_int64();
-        int64_t high = value[1].get_int64();
+        int64_t low = value[0].getInt<int64_t>();
+        int64_t high = value[1].getInt<int64_t>();
         if (low > high) throw JSONRPCError(RPC_INVALID_PARAMETER, "Range specified as [begin,end] must not have begin after end");
         return {low, high};
     }
@@ -725,10 +725,10 @@ std::vector<CScript> EvalDescriptorStringOrObject(const UniValue& scanobject, Fl
     if (scanobject.isStr()) {
         desc_str = scanobject.get_str();
     } else if (scanobject.isObject()) {
-        UniValue desc_uni = find_value(scanobject, "desc");
+        UniValue desc_uni = scanobject.find_value("desc");
         if (desc_uni.isNull()) throw JSONRPCError(RPC_INVALID_PARAMETER, "Descriptor needs to be provided in scan object");
         desc_str = desc_uni.get_str();
-        UniValue range_uni = find_value(scanobject, "range");
+        UniValue range_uni = scanobject.find_value("range");
         if (!range_uni.isNull()) {
             range = ParseDescriptorRange(range_uni);
         }

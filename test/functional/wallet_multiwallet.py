@@ -404,7 +404,7 @@ class MultiWalletTest(DefiTestFramework):
 
         # Test `unloadwallet` errors
         assert_raises_rpc_error(
-            -1, "JSON value is not a string as expected", self.nodes[0].unloadwallet
+            -1, "is not of expected type string", self.nodes[0].unloadwallet
         )
         assert_raises_rpc_error(
             -18,

@@ -588,7 +588,7 @@ UniValue listvaults(const JSONRPCRequest &request) {
             state = StringToVaultState(optionsObj["state"].getValStr());
         }
         if (!optionsObj["verbose"].isNull()) {
-            verbose = optionsObj["verbose"].getBool();
+            verbose = optionsObj["verbose"].isTrue();
         }
     }
 
@@ -600,14 +600,14 @@ UniValue listvaults(const JSONRPCRequest &request) {
         if (request.params.size() > 1) {
             UniValue paginationObj = request.params[1].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
                 start = ParseHashV(paginationObj["start"], "start");
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
         }
         if (limit == 0) {
@@ -1101,7 +1101,7 @@ UniValue placeauctionbid(const JSONRPCRequest &request) {
 
     // decode vaultId
     CVaultId vaultId = ParseHashV(request.params[0], "vaultId");
-    uint32_t index = request.params[1].get_int();
+    uint32_t index = request.params[1].getInt<int>();
     CTokenAmount amount = DecodeAmount(pwallet->chain(), request.params[3].get_str(), "amount");
 
     auto [view, accountView, vaultView] = GetSnapshots();
@@ -1219,7 +1219,7 @@ UniValue listauctions(const JSONRPCRequest &request) {
         if (request.params.size() > 0) {
             UniValue paginationObj = request.params[0].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 UniValue startObj = paginationObj["start"].get_obj();
@@ -1228,11 +1228,11 @@ UniValue listauctions(const JSONRPCRequest &request) {
                     vaultId = ParseHashV(startObj["vaultId"], "vaultId");
                 }
                 if (!startObj["height"].isNull()) {
-                    height = startObj["height"].get_int64();
+                    height = startObj["height"].getInt<int64_t>();
                 }
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
         }
         if (limit == 0) {
@@ -1331,16 +1331,16 @@ UniValue listauctionhistory(const JSONRPCRequest &request) {
         if (request.params.size() > 1) {
             UniValue paginationObj = request.params[1].get_obj();
             if (!paginationObj["index"].isNull()) {
-                start.index = paginationObj["index"].get_int();
+                start.index = paginationObj["index"].getInt<int>();
             }
             if (!paginationObj["vaultId"].isNull()) {
                 start.vaultId = ParseHashV(paginationObj["vaultId"], "vaultId");
             }
             if (!paginationObj["maxBlockHeight"].isNull()) {
-                start.blockHeight = paginationObj["maxBlockHeight"].get_int64();
+                start.blockHeight = paginationObj["maxBlockHeight"].getInt<int64_t>();
             }
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
         }
         if (limit == 0) {
@@ -1573,11 +1573,11 @@ UniValue listvaulthistory(const JSONRPCRequest &request) {
                         true);
 
         if (!optionsObj["maxBlockHeight"].isNull()) {
-            maxBlockHeight = (uint32_t)optionsObj["maxBlockHeight"].get_int64();
+            maxBlockHeight = (uint32_t)optionsObj["maxBlockHeight"].getInt<int64_t>();
         }
 
         if (!optionsObj["depth"].isNull()) {
-            depth = (uint32_t)optionsObj["depth"].get_int64();
+            depth = (uint32_t)optionsObj["depth"].getInt<int64_t>();
         }
 
         if (!optionsObj["token"].isNull()) {
@@ -1594,7 +1594,7 @@ UniValue listvaulthistory(const JSONRPCRequest &request) {
         }
 
         if (!optionsObj["limit"].isNull()) {
-            limit = (uint32_t)optionsObj["limit"].get_int64();
+            limit = (uint32_t)optionsObj["limit"].getInt<int64_t>();
         }
 
         if (limit == 0) {
@@ -1847,7 +1847,7 @@ UniValue estimateloan(const JSONRPCRequest &request) {
     auto scheme = view->GetLoanScheme(vault->schemeId);
     uint32_t ratio = scheme->ratio;
     if (request.params.size() > 2) {
-        ratio = (size_t)request.params[2].get_int64();
+        ratio = (size_t)request.params[2].getInt<int64_t>();
     }
 
     auto collaterals = view->GetVaultCollaterals(vaultId);
@@ -1943,7 +1943,7 @@ UniValue estimatecollateral(const JSONRPCRequest &request) {
     }
 
     const CBalances loanBalances = DecodeAmounts(pwallet->chain(), request.params[0], "");
-    auto ratio = request.params[1].get_int();
+    auto ratio = request.params[1].getInt<int>();
 
     std::map<std::string, UniValue> collateralSplits;
     if (request.params.size() > 2) {

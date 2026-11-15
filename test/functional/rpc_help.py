@@ -26,7 +26,7 @@ class HelpRpcTest(DefiTestFramework):
 
         # invalid argument
         assert_raises_rpc_error(
-            -1, "JSON value is not a string as expected", node.help, 0
+            -1, "is not of expected type string", node.help, 0
         )
 
         # help of unknown command

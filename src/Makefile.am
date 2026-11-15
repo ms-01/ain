@@ -3,7 +3,7 @@
 # file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 SUBDIRS = ../lib
-DIST_SUBDIRS = secp256k1 univalue
+DIST_SUBDIRS = secp256k1
 
 AM_LDFLAGS = $(PTHREAD_CFLAGS) $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) $(GPROF_LDFLAGS) $(SANITIZER_LDFLAGS)
 AM_CXXFLAGS = $(DEBUG_CXXFLAGS) $(HARDENED_CXXFLAGS) $(WARN_CXXFLAGS) $(NOWARN_CXXFLAGS) $(ERROR_CXXFLAGS) $(GPROF_CXXFLAGS) $(SANITIZER_CXXFLAGS)
@@ -11,13 +11,15 @@ AM_CPPFLAGS = $(DEBUG_CPPFLAGS) $(HARDENED_CPPFLAGS)
 AM_LIBTOOLFLAGS = --preserve-dup-deps
 EXTRA_LIBRARIES =
 
-if EMBEDDED_UNIVALUE
-LIBUNIVALUE = univalue/libunivalue.la
-$(LIBUNIVALUE): $(wildcard univalue/lib/*) $(wildcard univalue/include/*)
-	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C $(@D) $(@F)
-else
-LIBUNIVALUE = $(UNIVALUE_LIBS)
-endif
+LIBUNIVALUE = libunivalue.a
+EXTRA_LIBRARIES += $(LIBUNIVALUE)
+libunivalue_a_SOURCES = \
+  univalue/lib/univalue.cpp \
+  univalue/lib/univalue_get.cpp \
+  univalue/lib/univalue_read.cpp \
+  univalue/lib/univalue_write.cpp
+libunivalue_a_CPPFLAGS = $(AM_CPPFLAGS) $(UNIVALUE_CFLAGS)
+libunivalue_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 
 LIBDEFI_SPV=libdefi_spv.a
 LIBDEFI_SPV_INCLUDES = \
@@ -826,7 +828,7 @@ CLEANFILES += policy/*.gcda policy/*.gcno
 CLEANFILES += primitives/*.gcda primitives/*.gcno
 CLEANFILES += script/*.gcda script/*.gcno
 CLEANFILES += support/*.gcda support/*.gcno
-CLEANFILES += univalue/*.gcda univalue/*.gcno
+CLEANFILES += univalue/lib/*.gcda univalue/lib/*.gcno
 CLEANFILES += wallet/*.gcda wallet/*.gcno
 CLEANFILES += wallet/test/*.gcda wallet/test/*.gcno
 CLEANFILES += zmq/*.gcda zmq/*.gcno
@@ -844,7 +846,6 @@ $(top_srcdir)/$(subdir)/config/defi-config.h.in:  $(am__configure_deps)
 
 clean-local:
 	-$(MAKE) -C secp256k1 clean
-	-$(MAKE) -C univalue clean
 	-rm -f leveldb/*/*.gcda leveldb/*/*.gcno leveldb/helpers/memenv/*.gcda leveldb/helpers/memenv/*.gcno
 	-rm -f config.h
 	-rm -rf test/__pycache__

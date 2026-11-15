@@ -124,7 +124,7 @@ UniValue spv_createanchor(const JSONRPCRequest& request)
     {
         UniValue const & input = inputs[idx].get_obj();
         ParseHashV(input["txid"], "txid");
-        inputsData.push_back({ input["txid"].getValStr(), input["vout"].get_int(), (uint64_t) input["amount"].get_int64(), input["privkey"].getValStr() });
+        inputsData.push_back({ input["txid"].getValStr(), input["vout"].getInt<int>(), (uint64_t) input["amount"].getInt<int64_t>(), input["privkey"].getValStr() });
     }
 
     std::string rewardAddress = request.params[1].getValStr();
@@ -133,9 +133,9 @@ UniValue spv_createanchor(const JSONRPCRequest& request)
     {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "rewardAddress (" + rewardAddress + ") does not refer to a P2PKH or P2SH or P2WPKH address");
     }
-    bool const send = request.params[2].isNull() ? true : request.params[2].getBool();
+    bool const send = request.params[2].isNull() ? true : request.params[2].isTrue();
 
-    int64_t const feerate = request.params[3].isNull() ? spv::DEFAULT_BTC_FEERATE : request.params[3].get_int64();
+    int64_t const feerate = request.params[3].isNull() ? spv::DEFAULT_BTC_FEERATE : request.params[3].getInt<int64_t>();
     if (feerate <= 0) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Feerate should be > 0!");
     }
@@ -290,7 +290,7 @@ UniValue spv_estimateanchorcost(const JSONRPCRequest& request)
         },
     }.Check(request);
 
-    int64_t const feerate = request.params[0].isNull() ? spv::DEFAULT_BTC_FEERATE : request.params[0].get_int64();
+    int64_t const feerate = request.params[0].isNull() ? spv::DEFAULT_BTC_FEERATE : request.params[0].getInt<int64_t>();
     if (feerate <= 0) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Feerate should be > 0!");
     }
@@ -325,7 +325,7 @@ UniValue spv_rescan(const JSONRPCRequest& request)
         },
     }.Check(request);
 
-    int height = request.params[0].isNull() ? 0 : request.params[0].get_int();
+    int height = request.params[0].isNull() ? 0 : request.params[0].getInt<int>();
 
     if (!spv::pspv)
         throw JSONRPCError(RPC_INVALID_REQUEST, "spv module disabled");
@@ -446,12 +446,12 @@ UniValue spv_listanchors(const JSONRPCRequest& request)
 
     RPCTypeCheck(request.params, { UniValue::VNUM, UniValue::VNUM, UniValue::VNUM, UniValue::VNUM, UniValue::VNUM, UniValue::VNUM }, true);
 
-    const int minBtcHeight = request.params.size() > 0 ? request.params[0].get_int() : -1;
-    const int maxBtcHeight = request.params.size() > 1 ? request.params[1].get_int() : -1;
-    const int minConfs = request.params.size() > 2 ? request.params[2].get_int() : -1;
-    const int maxConfs = request.params.size() > 3 ? request.params[3].get_int() : -1;
-    const int startBtcHeight = request.params.size() > 4 ? request.params[4].get_int() : -1;
-    const int limit = request.params.size() > 5 ? request.params[5].get_int() : std::numeric_limits<int>::max();
+    const int minBtcHeight = request.params.size() > 0 ? request.params[0].getInt<int>() : -1;
+    const int maxBtcHeight = request.params.size() > 1 ? request.params[1].getInt<int>() : -1;
+    const int minConfs = request.params.size() > 2 ? request.params[2].getInt<int>() : -1;
+    const int maxConfs = request.params.size() > 3 ? request.params[3].getInt<int>() : -1;
+    const int startBtcHeight = request.params.size() > 4 ? request.params[4].getInt<int>() : -1;
+    const int limit = request.params.size() > 5 ? request.params[5].getInt<int>() : std::numeric_limits<int>::max();
 
     // ! before cs_main lock
     uint32_t const tmp = spv::pspv->GetLastBlockHeight();
@@ -785,7 +785,7 @@ UniValue spv_setlastheight(const JSONRPCRequest& request)
     if (!fake_spv)
         throw JSONRPCError(RPC_INVALID_REQUEST, "command disabled");
 
-    fake_spv->lastBlockHeight = request.params[0].get_int();
+    fake_spv->lastBlockHeight = request.params[0].getInt<int>();
     panchors->CheckActiveAnchor(fake_spv->lastBlockHeight, true);
     return UniValue();
 }
@@ -851,7 +851,7 @@ CScript CreateScriptForHTLC(const JSONRPCRequest& request, uint32_t& blocks, std
             throw JSONRPCError(RPC_TYPE_ERROR, "Error parsing JSON: " + request.params[3].get_str());
         }
 
-        blocks = timeout[0].get_int();
+        blocks = timeout[0].getInt<int>();
     }
 
     if (blocks >= CTxIn::SEQUENCE_LOCKTIME_TYPE_FLAG)
@@ -1070,7 +1070,7 @@ UniValue spv_claimhtlc(const JSONRPCRequest& request)
     }
 
     const auto pair = spv::pspv->PrepareHTLCTransaction(pwallet, request.params[0].get_str().c_str(), request.params[1].get_str().c_str(),
-            request.params[2].get_str(), request.params[3].isNull() ? spv::DEFAULT_BTC_FEE_PER_KB : request.params[3].get_int64(), true);
+            request.params[2].get_str(), request.params[3].isNull() ? spv::DEFAULT_BTC_FEE_PER_KB : request.params[3].getInt<int64_t>(), true);
 
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", pair.first);
@@ -1112,7 +1112,7 @@ UniValue spv_refundhtlc(const JSONRPCRequest& request)
     }
 
     const auto pair = spv::pspv->PrepareHTLCTransaction(pwallet, request.params[0].get_str().c_str(), request.params[1].get_str().c_str(),
-            "", request.params[3].isNull() ? spv::DEFAULT_BTC_FEE_PER_KB : request.params[3].get_int64(), false);
+            "", request.params[3].isNull() ? spv::DEFAULT_BTC_FEE_PER_KB : request.params[3].getInt<int64_t>(), false);
 
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", pair.first);
@@ -1151,7 +1151,7 @@ UniValue spv_refundhtlcall(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_MISC_ERROR, "spv not connected");
     }
 
-    const auto feeRate = request.params[1].isNull() ? spv::DEFAULT_BTC_FEE_PER_KB : request.params[1].get_int64();
+    const auto feeRate = request.params[1].isNull() ? spv::DEFAULT_BTC_FEE_PER_KB : request.params[1].getInt<int64_t>();
 
     return spv::pspv->RefundAllHTLC(pwallet, request.params[0].get_str().c_str(), feeRate);
 }
@@ -1364,7 +1364,7 @@ static UniValue spv_sendtoaddress(const JSONRPCRequest& request)
 
     EnsureWalletIsUnlocked(pwallet);
 
-    uint64_t feerate = request.params[2].isNull() ? spv::DEFAULT_BTC_FEE_PER_KB : request.params[2].get_int64();
+    uint64_t feerate = request.params[2].isNull() ? spv::DEFAULT_BTC_FEE_PER_KB : request.params[2].getInt<int64_t>();
     if (feerate < spv::DEFAULT_BTC_FEERATE)
     {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Fee size below minimum acceptable amount");
@@ -1462,7 +1462,7 @@ static UniValue spv_listreceivedbyaddress(const JSONRPCRequest& request)
     int nMinDepth = 1;
     if (!request.params[0].isNull())
     {
-        nMinDepth = request.params[0].get_int();
+        nMinDepth = request.params[0].getInt<int>();
     }
 
     // Address filter

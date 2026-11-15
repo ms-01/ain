@@ -74,7 +74,7 @@ class PrioritiseTransactionTest(DefiTestFramework):
         txid = "1d1d4e24ed99057e84c3f80fd8fbec79ed9e1acee37da269356ecea000000000"
         assert_raises_rpc_error(
             -1,
-            "JSON value is not a number as expected",
+            "is not of expected type number",
             self.nodes[0].prioritisetransaction,
             txid,
             "foo",
@@ -92,7 +92,7 @@ class PrioritiseTransactionTest(DefiTestFramework):
         # Test `prioritisetransaction` invalid `fee_delta`
         assert_raises_rpc_error(
             -1,
-            "JSON value is not an integer as expected",
+            "is not of expected type number",
             self.nodes[0].prioritisetransaction,
             txid=txid,
             fee_delta="foo",

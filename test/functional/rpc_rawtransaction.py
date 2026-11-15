@@ -102,14 +102,14 @@ class RawTransactionsTest(DefiTestFramework):
         )
         assert_raises_rpc_error(
             -1,
-            "JSON value is not an object as expected",
+            "is not of expected type object",
             self.nodes[0].createrawtransaction,
             ["foo"],
             {},
         )
         assert_raises_rpc_error(
             -1,
-            "JSON value is not a string as expected",
+            "is not of expected type string",
             self.nodes[0].createrawtransaction,
             [{}],
             {},
@@ -166,7 +166,7 @@ class RawTransactionsTest(DefiTestFramework):
         address2 = self.nodes[0].getnewaddress()
         assert_raises_rpc_error(
             -1,
-            "JSON value is not an array as expected",
+            "is not of expected type array",
             self.nodes[0].createrawtransaction,
             [],
             "foo",
@@ -462,7 +462,7 @@ class RawTransactionsTest(DefiTestFramework):
         # An invalid block hash should raise the correct errors
         assert_raises_rpc_error(
             -1,
-            "JSON value is not a string as expected",
+            "is not of expected type string",
             self.nodes[0].getrawtransaction,
             tx,
             True,
@@ -718,17 +718,17 @@ class RawTransactionsTest(DefiTestFramework):
 
         # 6. invalid parameters - supply txid and string "Flase"
         assert_raises_rpc_error(
-            -1, "not a boolean", self.nodes[0].getrawtransaction, txId, "Flase"
+            -1, "is not of expected type bool", self.nodes[0].getrawtransaction, txId, "Flase"
         )
 
         # 7. invalid parameters - supply txid and empty array
         assert_raises_rpc_error(
-            -1, "not a boolean", self.nodes[0].getrawtransaction, txId, []
+            -1, "is not of expected type bool", self.nodes[0].getrawtransaction, txId, []
         )
 
         # 8. invalid parameters - supply txid and empty dict
         assert_raises_rpc_error(
-            -1, "not a boolean", self.nodes[0].getrawtransaction, txId, {}
+            -1, "is not of expected type bool", self.nodes[0].getrawtransaction, txId, {}
         )
 
         inputs = [

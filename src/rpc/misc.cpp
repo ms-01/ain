@@ -96,7 +96,7 @@ static UniValue createmultisig(const JSONRPCRequest& request)
                 },
             }.Check(request);
 
-    int required = request.params[0].get_int();
+    int required = request.params[0].getInt<int>();
 
     // Get the public keys
     const UniValue& keys = request.params[1].get_array();
@@ -364,7 +364,7 @@ static UniValue setmocktime(const JSONRPCRequest& request)
     LOCK(cs_main);
 
     RPCTypeCheck(request.params, {UniValue::VNUM});
-    SetMockTime(request.params[0].get_int64());
+    SetMockTime(request.params[0].getInt<int64_t>());
 
     return NullUniValue;
 }
@@ -389,7 +389,7 @@ static UniValue setmockcheckpoint(const JSONRPCRequest& request)
 
     RPCTypeCheck(request.params, {UniValue::VNUM, UniValue::VSTR});
 
-    int height = request.params[0].get_int();
+    int height = request.params[0].getInt<int>();
     uint256 hash = ParseHashV(request.params[1], "blockhash");
 
     const_cast<MapCheckpoints&>(Params().Checkpoints().mapCheckpoints).emplace(height, hash);
@@ -601,7 +601,7 @@ static UniValue setinterruptblock(const JSONRPCRequest& request)
 
     RPCTypeCheck(request.params, {UniValue::VNUM});
 
-    int height = request.params[0].get_int();
+    int height = request.params[0].getInt<int>();
     auto previousInterruptHeight = fInterruptBlockHeight;
 
     uint64_t currentHeight;
