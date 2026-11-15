@@ -94,7 +94,7 @@ class AccountsAndUTXOsTest(DefiTestFramework):
             )
         except JSONRPCException as e:
             errorString = e.error["message"]
-        assert "JSON value is not a string as expected" in errorString
+        assert "is not of expected type string" in errorString
 
         # missing (account exists, but does not belong) -
         try:
@@ -243,7 +243,7 @@ class AccountsAndUTXOsTest(DefiTestFramework):
             )
         except JSONRPCException as e:
             errorString = e.error["message"]
-        assert "JSON value is not a string as expected" in errorString
+        assert "is not of expected type string" in errorString
 
         # missing (account exists, but does not belong)
         try:

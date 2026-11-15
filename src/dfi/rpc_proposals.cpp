@@ -251,7 +251,7 @@ UniValue creategovcfp(const JSONRPCRequest &request) {
     }
 
     if (!data["cycles"].isNull()) {
-        cycles = data["cycles"].get_int();
+        cycles = data["cycles"].getInt<int>();
     }
 
     if (!data["amount"].isNull()) {
@@ -642,7 +642,7 @@ UniValue votegovbatch(const JSONRPCRequest &request) {
 
     const auto &keys = request.params[0].get_array();
     auto sleepTime =
-        (request.params.size() > 1 && request.params[1].isNull()) ? SLEEP_TIME_MILLIS : request.params[1].get_int();
+        (request.params.size() > 1 && request.params[1].isNull()) ? SLEEP_TIME_MILLIS : request.params[1].getInt<int>();
     auto neutralVotesAllowed = gArgs.GetBoolArg("-rpc-governance-accept-neutral", DEFAULT_RPC_GOV_NEUTRAL);
 
     auto [view, accountView, vaultView] = GetSnapshots();
@@ -867,21 +867,21 @@ UniValue listgovproposalvotes(const JSONRPCRequest &request) {
         }
 
         if (!optionsObj["cycle"].isNull()) {
-            inputCycle = optionsObj["cycle"].get_int();
+            inputCycle = optionsObj["cycle"].getInt<int>();
             latestOnly = false;
         }
 
         if (!optionsObj["pagination"].isNull()) {
             UniValue paginationObj = optionsObj["pagination"].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
-                start = (size_t)paginationObj["start"].get_int();
+                start = (size_t)paginationObj["start"].getInt<int>();
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
             if (!including_start) {
                 ++start;
@@ -889,11 +889,11 @@ UniValue listgovproposalvotes(const JSONRPCRequest &request) {
         }
 
         if (!optionsObj["aggregate"].isNull()) {
-            aggregate = optionsObj["aggregate"].getBool();
+            aggregate = optionsObj["aggregate"].isTrue();
         }
 
         if (!optionsObj["valid"].isNull()) {
-            validOnly = optionsObj["valid"].getBool();
+            validOnly = optionsObj["valid"].isTrue();
         }
 
         if (limit == 0) {
@@ -918,21 +918,21 @@ UniValue listgovproposalvotes(const JSONRPCRequest &request) {
         }
 
         if (request.params.size() > 2) {
-            inputCycle = request.params[2].get_int();
+            inputCycle = request.params[2].getInt<int>();
             latestOnly = false;
         }
 
         if (request.params.size() > 3) {
             UniValue paginationObj = request.params[3].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
-                start = (size_t)paginationObj["start"].get_int();
+                start = (size_t)paginationObj["start"].getInt<int>();
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
             if (!including_start) {
                 ++start;
@@ -940,11 +940,11 @@ UniValue listgovproposalvotes(const JSONRPCRequest &request) {
         }
 
         if (request.params.size() > 4) {
-            aggregate = request.params[4].getBool();
+            aggregate = request.params[4].isTrue();
         }
 
         if (request.params.size() > 5) {
-            validOnly = request.params[5].getBool();
+            validOnly = request.params[5].isTrue();
         }
 
         if (limit == 0) {
@@ -1265,7 +1265,7 @@ UniValue listgovproposals(const JSONRPCRequest &request) {
         }
 
         if (optionsObj.exists("cycle")) {
-            cycle = optionsObj["cycle"].get_int();
+            cycle = optionsObj["cycle"].getInt<int>();
             if (cycle < -1) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER,
                                    "Incorrect cycle value (0 -> all cycles, -1 -> previous cycle, N -> nth cycle");
@@ -1275,14 +1275,14 @@ UniValue listgovproposals(const JSONRPCRequest &request) {
         if (!optionsObj["pagination"].isNull()) {
             auto paginationObj = optionsObj["pagination"].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
                 start = ParseHashV(paginationObj["start"], "start");
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
         }
     } else {
@@ -1311,7 +1311,7 @@ UniValue listgovproposals(const JSONRPCRequest &request) {
         }
 
         if (request.params.size() > 2) {
-            cycle = request.params[2].get_int();
+            cycle = request.params[2].getInt<int>();
             if (cycle < -1) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER,
                                    "Incorrect cycle value (0 -> all cycles, -1 -> previous cycle, N -> nth cycle");
@@ -1321,14 +1321,14 @@ UniValue listgovproposals(const JSONRPCRequest &request) {
         if (request.params.size() > 3) {
             auto paginationObj = request.params[3].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
                 start = ParseHashV(paginationObj["start"], "start");
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
         }
     }

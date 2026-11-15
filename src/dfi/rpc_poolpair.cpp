@@ -246,14 +246,14 @@ UniValue listpoolpairs(const JSONRPCRequest &request) {
         if (request.params.size() > 0) {
             UniValue paginationObj = request.params[0].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
-                start.v = (uint32_t)paginationObj["start"].get_int();
+                start.v = (uint32_t)paginationObj["start"].getInt<int>();
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
             if (!including_start) {
                 ++start.v;
@@ -304,7 +304,7 @@ UniValue getpoolpair(const JSONRPCRequest &request) {
 
     bool verbose = true;
     if (request.params.size() > 1) {
-        verbose = request.params[1].getBool();
+        verbose = request.params[1].isTrue();
     }
 
     auto [view, accountView, vaultView] = GetSnapshots();
@@ -640,7 +640,7 @@ UniValue createpoolpair(const JSONRPCRequest &request) {
         commission = AmountFromValue(metadataObj["commission"]);
     }
     if (!metadataObj["status"].isNull()) {
-        status = metadataObj["status"].getBool();
+        status = metadataObj["status"].isTrue();
     }
     if (!metadataObj["ownerAddress"].isNull()) {
         ownerAddress = DecodeScript(metadataObj["ownerAddress"].getValStr());
@@ -818,7 +818,7 @@ UniValue updatepoolpair(const JSONRPCRequest &request) {
     }
 
     if (!metaObj["status"].isNull()) {
-        status = metaObj["status"].getBool();
+        status = metaObj["status"].isTrue();
     }
     if (!metaObj["commission"].isNull()) {
         commission = AmountFromValue(metaObj["commission"]);
@@ -1347,7 +1347,7 @@ UniValue listpoolshares(const JSONRPCRequest &request) {
 
     bool verbose = true;
     if (request.params.size() > 1) {
-        verbose = request.params[1].getBool();
+        verbose = request.params[1].isTrue();
     }
 
     bool isMineOnly = false;
@@ -1365,14 +1365,14 @@ UniValue listpoolshares(const JSONRPCRequest &request) {
         if (request.params.size() > 0) {
             UniValue paginationObj = request.params[0].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
-                start.v = (uint32_t)paginationObj["start"].get_int();
+                start.v = (uint32_t)paginationObj["start"].getInt<int>();
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
             if (!including_start) {
                 ++start.v;

@@ -333,7 +333,7 @@ UniValue icxcreateorder(const JSONRPCRequest &request) {
     }
 
     if (!metaObj["expiry"].isNull()) {
-        order.expiry = metaObj["expiry"].get_int();
+        order.expiry = metaObj["expiry"].getInt<int>();
     }
 
     if (!tokenFromSymbol.empty() && !tokenToSymbol.empty()) {
@@ -524,7 +524,7 @@ UniValue icxmakeoffer(const JSONRPCRequest &request) {
     }
 
     if (!metaObj["expiry"].isNull()) {
-        makeoffer.expiry = metaObj["expiry"].get_int();
+        makeoffer.expiry = metaObj["expiry"].getInt<int>();
     }
 
     auto [view, accountView, vaultView] = GetSnapshots();
@@ -556,7 +556,7 @@ UniValue icxmakeoffer(const JSONRPCRequest &request) {
     }
 
     if (!metaObj["expiry"].isNull()) {
-        makeoffer.expiry = metaObj["expiry"].get_int();
+        makeoffer.expiry = metaObj["expiry"].getInt<int>();
     } else {
         if (targetHeight < Params().GetConsensus().DF10EunosPayaHeight) {
             makeoffer.expiry = CICXMakeOffer::DEFAULT_EXPIRY;
@@ -691,7 +691,7 @@ UniValue icxsubmitdfchtlc(const JSONRPCRequest &request) {
     }
 
     if (!metaObj["timeout"].isNull()) {
-        submitdfchtlc.timeout = metaObj["timeout"].get_int();
+        submitdfchtlc.timeout = metaObj["timeout"].getInt<int>();
     }
 
     auto [view, accountView, vaultView] = GetSnapshots();
@@ -883,7 +883,7 @@ UniValue icxsubmitexthtlc(const JSONRPCRequest &request) {
     }
 
     if (!metaObj["timeout"].isNull()) {
-        submitexthtlc.timeout = metaObj["timeout"].get_int();
+        submitexthtlc.timeout = metaObj["timeout"].getInt<int>();
     } else {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameters, argument \"timeout\" must be non-null");
     }
@@ -1388,7 +1388,7 @@ UniValue icxlistorders(const JSONRPCRequest &request) {
             offers = true;
         }
         if (!byObj["limit"].isNull()) {
-            limit = (size_t)byObj["limit"].get_int64();
+            limit = (size_t)byObj["limit"].getInt<int64_t>();
         }
         if (!byObj["closed"].isNull()) {
             closed = byObj["closed"].get_bool();
@@ -1530,7 +1530,7 @@ UniValue icxlisthtlcs(const JSONRPCRequest &request) {
         closed = byObj["closed"].get_bool();
     }
     if (!byObj["limit"].isNull()) {
-        limit = (size_t)byObj["limit"].get_int64();
+        limit = (size_t)byObj["limit"].getInt<int64_t>();
     }
 
     UniValue ret(UniValue::VOBJ);

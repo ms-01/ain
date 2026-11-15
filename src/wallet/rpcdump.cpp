@@ -1307,7 +1307,7 @@ static int64_t GetImportTimestamp(const UniValue& data, int64_t now)
     if (data.exists("timestamp")) {
         const UniValue& timestamp = data["timestamp"];
         if (timestamp.isNum()) {
-            return timestamp.get_int64();
+            return timestamp.getInt<int64_t>();
         } else if (timestamp.isStr() && timestamp.get_str() == "now") {
             return now;
         }

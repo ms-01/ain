@@ -17,7 +17,7 @@ Res ORACLE_BLOCK_INTERVAL::Import(const UniValue &val) {
         return Res::Err("Block interval amount is not a number");
     }
 
-    blockInterval = val.get_int();
+    blockInterval = val.getInt<int>();
     return Res::Ok();
 }
 

@@ -93,12 +93,12 @@ UniValue evmtx(const JSONRPCRequest &request) {
     // TODO Get chain ID from Params when defined
     const uint64_t chainID{1};
 
-    if (request.params[1].get_int64() < 0 || request.params[2].get_int64() < 0 || request.params[3].get_int64() < 0) {
+    if (request.params[1].getInt<int64_t>() < 0 || request.params[2].getInt<int64_t>() < 0 || request.params[3].getInt<int64_t>() < 0) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Input params cannot be negative");
     }
-    const auto nonce = static_cast<uint64_t>(request.params[1].get_int64());
-    const auto gasPrice = static_cast<uint64_t>(request.params[2].get_int64());  // Price as GWei
-    const auto gasLimit = static_cast<uint64_t>(request.params[3].get_int64());
+    const auto nonce = static_cast<uint64_t>(request.params[1].getInt<int64_t>());
+    const auto gasPrice = static_cast<uint64_t>(request.params[2].getInt<int64_t>());  // Price as GWei
+    const auto gasLimit = static_cast<uint64_t>(request.params[3].getInt<int64_t>());
     const uint64_t value = AmountFromValue(request.params[5]);  // Amount in CAmount
 
     const auto toStr = request.params[4].get_str();
@@ -212,7 +212,7 @@ UniValue vmmap(const JSONRPCRequest &request) {
 
     int typeInt = 0;
     if (!request.params[1].isNull()) {
-        typeInt = request.params[1].get_int();
+        typeInt = request.params[1].getInt<int>();
     }
     if (typeInt < 0 || typeInt >= VMDomainRPCMapTypeCount) {
         throwInvalidParam();
@@ -422,7 +422,7 @@ UniValue logvmmaps(const JSONRPCRequest &request) {
     uint64_t count{};
     UniValue result{UniValue::VOBJ};
     UniValue indexesJson{UniValue::VOBJ};
-    const auto type = static_cast<VMDomainIndexType>(request.params[0].get_int());
+    const auto type = static_cast<VMDomainIndexType>(request.params[0].getInt<int>());
     // TODO: For now, we iterate through the whole list. But this is just a debugging RPC.
     // But there's no need to iterate the whole list, we can start at where we need to and
     // return false, once we hit the limit and stop the iter.

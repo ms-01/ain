@@ -157,7 +157,7 @@ UniValue setcollateraltoken(const JSONRPCRequest &request) {
     collToken.fixedIntervalPriceId = DecodePriceFeedUni(metaObj);
 
     if (!metaObj["activateAfterBlock"].isNull()) {
-        collToken.activateAfterBlock = metaObj["activateAfterBlock"].get_int();
+        collToken.activateAfterBlock = metaObj["activateAfterBlock"].getInt<int>();
     }
 
     auto [view, accountView, vaultView] = GetSnapshots();
@@ -387,7 +387,7 @@ UniValue setloantoken(const JSONRPCRequest &request) {
     loanToken.fixedIntervalPriceId = DecodePriceFeedUni(metaObj);
 
     if (!metaObj["mintable"].isNull()) {
-        loanToken.mintable = metaObj["mintable"].getBool();
+        loanToken.mintable = metaObj["mintable"].isTrue();
     }
 
     if (!metaObj["interest"].isNull()) {
@@ -547,7 +547,7 @@ UniValue updateloantoken(const JSONRPCRequest &request) {
     }
 
     if (!metaObj["mintable"].isNull()) {
-        loanToken->mintable = metaObj["mintable"].getBool();
+        loanToken->mintable = metaObj["mintable"].isTrue();
     }
 
     if (!metaObj["interest"].isNull()) {
@@ -717,7 +717,7 @@ UniValue createloanscheme(const JSONRPCRequest &request) {
     pwallet->BlockUntilSyncedToCurrentChain();
 
     CLoanSchemeMessage loanScheme;
-    loanScheme.ratio = request.params[0].get_int();
+    loanScheme.ratio = request.params[0].getInt<int>();
     loanScheme.rate = AmountFromValue(request.params[1]);
     loanScheme.identifier = request.params[2].get_str();
 
@@ -810,14 +810,14 @@ UniValue updateloanscheme(const JSONRPCRequest &request) {
     pwallet->BlockUntilSyncedToCurrentChain();
 
     CLoanSchemeMessage loanScheme;
-    loanScheme.ratio = request.params[0].get_int();
+    loanScheme.ratio = request.params[0].getInt<int>();
     loanScheme.rate = AmountFromValue(request.params[1]);
     loanScheme.identifier = request.params[2].get_str();
 
     // Max value is ignored as block height
     loanScheme.updateHeight = std::numeric_limits<uint64_t>::max();
     if (!request.params[3].isNull()) {
-        loanScheme.updateHeight = request.params[3].get_int();
+        loanScheme.updateHeight = request.params[3].getInt<int>();
     }
 
     auto [view, accountView, vaultView] = GetSnapshots();
@@ -992,7 +992,7 @@ UniValue destroyloanscheme(const JSONRPCRequest &request) {
     CDestroyLoanSchemeMessage destroyScheme;
     destroyScheme.identifier = request.params[0].get_str();
     if (!request.params[1].isNull()) {
-        destroyScheme.destroyHeight = request.params[1].get_int();
+        destroyScheme.destroyHeight = request.params[1].getInt<int>();
     }
 
     auto [view, accountView, vaultView] = GetSnapshots();

@@ -487,7 +487,7 @@ static UniValue waitfornewblock(const JSONRPCRequest& request)
             }.Check(request);
     int timeout = 0;
     if (!request.params[0].isNull())
-        timeout = request.params[0].get_int();
+        timeout = request.params[0].getInt<int>();
 
     CUpdatedBlock block;
     {
@@ -530,7 +530,7 @@ static UniValue waitforblock(const JSONRPCRequest& request)
     uint256 hash(ParseHashV(request.params[0], "blockhash"));
 
     if (!request.params[1].isNull())
-        timeout = request.params[1].get_int();
+        timeout = request.params[1].getInt<int>();
 
     CUpdatedBlock block;
     {
@@ -571,10 +571,10 @@ static UniValue waitforblockheight(const JSONRPCRequest& request)
             }.Check(request);
     int timeout = 0;
 
-    int height = request.params[0].get_int();
+    int height = request.params[0].getInt<int>();
 
     if (!request.params[1].isNull())
-        timeout = request.params[1].get_int();
+        timeout = request.params[1].getInt<int>();
 
     CUpdatedBlock block;
     {
@@ -731,7 +731,7 @@ UniValue MempoolToJSON(const CTxMemPool& pool, bool verbose)
             // Mempool has unique entries so there is no advantage in using
             // UniValue::pushKV, which checks if the key already exists in O(N).
             // UniValue::__pushKV is used instead which currently is O(1).
-            o.__pushKV(hash.ToString(), info);
+            o.pushKVEnd(hash.ToString(), info);
         }
         return o;
     } else {
@@ -964,7 +964,7 @@ static UniValue getblockhash(const JSONRPCRequest& request)
 
     LOCK(cs_main);
 
-    int nHeight = request.params[0].get_int();
+    int nHeight = request.params[0].getInt<int>();
     if (nHeight < 0 || nHeight > ::ChainActive().Height())
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Block height out of range");
 
@@ -1143,7 +1143,7 @@ static UniValue getblock(const JSONRPCRequest& request)
     int verbosity = 1;
     if (!request.params[1].isNull()) {
         if(request.params[1].isNum())
-            verbosity = request.params[1].get_int();
+            verbosity = request.params[1].getInt<int>();
         else
             verbosity = request.params[1].get_bool() ? 1 : 0;
     }
@@ -1196,7 +1196,7 @@ static UniValue pruneblockchain(const JSONRPCRequest& request)
 
     LOCK(cs_main);
 
-    int heightParam = request.params[0].get_int();
+    int heightParam = request.params[0].getInt<int>();
     if (heightParam < 0)
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Negative block height.");
 
@@ -1319,7 +1319,7 @@ UniValue gettxout(const JSONRPCRequest& request)
     UniValue ret(UniValue::VOBJ);
 
     uint256 hash(ParseHashV(request.params[0], "txid"));
-    int n = request.params[1].get_int();
+    int n = request.params[1].getInt<int>();
     COutPoint out(hash, n);
     bool fMempool = true;
     if (!request.params[2].isNull())
@@ -1378,9 +1378,9 @@ static UniValue verifychain(const JSONRPCRequest& request)
     LOCK(cs_main);
 
     if (!request.params[0].isNull())
-        nCheckLevel = request.params[0].get_int();
+        nCheckLevel = request.params[0].getInt<int>();
     if (!request.params[1].isNull())
-        nCheckDepth = request.params[1].get_int();
+        nCheckDepth = request.params[1].getInt<int>();
 
     return CVerifyDB().VerifyDB(
         Params(), &::ChainstateActive().CoinsTip(), nCheckLevel, nCheckDepth);
@@ -1891,7 +1891,7 @@ static UniValue getchaintxstats(const JSONRPCRequest& request)
     if (request.params[0].isNull()) {
         blockcount = std::max(0, std::min(blockcount, pindex->nHeight - 1));
     } else {
-        blockcount = request.params[0].get_int();
+        blockcount = request.params[0].getInt<int>();
 
         if (blockcount < 0 || (blockcount > 0 && blockcount >= pindex->nHeight)) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid block count: should be between 0 and the block's height - 1");
@@ -2038,7 +2038,7 @@ static UniValue getblockstats(const JSONRPCRequest& request)
 
     CBlockIndex* pindex;
     if (request.params[0].isNum()) {
-        const int height = request.params[0].get_int();
+        const int height = request.params[0].getInt<int>();
         const int current_tip = ::ChainActive().Height();
         if (height < 0) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Target block height %d is negative", height));
@@ -2382,7 +2382,7 @@ UniValue scantxoutset(const JSONRPCRequest& request)
             // no scan in progress
             return NullUniValue;
         }
-        result.pushKV("progress", g_scan_progress);
+        result.pushKV("progress", g_scan_progress.load());
         return result;
     } else if (request.params[0].get_str() == "abort") {
         CoinsViewScanReserver reserver;

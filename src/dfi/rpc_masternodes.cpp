@@ -565,14 +565,14 @@ UniValue listmasternodes(const JSONRPCRequest &request) {
         if (request.params.size() > 0) {
             UniValue paginationObj = request.params[0].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
                 start = ParseHashV(paginationObj["start"], "start");
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
         }
         if (limit == 0) {
@@ -765,7 +765,7 @@ UniValue getmasternodeblocks(const JSONRPCRequest &request) {
 
     int depth{std::numeric_limits<int>::max()};
     if (!request.params[1].isNull()) {
-        depth = request.params[1].get_int();
+        depth = request.params[1].getInt<int>();
     }
 
     int lastHeight{};
@@ -843,7 +843,7 @@ UniValue getanchorteams(const JSONRPCRequest &request) {
     auto [view, accountView, vaultView] = GetSnapshots();
 
     if (!request.params[0].isNull()) {
-        blockHeight = request.params[0].get_int();
+        blockHeight = request.params[0].getInt<int>();
     } else {
         blockHeight = view->GetLastHeight();
     }
@@ -908,7 +908,7 @@ UniValue getactivemasternodecount(const JSONRPCRequest &request) {
 
     int blockSample{7 * 2880};  // One week
     if (!request.params[0].isNull()) {
-        blockSample = request.params[0].get_int();
+        blockSample = request.params[0].getInt<int>();
     }
 
     std::set<uint256> masternodes;

@@ -144,7 +144,7 @@ UniValue appointoracle(const JSONRPCRequest &request) {
 
     auto allowedPairs = DecodeTokenCurrencyPairs(request.params[1]);
 
-    auto weightage = request.params[2].get_int();
+    auto weightage = request.params[2].getInt<int>();
 
     if (weightage > oraclefields::MaxWeightage || weightage < oraclefields::MinWeightage) {
         throw JSONRPCError(RPC_TRANSACTION_ERROR, "the weightage value is out of bounds");
@@ -270,7 +270,7 @@ UniValue updateoracle(const JSONRPCRequest &request) {
     auto allowedPairs = DecodeTokenCurrencyPairs(request.params[2]);
 
     // decode weightage
-    auto weightage = request.params[3].get_int();
+    auto weightage = request.params[3].getInt<int>();
 
     if (weightage > oraclefields::MaxWeightage || weightage < oraclefields::MinWeightage) {
         throw JSONRPCError(RPC_TRANSACTION_ERROR, "the weightage value is out of bounds");
@@ -484,7 +484,7 @@ UniValue setoracledata(const JSONRPCRequest &request) {
     COracleId oracleId = ParseHashV(request.params[0], "oracleid");
 
     // decode timestamp
-    int64_t timestamp = request.params[1].get_int64();
+    int64_t timestamp = request.params[1].getInt<int64_t>();
 
     // decode prices
     const auto &prices = request.params[2];
@@ -726,10 +726,10 @@ UniValue listoracles(const JSONRPCRequest &request) {
                 start = ParseHashV(paginationObj["start"], "start");
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
         }
         if (limit == 0) {
@@ -819,10 +819,10 @@ UniValue listlatestrawprices(const JSONRPCRequest &request) {
                 start = ParseHashV(paginationObj["start"], "start");
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
         }
         if (limit == 0) {
@@ -942,14 +942,14 @@ namespace {
         bool including_start = true;
         if (!paginationObj.empty()) {
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 including_start = false;
-                start = paginationObj["start"].get_int();
+                start = paginationObj["start"].getInt<int>();
             }
             if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
+                including_start = paginationObj["including_start"].isTrue();
             }
         }
         if (limit == 0) {
@@ -1207,7 +1207,7 @@ UniValue listfixedintervalprices(const JSONRPCRequest &request) {
         if (request.params.size() > 0) {
             UniValue paginationObj = request.params[0].get_obj();
             if (!paginationObj["limit"].isNull()) {
-                limit = (size_t)paginationObj["limit"].get_int64();
+                limit = (size_t)paginationObj["limit"].getInt<int64_t>();
             }
             if (!paginationObj["start"].isNull()) {
                 auto priceFeedId = paginationObj["start"].getValStr();

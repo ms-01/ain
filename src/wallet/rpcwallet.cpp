@@ -640,7 +640,7 @@ static UniValue getreceivedbyaddress(const JSONRPCRequest& request)
     // Minimum confirmations
     int nMinDepth = 1;
     if (!request.params[1].isNull())
-        nMinDepth = request.params[1].get_int();
+        nMinDepth = request.params[1].getInt<int>();
 
     // Tally
     CAmount nAmount = 0;
@@ -699,7 +699,7 @@ static UniValue getreceivedbylabel(const JSONRPCRequest& request)
     // Minimum confirmations
     int nMinDepth = 1;
     if (!request.params[1].isNull())
-        nMinDepth = request.params[1].get_int();
+        nMinDepth = request.params[1].getInt<int>();
 
     // Get the set of pub keys assigned to label
     std::string label = LabelFromValue(request.params[0]);
@@ -786,7 +786,7 @@ static UniValue getbalance(const JSONRPCRequest& request)
 
     int min_depth = 0;
     if (!request.params[1].isNull()) {
-        min_depth = request.params[1].get_int();
+        min_depth = request.params[1].getInt<int>();
     }
 
     bool include_watchonly = ParseIncludeWatchonly(request.params[2], *pwallet);
@@ -1007,7 +1007,7 @@ static UniValue addmultisigaddress(const JSONRPCRequest& request)
     if (!request.params[2].isNull())
         label = LabelFromValue(request.params[2]);
 
-    int required = request.params[0].get_int();
+    int required = request.params[0].getInt<int>();
 
     // Get the public keys
     const UniValue& keys_or_addrs = request.params[1].get_array();
@@ -1054,7 +1054,7 @@ UniValue ListReceived(interfaces::Chain::Lock& locked_chain, CWallet * const pwa
     // Minimum confirmations
     int nMinDepth = 1;
     if (!params[0].isNull())
-        nMinDepth = params[0].get_int();
+        nMinDepth = params[0].getInt<int>();
 
     // Whether to include empty labels
     bool fIncludeEmpty = false;
@@ -1474,10 +1474,10 @@ UniValue listtransactions(const JSONRPCRequest& request)
     }
     int nCount = 10;
     if (!request.params[1].isNull())
-        nCount = request.params[1].get_int();
+        nCount = request.params[1].getInt<int>();
     int nFrom = 0;
     if (!request.params[2].isNull())
-        nFrom = request.params[2].get_int();
+        nFrom = request.params[2].getInt<int>();
     isminefilter filter = ISMINE_SPENDABLE;
 
     if (ParseIncludeWatchonly(request.params[3], *pwallet)) {
@@ -1624,7 +1624,7 @@ static UniValue listsinceblock(const JSONRPCRequest& request)
     }
 
     if (!request.params[1].isNull()) {
-        target_confirms = request.params[1].get_int();
+        target_confirms = request.params[1].getInt<int>();
 
         if (target_confirms < 1) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter");
@@ -1893,9 +1893,9 @@ static UniValue keypoolrefill(const JSONRPCRequest& request)
     // 0 is interpreted by TopUpKeyPool() as the default keypool size given by -keypool
     unsigned int kpSize = 0;
     if (!request.params[0].isNull()) {
-        if (request.params[0].get_int() < 0)
+        if (request.params[0].getInt<int>() < 0)
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, expected valid size.");
-        kpSize = (unsigned int)request.params[0].get_int();
+        kpSize = (unsigned int)request.params[0].getInt<int>();
     }
 
     EnsureWalletIsUnlocked(pwallet);
@@ -1954,7 +1954,7 @@ static UniValue walletpassphrase(const JSONRPCRequest& request)
     strWalletPass = request.params[0].get_str().c_str();
 
     // Get the timeout
-    int64_t nSleepTime = request.params[1].get_int64();
+    int64_t nSleepTime = request.params[1].getInt<int64_t>();
     // Timeout cannot be negative, otherwise it will relock immediately
     if (nSleepTime < 0) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Timeout cannot be negative.");
@@ -2229,7 +2229,7 @@ static UniValue lockunspent(const JSONRPCRequest& request)
             });
 
         const uint256 txid(ParseHashO(o, "txid"));
-        const int nOutput = find_value(o, "vout").get_int();
+        const int nOutput = o.find_value("vout").getInt<int>();
         if (nOutput < 0) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, vout must be positive");
         }
@@ -2913,13 +2913,13 @@ static UniValue listunspent(const JSONRPCRequest& request)
     int nMinDepth = 1;
     if (!request.params[0].isNull()) {
         RPCTypeCheckArgument(request.params[0], UniValue::VNUM);
-        nMinDepth = request.params[0].get_int();
+        nMinDepth = request.params[0].getInt<int>();
     }
 
     int nMaxDepth = 9999999;
     if (!request.params[1].isNull()) {
         RPCTypeCheckArgument(request.params[1], UniValue::VNUM);
-        nMaxDepth = request.params[1].get_int();
+        nMaxDepth = request.params[1].getInt<int>();
     }
 
     std::set<CTxDestination> destinations;
@@ -2963,7 +2963,7 @@ static UniValue listunspent(const JSONRPCRequest& request)
             nMinimumSumAmount = AmountFromValue(options["minimumSumAmount"]);
 
         if (options.exists("maximumCount"))
-            nMaximumCount = options["maximumCount"].get_int64();
+            nMaximumCount = options["maximumCount"].getInt<int64_t>();
 
         DCT_ID tokenId;
         if (options.exists("tokenId")) {
@@ -3113,7 +3113,7 @@ void FundTransaction(CWallet* const pwallet, CMutableTransaction& tx, CAmount& f
         }
 
         if (options.exists("changePosition"))
-            change_position = options["changePosition"].get_int();
+            change_position = options["changePosition"].getInt<int>();
 
         if (options.exists("change_type")) {
             if (options.exists("changeAddress")) {
@@ -3169,7 +3169,7 @@ void FundTransaction(CWallet* const pwallet, CMutableTransaction& tx, CAmount& f
         throw JSONRPCError(RPC_INVALID_PARAMETER, "changePosition out of bounds");
 
     for (unsigned int idx = 0; idx < subtractFeeFromOutputs.size(); idx++) {
-        int pos = subtractFeeFromOutputs[idx].get_int();
+        int pos = subtractFeeFromOutputs[idx].getInt<int>();
         if (setSubtractFeeFromOutputs.count(pos))
             throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Invalid parameter, duplicated position: %d", pos));
         if (pos < 0)
@@ -3449,7 +3449,7 @@ static UniValue bumpfee(const JSONRPCRequest& request)
             if (!pwallet->chain().rpcEnableDeprecated("totalFee")) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "totalFee argument has been deprecated and will be removed in 0.20. Please use -deprecatedrpc=totalFee to continue using this argument until removal.");
             }
-            totalFee = options["totalFee"].get_int64();
+            totalFee = options["totalFee"].getInt<int64_t>();
             if (totalFee <= 0) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Invalid totalFee %s (must be greater than 0)", FormatMoney(totalFee)));
             }
@@ -3569,7 +3569,7 @@ UniValue rescanblockchain(const JSONRPCRequest& request)
         std::optional<int> tip_height = locked_chain->getHeight();
 
         if (!request.params[0].isNull()) {
-            start_height = request.params[0].get_int();
+            start_height = request.params[0].getInt<int>();
             if (start_height < 0 || !tip_height || start_height > *tip_height) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid start_height");
             }
@@ -3577,7 +3577,7 @@ UniValue rescanblockchain(const JSONRPCRequest& request)
 
         std::optional<int> stop_height;
         if (!request.params[1].isNull()) {
-            stop_height = request.params[1].get_int();
+            stop_height = request.params[1].getInt<int>();
             if (*stop_height < 0 || !tip_height || *stop_height > *tip_height) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid stop_height");
             }
@@ -3922,7 +3922,7 @@ static UniValue getaddressesbylabel(const JSONRPCRequest& request)
             // and since duplicate addresses are unexpected (checked with
             // std::set in O(log(N))), UniValue::__pushKV is used instead,
             // which currently is O(1).
-            ret.__pushKV(address, AddressBookDataToJSON(item.second, false));
+            ret.pushKVEnd(address, AddressBookDataToJSON(item.second, false));
         }
     }
 
@@ -4297,7 +4297,7 @@ UniValue addressmap(const JSONRPCRequest &request) {
 
     const std::string input = request.params[0].get_str();
 
-    int typeInt = request.params[1].get_int();
+    int typeInt = request.params[1].getInt<int>();
     if (typeInt < 0 || typeInt >= AddressConversionTypeCount) {
         throwInvalidParamType();
     }

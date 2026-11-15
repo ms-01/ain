@@ -42,7 +42,7 @@ static CMutableTransaction TestSimpleSpend(const CTransaction& from, uint32_t in
     keystore.AddKey(key);
     std::map<COutPoint, Coin> coins;
     coins[mtx.vin[0].prevout].out = from.vout[index];
-    BOOST_CHECK(SignTransaction(mtx, {}, &keystore, coins, true, {})["complete"].getBool());
+    BOOST_CHECK(SignTransaction(mtx, {}, &keystore, coins, true, {})["complete"].isTrue());
     return mtx;
 }
 

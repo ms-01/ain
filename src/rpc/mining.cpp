@@ -101,7 +101,7 @@ static UniValue getnetworkhashps(const JSONRPCRequest& request)
             }.Check(request);
 
     LOCK(cs_main);
-    return GetNetworkHashPS(!request.params[0].isNull() ? request.params[0].get_int() : 120, !request.params[1].isNull() ? request.params[1].get_int() : -1);
+    return GetNetworkHashPS(!request.params[0].isNull() ? request.params[0].getInt<int>() : 120, !request.params[1].isNull() ? request.params[1].getInt<int>() : -1);
 }
 
 static UniValue generateBlocks(const pos::ThreadStaker::Args &stakerParams, const int nGenerate, const int64_t nMaxTries)
@@ -169,10 +169,10 @@ static UniValue generatetoaddress(const JSONRPCRequest& request)
                 },
             }.Check(request);
 
-    int nGenerate = request.params[0].get_int();
+    int nGenerate = request.params[0].getInt<int>();
     int64_t nMaxTries = -1;
     if (!request.params[2].isNull()) {
-        nMaxTries = request.params[2].get_int();
+        nMaxTries = request.params[2].getInt<int>();
     }
 
     CTxDestination destination = DecodeDestination(request.params[1].get_str());
@@ -412,7 +412,7 @@ static UniValue prioritisetransaction(const JSONRPCRequest& request)
     LOCK(cs_main);
 
     uint256 hash(ParseHashV(request.params[0], "txid"));
-    CAmount nAmount = request.params[2].get_int64();
+    CAmount nAmount = request.params[2].getInt<int64_t>();
 
     if (!(request.params[1].isNull() || request.params[1].get_real() == 0)) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Priority is no longer supported, dummy argument to prioritisetransaction must be 0.");
@@ -538,7 +538,7 @@ static UniValue getblocktemplate(const JSONRPCRequest& request)
     if (!request.params[0].isNull())
     {
         const UniValue& oparam = request.params[0].get_obj();
-        const UniValue& modeval = find_value(oparam, "mode");
+        const UniValue& modeval = oparam.find_value("mode");
         if (modeval.isStr())
             strMode = modeval.get_str();
         else if (modeval.isNull())
@@ -547,11 +547,11 @@ static UniValue getblocktemplate(const JSONRPCRequest& request)
         }
         else
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid mode");
-        lpval = find_value(oparam, "longpollid");
+        lpval = oparam.find_value("longpollid");
 
         if (strMode == "proposal")
         {
-            const UniValue& dataval = find_value(oparam, "data");
+            const UniValue& dataval = oparam.find_value("data");
             if (!dataval.isStr())
                 throw JSONRPCError(RPC_TYPE_ERROR, "Missing data String key for proposal");
 
@@ -578,7 +578,7 @@ static UniValue getblocktemplate(const JSONRPCRequest& request)
             return BIP22ValidationResult(state);
         }
 
-        const UniValue& aClientRules = find_value(oparam, "rules");
+        const UniValue& aClientRules = oparam.find_value("rules");
         if (aClientRules.isArray()) {
             for (unsigned int i = 0; i < aClientRules.size(); ++i) {
                 const UniValue& v = aClientRules[i];
@@ -586,9 +586,9 @@ static UniValue getblocktemplate(const JSONRPCRequest& request)
             }
         } else {
             // NOTE: It is important that this NOT be read if versionbits is supported
-            const UniValue& uvMaxVersion = find_value(oparam, "maxversion");
+            const UniValue& uvMaxVersion = oparam.find_value("maxversion");
             if (uvMaxVersion.isNum()) {
-                nMaxVersionPreVB = uvMaxVersion.get_int64();
+                nMaxVersionPreVB = uvMaxVersion.getInt<int64_t>();
             }
         }
     }

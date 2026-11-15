@@ -1,12 +1,25 @@
 // Copyright 2014 BitPay Inc.
+// Copyright (c) 2015-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
+// file COPYING or https://opensource.org/licenses/mit-license.php.
 
-#include <string.h>
+#include <univalue.h>
+#include <univalue_utffilter.h>
+
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
-#include <stdio.h>
-#include "univalue.h"
-#include "univalue_utffilter.h"
+
+/*
+ * According to stackexchange, the original json test suite wanted
+ * to limit depth to 22.  Widely-deployed PHP bails at depth 512,
+ * so we will follow PHP's lead, which should be more than sufficient
+ * (further stackexchange comments indicate depth > 32 rarely occurs).
+ */
+static constexpr size_t MAX_JSON_DEPTH = 512;
 
 static bool json_isdigit(int ch)
 {
@@ -219,7 +232,7 @@ enum jtokentype getJsonToken(std::string& tokenVal, unsigned int& consumed,
             }
 
             else {
-                writer.push_back(*raw);
+                writer.push_back(static_cast<unsigned char>(*raw));
                 raw++;
             }
         }
@@ -236,7 +249,7 @@ enum jtokentype getJsonToken(std::string& tokenVal, unsigned int& consumed,
     }
 }
 
-enum expect_bits {
+enum expect_bits : unsigned {
     EXP_OBJ_NAME = (1U << 0),
     EXP_COLON = (1U << 1),
     EXP_ARR_VALUE = (1U << 2),
@@ -248,7 +261,18 @@ enum expect_bits {
 #define setExpect(bit) (expectMask |= EXP_##bit)
 #define clearExpect(bit) (expectMask &= ~EXP_##bit)
 
-bool UniValue::read(const char *raw, size_t size)
+bool UniValue::read(std::string_view json)
+{
+    UniValue parsed;
+    if (!parsed.read_impl(json)) {
+        setNull();
+        return false;
+    }
+    *this = std::move(parsed);
+    return true;
+}
+
+bool UniValue::read_impl(std::string_view str_in)
 {
     clear();
 
@@ -259,7 +283,8 @@ bool UniValue::read(const char *raw, size_t size)
     unsigned int consumed;
     enum jtokentype tok = JTOK_NONE;
     enum jtokentype last_tok = JTOK_NONE;
-    const char* end = raw + size;
+    const char* raw{str_in.data()};
+    const char* end{raw + str_in.size()};
     do {
         last_tok = tok;
 
@@ -322,6 +347,9 @@ bool UniValue::read(const char *raw, size_t size)
                 UniValue *newTop = &(top->values.back());
                 stack.push_back(newTop);
             }
+
+            if (stack.size() > MAX_JSON_DEPTH)
+                return false;
 
             if (utyp == VOBJ)
                 setExpect(OBJ_NAME);
@@ -446,4 +474,3 @@ bool UniValue::read(const char *raw, size_t size)
 
     return true;
 }
-

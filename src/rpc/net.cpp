@@ -355,7 +355,7 @@ static UniValue disconnectnode(const JSONRPCRequest& request)
         success = g_connman->DisconnectNode(address_arg.get_str());
     } else if (!id_arg.isNull() && (address_arg.isNull() || (address_arg.isStr() && address_arg.get_str().empty()))) {
         /* handle disconnect-by-id */
-        NodeId nodeid = (NodeId) id_arg.get_int64();
+        NodeId nodeid = (NodeId) id_arg.getInt<int64_t>();
         success = g_connman->DisconnectNode(nodeid);
     } else {
         throw JSONRPCError(RPC_INVALID_PARAMS, "Only one of address and nodeid should be provided.");
@@ -690,7 +690,7 @@ static UniValue setban(const JSONRPCRequest& request)
 
         int64_t banTime = 0; //use standard bantime if not specified
         if (!request.params[2].isNull())
-            banTime = request.params[2].get_int64();
+            banTime = request.params[2].getInt<int64_t>();
 
         bool absolute = false;
         if (request.params[3].isTrue())
@@ -821,7 +821,7 @@ static UniValue getnodeaddresses(const JSONRPCRequest& request)
 
     int count = 1;
     if (!request.params[0].isNull()) {
-        count = request.params[0].get_int();
+        count = request.params[0].getInt<int>();
         if (count <= 0) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Address count out of range");
         }

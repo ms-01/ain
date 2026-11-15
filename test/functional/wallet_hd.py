@@ -181,13 +181,13 @@ class WalletHDTest(DefiTestFramework):
         )
         assert_raises_rpc_error(
             -1,
-            "JSON value is not a boolean as expected",
+            "is not of expected type bool",
             self.nodes[1].sethdseed,
             "Not_bool",
         )
         assert_raises_rpc_error(
             -1,
-            "JSON value is not a string as expected",
+            "is not of expected type string",
             self.nodes[1].sethdseed,
             False,
             True,

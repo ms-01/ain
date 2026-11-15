@@ -86,23 +86,23 @@ RPCStats RPCStats::fromJSON(UniValue json) {
     RPCStats stats;
 
     stats.name = json["name"].get_str();
-    stats.lastUsedTime = json["lastUsedTime"].get_int64();
-    stats.count = json["count"].get_int64();
+    stats.lastUsedTime = json["lastUsedTime"].getInt<int64_t>();
+    stats.count = json["count"].getInt<int64_t>();
     if (!json["latency"].isNull()) {
         auto latencyObj  = json["latency"].get_obj();
         stats.latency = {
-            latencyObj["min"].get_int64(),
-            latencyObj["avg"].get_int64(),
-            latencyObj["max"].get_int64()
+            latencyObj["min"].getInt<int64_t>(),
+            latencyObj["avg"].getInt<int64_t>(),
+            latencyObj["max"].getInt<int64_t>()
         };
     }
 
     if (!json["payload"].isNull()) {
         auto payloadObj  = json["payload"].get_obj();
         stats.payload = {
-            payloadObj["min"].get_int64(),
-            payloadObj["avg"].get_int64(),
-            payloadObj["max"].get_int64()
+            payloadObj["min"].getInt<int64_t>(),
+            payloadObj["avg"].getInt<int64_t>(),
+            payloadObj["max"].getInt<int64_t>()
         };
     }
 
@@ -111,9 +111,9 @@ RPCStats RPCStats::fromJSON(UniValue json) {
         for (const auto &entry : historyArr.getValues()) {
             auto historyObj = entry.get_obj();
             StatHistoryEntry historyEntry {
-                historyObj["timestamp"].get_int64(),
-                historyObj["latency"].get_int64(),
-                historyObj["payload"].get_int64()
+                historyObj["timestamp"].getInt<int64_t>(),
+                historyObj["latency"].getInt<int64_t>(),
+                historyObj["payload"].getInt<int64_t>()
             };
             stats.history.push_back(historyEntry);
         }
