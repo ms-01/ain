@@ -40,7 +40,7 @@ vsdb_core = { workspace = true, features = ["rocks_engine", "compress"] }
 
 # Runtime dependencies
 lazy_static.workspace = true
-jsonrpsee-core.workspace = true
+jsonrpsee-core = { workspace = true, features = ["client"] }
 jsonrpsee-server.workspace = true
 jsonrpsee-types.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
