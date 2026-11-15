@@ -36,8 +36,7 @@ fn main() -> Result<()> {
             .define("__GLIBCXX__", None)
             // .define("WIN32_LEAN_AND_MEAN", None)
             .define("_WINDOWS", None)
-            .define("_WIN32_WINNT", "0x0601")
-            .static_flag(true);
+            .define("_WIN32_WINNT", "0x0601");
     }
 
     cxx.compile(pkg_name.as_str());

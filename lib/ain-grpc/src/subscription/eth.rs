@@ -8,7 +8,11 @@ use ain_evm::{
 };
 use anyhow::format_err;
 use ethereum_types::U256;
-use jsonrpsee::{proc_macros::rpc, types::SubscriptionEmptyError, SubscriptionSink};
+use jsonrpsee::{
+    core::{async_trait, SubscriptionResult},
+    proc_macros::rpc,
+    PendingSubscriptionSink, SubscriptionMessage,
+};
 use log::{debug, trace};
 use tokio::runtime::Handle as AsyncHandle;
 
@@ -25,7 +29,11 @@ pub trait MetachainPubSub {
     unsubscribe = "unsubscribe",
     item = Result,
     )]
-    fn subscribe(&self, subscription: Subscription, params: Option<SubscriptionParams>);
+    async fn subscribe(
+        &self,
+        subscription: Subscription,
+        params: Option<SubscriptionParams>,
+    ) -> SubscriptionResult;
 }
 
 pub struct MetachainPubSubModule {
@@ -43,14 +51,15 @@ impl MetachainPubSubModule {
     }
 }
 
+#[async_trait]
 impl MetachainPubSubServer for MetachainPubSubModule {
-    fn subscribe(
+    async fn subscribe(
         &self,
-        mut sink: SubscriptionSink,
+        pending: PendingSubscriptionSink,
         subscription: Subscription,
         params: Option<SubscriptionParams>,
-    ) -> Result<(), SubscriptionEmptyError> {
-        sink.accept()?;
+    ) -> SubscriptionResult {
+        let sink = pending.accept().await?;
         trace!(target: "pubsub", "subscribing to {:#?}", subscription);
         trace!(target: "pubsub", "params {:?}", params);
 
@@ -62,8 +71,12 @@ impl MetachainPubSubServer for MetachainPubSubModule {
                     while !sink.is_closed() {
                         if let Notification::Block(hash) = rx.recv().await? {
                             if let Some(block) = handler.storage.get_block_by_hash(&hash)? {
-                                if !sink
-                                    .send(&PubSubResult::Header(Box::new(block.header.into())))?
+                                if sink
+                                    .send(SubscriptionMessage::from_json(&PubSubResult::Header(
+                                        Box::new(block.header.into()),
+                                    ))?)
+                                    .await
+                                    .is_err()
                                 {
                                     break;
                                 }
@@ -85,11 +98,9 @@ impl MetachainPubSubServer for MetachainPubSubModule {
                     .as_ref()
                     .map(|p| {
                         let topics = p.topics.as_ref().map(|topics| match topics {
-                            SubscriptionParamsTopics::VecOfHashes(inputs) => inputs
-                                .iter()
-                                .flatten()
-                                .map(|input| vec![*input])
-                                .collect(),
+                            SubscriptionParamsTopics::VecOfHashes(inputs) => {
+                                inputs.iter().flatten().map(|input| vec![*input]).collect()
+                            }
                             SubscriptionParamsTopics::VecOfHashVecs(inputs) => inputs
                                 .iter()
                                 .map(|hashes| hashes.iter().flatten().copied().collect())
@@ -124,7 +135,13 @@ impl MetachainPubSubServer for MetachainPubSubModule {
                         };
                         let mut disconnect = false;
                         for log in logs {
-                            if !sink.send(&PubSubResult::Log(Box::new(log.into())))? {
+                            if sink
+                                .send(SubscriptionMessage::from_json(&PubSubResult::Log(
+                                    Box::new(log.into()),
+                                ))?)
+                                .await
+                                .is_err()
+                            {
                                 disconnect = true;
                                 break;
                             }
@@ -142,7 +159,13 @@ impl MetachainPubSubServer for MetachainPubSubModule {
                 let fut = async move {
                     while !sink.is_closed() {
                         if let Notification::Transaction(hash) = rx.recv().await? {
-                            if !sink.send(&PubSubResult::TransactionHash(hash))? {
+                            if sink
+                                .send(SubscriptionMessage::from_json(
+                                    &PubSubResult::TransactionHash(hash),
+                                )?)
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -175,12 +198,14 @@ impl MetachainPubSubServer for MetachainPubSubModule {
                     let mut last_sync_status = get_sync_status()?;
                     if !last_sync_status.syncing {
                         // Node is at tip. Return false flag once and exit thread
-                        let _ = sink.send(&false)?;
+                        let _ = sink.send(SubscriptionMessage::from_json(&false)?).await;
                         return Ok::<(), anyhow::Error>(());
                     } else {
-                        sink.send(&PubSubResult::SyncState(last_sync_status.clone()))?
-                            .then_some(true)
-                            .ok_or_else(|| format_err!("send failed, sink closed"))?;
+                        sink.send(SubscriptionMessage::from_json(&PubSubResult::SyncState(
+                            last_sync_status.clone(),
+                        ))?)
+                        .await
+                        .map_err(|_| format_err!("send failed, sink closed"))?;
                     }
 
                     while !sink.is_closed() {
@@ -189,10 +214,17 @@ impl MetachainPubSubServer for MetachainPubSubModule {
                             if sync_status.current_block != last_sync_status.current_block {
                                 if !sync_status.syncing {
                                     // Node sync-ed to tip. Return false flag once and exit thread
-                                    let _ = sink.send(&false)?;
+                                    let _ =
+                                        sink.send(SubscriptionMessage::from_json(&false)?).await;
                                     break;
                                 }
-                                if !sink.send(&PubSubResult::SyncState(sync_status.clone()))? {
+                                if sink
+                                    .send(SubscriptionMessage::from_json(
+                                        &PubSubResult::SyncState(sync_status.clone()),
+                                    )?)
+                                    .await
+                                    .is_err()
+                                {
                                     break;
                                 }
                             }

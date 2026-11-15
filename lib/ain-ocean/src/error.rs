@@ -122,7 +122,7 @@ pub enum Error {
     #[snafu(context(false))]
     JsonrpseeError {
         #[snafu(source)]
-        error: jsonrpsee::core::Error,
+        error: jsonrpsee::core::ClientError,
         #[snafu(implicit)]
         location: Location,
     },

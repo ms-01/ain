@@ -13,10 +13,7 @@ use ain_evm::{
 use ethereum::{EnvelopedEncodable, TransactionV2};
 use ethereum_types::{H160, H256, U256};
 use evm::{Config, ExitError, ExitReason};
-use jsonrpsee::{
-    core::{Error, RpcResult},
-    proc_macros::rpc,
-};
+use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use libsecp256k1::SecretKey;
 use log::trace;
 
@@ -343,13 +340,13 @@ impl MetachainRPCServer for MetachainRPCModule {
 
         match exit_reason {
             ExitReason::Succeed(_) => Ok(Bytes(data)),
-            ExitReason::Error(e) => Err(Error::Custom(format!("exit error {e:?}"))),
+            ExitReason::Error(e) => Err(to_custom_err(format!("exit error {e:?}"))),
             ExitReason::Revert(_) => {
                 let revert_msg = try_get_reverted_error_or_default(&data);
                 let encoded_data = format!("0x{}", hex::encode(data));
                 Err(RPCError::RevertError(revert_msg, encoded_data).into())
             }
-            ExitReason::Fatal(e) => Err(Error::Custom(format!("fatal error {e:?}"))),
+            ExitReason::Fatal(e) => Err(to_custom_err(format!("fatal error {e:?}"))),
         }
     }
 
@@ -415,7 +412,7 @@ impl MetachainRPCServer for MetachainRPCModule {
             .get_storage_at(address, position, block.header.state_root)
             .map_err(to_custom_err)?
             .map_or(Ok(H256::default()), |storage| {
-                Ok(H256::from_slice(&storage))
+                Ok::<H256, ErrorObjectOwned>(H256::from_slice(&storage))
             })
     }
 
@@ -737,7 +734,7 @@ impl MetachainRPCServer for MetachainRPCModule {
             Ok(format!("{:#x}", signed_tx.hash()))
         } else {
             trace!(target:"rpc", "[send_raw_transaction] Could not publish raw transaction: {tx} reason: {res_string}");
-            Err(Error::Custom(format!(
+            Err(to_custom_err(format!(
                 "Could not publish raw transaction: {tx} reason: {res_string}"
             )))
         }
@@ -873,7 +870,7 @@ impl MetachainRPCServer for MetachainRPCModule {
 
         // Create a helper to check if a gas allowance results in an executable transaction
         // Returns: (tx execution failure flag, out of gas failure flag, used gas)
-        let executable = |gas_limit: u64| -> Result<(bool, bool, u64), Error> {
+        let executable = |gas_limit: u64| -> Result<(bool, bool, u64), ErrorObjectOwned> {
             // Consensus error, this means the provided message call or transaction will
             // never be accepted no matter how much gas it is assigned. Return the error
             // directly, don't struggle any more

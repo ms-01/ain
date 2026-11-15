@@ -359,7 +359,7 @@ class EVMTest(DefiTestFramework):
 
         assert_raises_rpc_error(
             -32602,
-            "invalid length 7, expected a (both 0x-prefixed or not) hex string or byte array containing 20 bytes at line 1 column 9",
+            "Invalid params",
             self.nodes[0].eth_getBalance,
             "test123",
         )

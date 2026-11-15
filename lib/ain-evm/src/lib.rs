@@ -55,7 +55,7 @@ pub enum EVMError {
     #[error("EVM: serde_json error")]
     JsonError(#[from] serde_json::Error),
     #[error("EVM: serde_json error")]
-    JsonRpcError(#[from] jsonrpsee_core::Error),
+    JsonRpcError(#[from] jsonrpsee_core::ClientError),
     #[error("EVM: rocksdb error")]
     RocksDBError(#[from] rocksdb::Error),
     #[error("EVM: db error")]

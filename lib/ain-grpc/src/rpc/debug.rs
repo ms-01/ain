@@ -26,7 +26,7 @@ use crate::{
 
 use super::common::get_block;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct FeeEstimate {
     used_gas: U256,
     gas_fee: U256,

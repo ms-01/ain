@@ -6,7 +6,7 @@ use crate::{result::RpcResult, MetachainCLI};
 pub async fn execute_cli_command(
     cmd: MetachainCLI,
     client: &HttpClient,
-) -> Result<RpcResult, jsonrpsee::core::Error> {
+) -> Result<RpcResult, jsonrpsee::core::ClientError> {
     let result = match cmd {
         MetachainCLI::Accounts => client.accounts().await?.into(),
         MetachainCLI::ChainId => client.chain_id().await?.into(),
