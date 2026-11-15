@@ -39,7 +39,7 @@ jobs:
 
     - name: Restore cpp build cache
       id: cpp-cache-restore
-      uses: actions/cache/restore@v3
+      uses: actions/cache/restore@v4
       with:
         path: |
           ./build/depends
@@ -59,7 +59,7 @@ jobs:
       run: ./make.sh build
 
     - name: Upload binaries
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: defi-bins
         path: build/src/defid
@@ -76,7 +76,7 @@ jobs:
           ref: 'main'
 
       - name: Download binaries
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: defi-bins
 
@@ -84,7 +84,7 @@ jobs:
         run: |
           chmod uog+x "$(pwd)/defid"
 
-      - uses: actions/setup-node@v3
+      - uses: actions/setup-node@v4
         with:
           node-version: '18'
 

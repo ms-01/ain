@@ -46,7 +46,7 @@ jobs:
 
     - name: Restore cpp build cache
       id: cpp-cache-restore
-      uses: actions/cache/restore@v3
+      uses: actions/cache/restore@v4
       with:
         path: |
           ./build/depends
@@ -66,7 +66,7 @@ jobs:
       run: ./make.sh build
 
     - name: Upload binaries
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: defi-bins
         path: |
@@ -74,7 +74,7 @@ jobs:
           build/src/defi-cli
 
     - name: Upload shell commands
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: sync
         path: ci/sync/main.sh
@@ -144,12 +144,12 @@ jobs:
       run: mkdir $DATADIR && tar -C $DATADIR -xvf datadir-${{matrix.blocks.start}}.tar.gz
 
     - name: Download binaries
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: defi-bins
 
     - name: Download Shell Commands
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: sync
 
