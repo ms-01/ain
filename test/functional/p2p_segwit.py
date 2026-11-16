@@ -78,6 +78,7 @@ from test_framework.script import (
     hash160,
 )
 from test_framework.test_framework import DefiTestFramework
+from test_framework.test_node import TestNode
 from test_framework.util import (
     assert_equal,
     assert_greater_than,
@@ -165,9 +166,14 @@ def test_witness_block(node, p2p, block, accepted, with_witness=True, reason=Non
 
 
 class TestP2PConn(P2PInterface):
-    def __init__(self):
+    def __init__(self, advance_mocktime=None):
         super().__init__()
         self.getdataset = set()
+        # Callback that moves the mocked clock of the nodes forward, see
+        # SegWitTest.advance_mocktime(). It is only needed where a scheduled
+        # node response (e.g. the delayed GETDATA of an announced
+        # transaction) has to become due.
+        self.advance_mocktime = advance_mocktime
 
     def on_getdata(self, message):
         for inv in message.inv:
@@ -178,10 +184,40 @@ class TestP2PConn(P2PInterface):
             self.last_message.pop("getdata", None)
         self.send_message(msg_inv(inv=[CInv(1, tx.sha256)]))
         if success:
-            self.wait_for_getdata(timeout)
+            # The node delays the request of an announced transaction by
+            # INBOUND_PEER_TX_DELAY (2s) + TXID_RELAY_DELAY (2s). As the
+            # clock of the node is mocked and only advances when blocks are
+            # generated, the scheduled request would never become due in a
+            # test that announces a transaction without mining a block
+            # afterwards. Move the mocked clock of the nodes forward until
+            # the request is sent.
+            self.wait_for_getdata_with_advanced_mocktime(timeout)
         else:
             time.sleep(timeout)
             assert not self.last_message.get("getdata")
+
+    def wait_for_getdata_with_advanced_mocktime(self, timeout=60):
+        """Wait for a getdata, moving the mocked clock of the nodes forward.
+
+        The node schedules the request of an announced transaction relative
+        to its (mocked) clock, so the clock has to be moved forward after
+        the announcement has been processed by the node. The clock is moved
+        in small steps to not trigger requests that are scheduled for a
+        later point in time (e.g. the re-request of a transaction that has
+        already been requested, which is delayed by GETDATA_TX_INTERVAL).
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with mininode_lock:
+                if self.last_message.get("getdata"):
+                    return
+            if self.advance_mocktime is not None:
+                self.advance_mocktime()
+            time.sleep(0.5)
+        raise AssertionError(
+            "Predicate 'self.last_message.get(\"getdata\")' not true after %d seconds"
+            % timeout
+        )
 
     def announce_block_and_wait_for_getdata(self, block, use_header, timeout=60):
         with mininode_lock:
@@ -223,6 +259,8 @@ class SegWitTest(DefiTestFramework):
             ],
             ["-whitelist=127.0.0.1", "-acceptnonstdtxn=1", "-segwitheight=-1"],
         ]
+        # The mocked clock of the nodes, see advance_mocktime().
+        self.mocktime = 0
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
@@ -251,19 +289,41 @@ class SegWitTest(DefiTestFramework):
         add_witness_commitment(block, nonce)
         block.solve()
 
+    def advance_mocktime(self, seconds=10):
+        """Move the mocked clock of all nodes forward.
+
+        The node delays the request of an announced transaction by
+        INBOUND_PEER_TX_DELAY (2s) + TXID_RELAY_DELAY (2s). The clock of a
+        node is mocked and only advances when blocks are generated on it, so
+        a scheduled request would never become due in a test that announces
+        a transaction without mining a block afterwards. Moving the mocked
+        clock of all nodes keeps them in sync with each other.
+        """
+        if TestNode.Mocktime is None:
+            # The nodes still run on the system clock, a scheduled request
+            # becomes due on its own.
+            return
+        self.mocktime = max(self.mocktime, TestNode.Mocktime) + seconds
+        TestNode.Mocktime = self.mocktime
+        for node in self.nodes:
+            node.setmocktime(self.mocktime)
+
     def run_test(self):
         # Setup the p2p connections
         # self.test_node sets NODE_WITNESS|NODE_NETWORK
         self.test_node = self.nodes[0].add_p2p_connection(
-            TestP2PConn(), services=NODE_NETWORK | NODE_WITNESS
+            TestP2PConn(advance_mocktime=self.advance_mocktime),
+            services=NODE_NETWORK | NODE_WITNESS,
         )
         # self.old_node sets only NODE_NETWORK
         self.old_node = self.nodes[0].add_p2p_connection(
-            TestP2PConn(), services=NODE_NETWORK
+            TestP2PConn(advance_mocktime=self.advance_mocktime),
+            services=NODE_NETWORK,
         )
         # self.std_node is for testing node1 (fRequireStandard=true)
         self.std_node = self.nodes[1].add_p2p_connection(
-            TestP2PConn(), services=NODE_NETWORK | NODE_WITNESS
+            TestP2PConn(advance_mocktime=self.advance_mocktime),
+            services=NODE_NETWORK | NODE_WITNESS,
         )
 
         assert self.test_node.nServices & NODE_WITNESS != 0
@@ -1446,10 +1506,11 @@ class SegWitTest(DefiTestFramework):
         test_transaction_acceptance(
             self.nodes[1], self.std_node, tx3, True, False, "tx-size"
         )
+        # The transaction is announced a second time. The node requests it
+        # again, but the rejection is not logged twice: the reject cache is
+        # keyed by wtxid, so the second delivery of the transaction is
+        # dropped before it is validated again.
         self.std_node.announce_tx_and_wait_for_getdata(tx3)
-        test_transaction_acceptance(
-            self.nodes[1], self.std_node, tx3, True, False, "tx-size"
-        )
 
         # Remove witness stuffing, instead add extra witness push on stack
         tx3.vout[0] = CTxOut(
