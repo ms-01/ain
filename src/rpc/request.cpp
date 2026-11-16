@@ -32,6 +32,10 @@ UniValue JSONRPCRequestObj(const std::string& strMethod, const UniValue& params,
     request.pushKV("method", strMethod);
     request.pushKV("params", params);
     request.pushKV("id", id);
+    // The JSON-RPC version belongs to each request object, not to the envelope:
+    // a batch request (e.g. "-getinfo") has an array envelope, and the version
+    // has to be carried by every member of that array.
+    request.pushKV("jsonrpc", "2.0");
     return request;
 }
 
