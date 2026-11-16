@@ -21,6 +21,8 @@ This test:
     Node 0's block is accepted and contains bit 24.
 """
 
+import os
+
 from test_framework.test_framework import DefiTestFramework
 from test_framework.util import assert_equal
 
@@ -90,6 +92,26 @@ class MasternodeVersionGateTest(DefiTestFramework):
         # Node 0's block MUST have bit 24 set
         assert (block205_upgraded["version"] & VERSION_BIT_BALANCE_OVERFLOW) != 0, \
             f"Expected bit 24 set in version {hex(block205_upgraded['version'])}"
+
+        # --- Phase 4: No false positive version warnings ---
+        # The expected block version has to contain bit 24 from GATE_HEIGHT on,
+        # otherwise the post-gate blocks are reported as having an unexpected
+        # version and the unknown versionbit warning is raised.
+        warnings = node0.getnetworkinfo()["warnings"]
+        assert "unexpected version" not in warnings, f"Unexpected warning: {warnings}"
+        assert (
+            "unknown new rules activated" not in warnings
+        ), f"Unexpected warning: {warnings}"
+
+        debug_log_path = os.path.join(node0.datadir, node0.chain, "debug.log")
+        with open(debug_log_path, "r", encoding="utf-8") as f:
+            debug_log = f.read()
+        assert (
+            "unexpected version" not in debug_log
+        ), "Found 'unexpected version' warning in debug.log"
+        assert (
+            "unknown new rules activated" not in debug_log
+        ), "Found 'unknown new rules activated' warning in debug.log"
 
 
 if __name__ == "__main__":

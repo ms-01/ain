@@ -350,5 +350,29 @@ BOOST_AUTO_TEST_CASE(versionbits_computeblockversion)
     //BOOST_CHECK_EQUAL(ComputeBlockVersion(lastBlock, mainnetParams) & VERSIONBITS_TOP_MASK, VERSIONBITS_TOP_BITS);
 }
 
+BOOST_AUTO_TEST_CASE(versionbits_mn_version_gate)
+{
+    // The expected block version has to contain VERSION_BIT_BALANCE_OVERFLOW from
+    // the masternode version gate height on, otherwise blocks are reported as
+    // having an unexpected version.
+    const auto chainParams = CreateChainParams(CBaseChainParams::REGTEST);
+    Consensus::Params params = chainParams->GetConsensus();
+    params.nMNVersionGateHeight = 10;
+
+    // The genesis block (no previous block) is below the gate height.
+    BOOST_CHECK_EQUAL(ComputeBlockVersion(nullptr, params) & Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW, 0);
+
+    VersionBitsTester chain;
+    CBlockIndex *tip = chain.Mine(10, 0, VERSIONBITS_TOP_BITS).Tip();
+    BOOST_REQUIRE(tip != nullptr);
+    BOOST_CHECK_EQUAL(tip->nHeight, 9);
+
+    // Expected version of the block at height 9 (below the gate height): no bit.
+    BOOST_CHECK_EQUAL(ComputeBlockVersion(tip->pprev, params) & Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW, 0);
+
+    // Expected version of the block at height 10 (the gate height): bit set.
+    BOOST_CHECK_NE(ComputeBlockVersion(tip, params) & Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW, 0);
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()
