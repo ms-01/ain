@@ -110,6 +110,15 @@ class P2PConnection(asyncio.Protocol):
         # The underlying transport of the connection.
         # Should only call methods on this from the NetworkThread, c.f. call_soon_threadsafe
         self._transport = None
+        # The address of the peer. For inbound connections (see P2PListener) this is filled in
+        # once the connection has been made.
+        self.dstaddr = None
+        self.dstport = None
+        self.net = "regtest"
+        self.magic_bytes = MAGIC_BYTES[self.net]
+        # The initial message to send after the connection was made:
+        self.on_connection_send_msg = None
+        self.recvbuf = b""
 
     @property
     def is_connected(self):
@@ -119,6 +128,7 @@ class P2PConnection(asyncio.Protocol):
         assert not self.is_connected
         self.dstaddr = dstaddr
         self.dstport = dstport
+        self.net = net
         # The initial message to send after the connection was made:
         self.on_connection_send_msg = None
         self.recvbuf = b""
@@ -132,6 +142,20 @@ class P2PConnection(asyncio.Protocol):
         conn_gen = lambda: loop.call_soon_threadsafe(loop.create_task, conn_gen_unsafe)
         return conn_gen
 
+    def peer_accept(self, dstaddr=None, dstport=None, net="regtest"):
+        """Prepare this connection for an inbound connection from a node.
+
+        The peer address is only known once the connection has been made, so it is
+        filled in by connection_made() if it is not known yet."""
+        assert not self.is_connected
+        self.dstaddr = dstaddr
+        self.dstport = dstport
+        self.net = net
+        # The initial message to send after the connection was made:
+        self.on_connection_send_msg = None
+        self.recvbuf = b""
+        self.magic_bytes = MAGIC_BYTES[net]
+
     def peer_disconnect(self):
         # Connection could have already been closed by other end.
         NetworkThread.network_event_loop.call_soon_threadsafe(
@@ -143,6 +167,10 @@ class P2PConnection(asyncio.Protocol):
     def connection_made(self, transport):
         """asyncio callback when a connection is opened."""
         assert not self._transport
+        if self.dstaddr is None:
+            # Inbound connection (see P2PListener): the peer address is only known now.
+            peer = transport.get_extra_info("peername")
+            self.dstaddr, self.dstport = peer[0], peer[1]
         logger.debug("Connected & Listening: %s:%d" % (self.dstaddr, self.dstport))
         self._transport = transport
         if self.on_connection_send_msg:
@@ -311,6 +339,22 @@ class P2PInterface(P2PConnection):
             self.on_connection_send_msg = vt  # Will be sent soon after connection_made
 
         return create_conn
+
+    def peer_accept(self, *args, services=NODE_NETWORK | NODE_WITNESS, send_version=True, **kwargs):
+        """Prepare this connection for an inbound connection from a node.
+
+        The version message is sent as soon as the connection has been made."""
+        super().peer_accept(*args, **kwargs)
+
+        if send_version:
+            # Send a version msg
+            vt = msg_version()
+            vt.nServices = services
+            vt.addrTo.ip = self.dstaddr if self.dstaddr else "0.0.0.0"
+            vt.addrTo.port = self.dstport if self.dstport else 0
+            vt.addrFrom.ip = "0.0.0.0"
+            vt.addrFrom.port = 0
+            self.on_connection_send_msg = vt  # Will be sent soon after connection_made
 
     # Message receiving methods
 
@@ -561,6 +605,49 @@ class NetworkThread(threading.Thread):
         wait_until(lambda: not self.network_event_loop.is_running(), timeout=timeout)
         self.network_event_loop.close()
         self.join(timeout)
+
+
+class P2PListener:
+    """Accepts inbound P2P connections from a node.
+
+    A node can be pointed at the listener with -connect=<host>:<port>, which makes the node
+    open an outbound (and therefore manual) connection towards the listener. This is used to
+    test the behaviour towards manual peers, without having to add a new RPC to the node."""
+
+    def __init__(self, connection_factory=None):
+        self._connection_factory = connection_factory if connection_factory else P2PInterface
+        self.connections = []
+        self._server = None
+        self.port = None
+
+    def _protocol_factory(self):
+        connection = self._connection_factory()
+        connection.peer_accept()
+        self.connections.append(connection)
+        return connection
+
+    def start(self, host="127.0.0.1"):
+        """Start listening on a random free port and return the port."""
+        loop = NetworkThread.network_event_loop
+        future = asyncio.run_coroutine_threadsafe(
+            loop.create_server(self._protocol_factory, host, 0), loop
+        )
+        self._server = future.result()
+        self.port = self._server.sockets[0].getsockname()[1]
+        logger.debug("Listening for P2P connections on %s:%d", host, self.port)
+        return self.port
+
+    def stop(self):
+        """Stop listening for new connections."""
+        if self._server is not None:
+            loop = NetworkThread.network_event_loop
+            loop.call_soon_threadsafe(self._server.close)
+            self._server = None
+
+    def wait_for_connection(self, timeout=60):
+        """Wait for a node to connect and return the connection."""
+        wait_until(lambda: len(self.connections) > 0, timeout=timeout)
+        return self.connections[0]
 
 
 class P2PDataStore(P2PInterface):

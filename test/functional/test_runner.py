@@ -229,6 +229,7 @@ BASE_SCRIPTS = [
     "p2p_mempool.py",
     "rpc_setban.py",
     "p2p_blocksonly.py",
+    "p2p_ibd_stalling.py",
     "mining_prioritisetransaction.py",
     "p2p_invalid_locator.py",
     "p2p_invalid_block.py",
