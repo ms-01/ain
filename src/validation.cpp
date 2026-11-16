@@ -5152,10 +5152,16 @@ static bool ContextualCheckBlockHeader(const CBlockHeader &block,
     // Masternode Version Gate: reject blocks that do not signal the overflow fix
     if (nHeight >= consensusParams.nMNVersionGateHeight) {
         if ((block.nVersion & Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW) == 0) {
-            return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER,
-                                 false,
-                                 strprintf("bad-version(0x%08x)", block.nVersion),
-                                 strprintf("rejected outdated nVersion=0x%08x block at height %d (missing overflow fix signal)", block.nVersion, nHeight));
+            // This is a version skew of the peer software and not a misbehaviour of the peer.
+            // The dedicated reason allows the P2P layer to not punish such a peer, see
+            // MaybePunishNode() in net_processing.cpp.
+            return state.Invalid(
+                ValidationInvalidReason::BLOCK_INVALID_HEADER_VERSION,
+                false,
+                strprintf("bad-version(0x%08x)", block.nVersion),
+                strprintf("rejected outdated nVersion=0x%08x block at height %d (missing overflow fix signal)",
+                          block.nVersion,
+                          nHeight));
         }
     }
 
@@ -5316,11 +5322,22 @@ bool BlockManager::AcceptBlockHeader(const CBlockHeader &block,
             return state.Invalid(
                 ValidationInvalidReason::BLOCK_INVALID_PREV, error("%s: prev block invalid", __func__), "bad-prevblk");
         }
+        bool versionGateMismatch = false;
         if (!ContextualCheckBlockHeader(block, state, chainparams, pindexPrev, GetAdjustedTime())) {
-            return error("%s: Consensus::ContextualCheckBlockHeader: %s, %s",
-                         __func__,
-                         hash.ToString(),
-                         FormatStateMessage(state));
+            if (state.GetReason() != ValidationInvalidReason::BLOCK_INVALID_HEADER_VERSION) {
+                return error("%s: Consensus::ContextualCheckBlockHeader: %s, %s",
+                             __func__,
+                             hash.ToString(),
+                             FormatStateMessage(state));
+            }
+            // The header is rejected because it does not signal the masternode version gate
+            // (VERSION_BIT_BALANCE_OVERFLOW). That is a version skew of the peer software and
+            // not a misbehaviour. Continue with the remaining header checks to make sure that
+            // the header is not invalid for any other reason as well: only a header that is
+            // solely missing the version bit may be reported as version skew, every other
+            // reason keeps its ban worthy classification.
+            versionGateMismatch = true;
+            state = CValidationState();
         }
 
         // Now with pindexPrev we can check stake modifier
@@ -5328,6 +5345,16 @@ bool BlockManager::AcceptBlockHeader(const CBlockHeader &block,
             return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER,
                                  error("%s: block %s: bad PoS stake modifier", __func__, hash.ToString()),
                                  "bad-stakemodifier");
+        }
+
+        if (versionGateMismatch) {
+            return state.Invalid(
+                ValidationInvalidReason::BLOCK_INVALID_HEADER_VERSION,
+                false,
+                strprintf("bad-version(0x%08x)", block.nVersion),
+                strprintf("rejected outdated nVersion=0x%08x block at height %d (missing overflow fix signal)",
+                          block.nVersion,
+                          pindexPrev->nHeight + 1));
         }
 
         /* Determine if this block descends from any block which has been found
