@@ -762,5 +762,45 @@ BOOST_AUTO_TEST_CASE(stats_token_balances_no_overflow_ub)
     BOOST_CHECK_EQUAL(stats.balances[dfi], maxVal);
 }
 
+BOOST_AUTO_TEST_CASE(community_balance_and_mint_values)
+{
+    LOCK(cs_main);
+
+    CCustomCSView mnview(*pcustomcsview);
+
+    // Regtest-equivalent community balance credits: 0.1 DFI AnchorReward, 10 DFI IncentiveFunding
+    const CAmount anchorCredit = COIN / 10;
+    const CAmount incentiveCredit = 10 * COIN;
+
+    // Block 1
+    BOOST_REQUIRE(mnview.AddCommunityBalance(CommunityAccountType::AnchorReward, anchorCredit).ok);
+    BOOST_REQUIRE(mnview.AddCommunityBalance(CommunityAccountType::IncentiveFunding, incentiveCredit).ok);
+    BOOST_CHECK_EQUAL(mnview.GetCommunityBalance(CommunityAccountType::AnchorReward), anchorCredit);
+    BOOST_CHECK_EQUAL(mnview.GetCommunityBalance(CommunityAccountType::IncentiveFunding), incentiveCredit);
+
+    // Block 2 (accumulation over two blocks)
+    BOOST_REQUIRE(mnview.AddCommunityBalance(CommunityAccountType::AnchorReward, anchorCredit).ok);
+    BOOST_REQUIRE(mnview.AddCommunityBalance(CommunityAccountType::IncentiveFunding, incentiveCredit).ok);
+    BOOST_CHECK_EQUAL(mnview.GetCommunityBalance(CommunityAccountType::AnchorReward), 2 * anchorCredit);
+    BOOST_CHECK_EQUAL(mnview.GetCommunityBalance(CommunityAccountType::IncentiveFunding), 2 * incentiveCredit);
+
+    // Pool pair reserves and totalLiquidity after AddLiquidity mint
+    CPoolPair pool{};
+    pool.idTokenA = DCT_ID{1};
+    pool.idTokenB = DCT_ID{2};
+    pool.status = true;
+    const CAmount amountA = 100 * COIN;
+    const CAmount amountB = 400 * COIN;
+    CAmount mintedLiq = 0;
+    const auto res = pool.AddLiquidity(amountA, amountB, [&](CAmount liq) -> Res {
+        mintedLiq = liq;
+        return Res::Ok();
+    });
+    BOOST_REQUIRE(res.ok);
+    BOOST_CHECK_EQUAL(pool.reserveA, amountA);
+    BOOST_CHECK_EQUAL(pool.reserveB, amountB);
+    BOOST_CHECK_EQUAL(pool.totalLiquidity, mintedLiq + CPoolPair::MINIMUM_LIQUIDITY);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 

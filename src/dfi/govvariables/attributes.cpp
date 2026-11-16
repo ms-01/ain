@@ -2291,7 +2291,7 @@ Res ATTRIBUTES::Apply(CCustomCSView &mnview, const uint32_t height) {
                     const auto aggregatePrice = GetAggregatePrice(
                         mnview, fixedIntervalPrice.priceFeedId.first, fixedIntervalPrice.priceFeedId.second, time);
                     if (aggregatePrice) {
-                        fixedIntervalPrice.priceRecord[1] = aggregatePrice;
+                        fixedIntervalPrice.priceRecord[1] = *aggregatePrice;
                     }
                     if (auto res = mnview.SetFixedIntervalPrice(fixedIntervalPrice); !res) {
                         return res;

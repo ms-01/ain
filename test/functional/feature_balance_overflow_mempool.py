@@ -127,6 +127,7 @@ class BalanceOverflowMempoolTest(DefiTestFramework):
                 "-metachainheight=1",
                 "-df23height=1",
                 "-df24height=1",
+                "-df25height=-1",
                 f"-balanceoverflowheight={ACTIVATION_HEIGHT}",
             ],
             [
@@ -153,6 +154,7 @@ class BalanceOverflowMempoolTest(DefiTestFramework):
                 "-metachainheight=1",
                 "-df23height=1",
                 "-df24height=1",
+                "-df25height=-1",
                 f"-balanceoverflowheight={ACTIVATION_HEIGHT}",
             ],
         ]
@@ -260,14 +262,16 @@ class BalanceOverflowMempoolTest(DefiTestFramework):
         holder, producer = self.nodes
 
         self.log.info(f"The chain starts at height {holder.getblockcount()}")
-        assert holder.getblockcount() < ACTIVATION_HEIGHT, (
-            "the chain must start below the activation height"
-        )
+        assert (
+            holder.getblockcount() < ACTIVATION_HEIGHT
+        ), "the chain must start below the activation height"
 
         # ------------------------------------------------------------------
         # S1: below the activation height the historical behaviour applies.
         # ------------------------------------------------------------------
-        self.log.info("S1: the overflowing transaction is accepted and mined below the activation height")
+        self.log.info(
+            "S1: the overflowing transaction is accepted and mined below the activation height"
+        )
 
         attacker, utxos = self.fund_attacker(holder, 3)
         small_script, small_addr, big_script, big_addr = self.recipients(holder)
@@ -289,9 +293,7 @@ class BalanceOverflowMempoolTest(DefiTestFramework):
         # The historical behaviour debits the source with the truncated sum
         # (8.00000001 DFI) and credits the destinations with their full
         # amounts.
-        assert_equal(
-            self.account_balance(holder, small_addr), Decimal(SMALL) / COIN
-        )
+        assert_equal(self.account_balance(holder, small_addr), Decimal(SMALL) / COIN)
         assert_equal(self.account_balance(holder, big_addr), Decimal(BIG) / COIN)
 
         # The producer node follows the chain of the holder.
@@ -364,21 +366,21 @@ class BalanceOverflowMempoolTest(DefiTestFramework):
         # not contain any transaction of the mempool, so this only works if
         # the rebuild is enforced at the activation height.
         self.log.info("S2/S3: the overflowing transaction is dropped from the mempool")
-        assert pending_txid not in holder.getrawmempool(), (
-            "the overflowing transaction must be dropped from the mempool"
-        )
+        assert (
+            pending_txid not in holder.getrawmempool()
+        ), "the overflowing transaction must be dropped from the mempool"
         self.log.info("S6: the child of the dropped transaction is dropped as well")
-        assert pending_child_txid not in holder.getrawmempool(), (
-            "the child of the dropped transaction must be dropped from the mempool"
-        )
+        assert (
+            pending_child_txid not in holder.getrawmempool()
+        ), "the child of the dropped transaction must be dropped from the mempool"
         self.log.info("S5: the transaction without an overflow survives")
-        assert control_txid in holder.getrawmempool(), (
-            "the control transaction must stay in the mempool"
-        )
+        assert (
+            control_txid in holder.getrawmempool()
+        ), "the control transaction must stay in the mempool"
         self.log.info("S7: the child of the surviving transaction survives as well")
-        assert control_child_txid in holder.getrawmempool(), (
-            "the child of the surviving transaction must stay in the mempool"
-        )
+        assert (
+            control_child_txid in holder.getrawmempool()
+        ), "the child of the surviving transaction must stay in the mempool"
 
         # ------------------------------------------------------------------
         # S5: the control transaction is mined with the activation block.
@@ -386,10 +388,14 @@ class BalanceOverflowMempoolTest(DefiTestFramework):
         self.log.info("S5: the control transaction is mined")
         holder.generate(1)
         assert holder.getblockcount() == ACTIVATION_HEIGHT
-        assert control_txid in holder.getblock(holder.getblockhash(holder.getblockcount()))["tx"]
-        assert pending_txid not in holder.getblock(
-            holder.getblockhash(holder.getblockcount())
-        )["tx"]
+        assert (
+            control_txid
+            in holder.getblock(holder.getblockhash(holder.getblockcount()))["tx"]
+        )
+        assert (
+            pending_txid
+            not in holder.getblock(holder.getblockhash(holder.getblockcount()))["tx"]
+        )
 
         # ------------------------------------------------------------------
         # S4: above the activation height the transaction is rejected right

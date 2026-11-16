@@ -258,7 +258,7 @@ Res CLoansConsensus::operator()(const CLoanSetCollateralTokenMessage &obj) const
         return price;
     }
 
-    fixedIntervalPrice.priceRecord[1] = price;
+    fixedIntervalPrice.priceRecord[1] = *price;
     fixedIntervalPrice.timestamp = time;
 
     auto resSetFixedPrice = mnview.SetFixedIntervalPrice(fixedIntervalPrice);
@@ -364,7 +364,7 @@ Res CLoansConsensus::operator()(const CLoanSetLoanTokenMessage &obj) const {
 
     CFixedIntervalPrice fixedIntervalPrice;
     fixedIntervalPrice.priceFeedId = loanToken.fixedIntervalPriceId;
-    fixedIntervalPrice.priceRecord[1] = nextPrice;
+    fixedIntervalPrice.priceRecord[1] = *nextPrice;
     fixedIntervalPrice.timestamp = time;
 
     auto resSetFixedPrice = mnview.SetFixedIntervalPrice(fixedIntervalPrice);

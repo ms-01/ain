@@ -1161,7 +1161,7 @@ Res CCustomCSView::PopulateLoansData(CVaultAssets &result,
             return Res::Err("Exceeded maximum loans");
         }
 
-        result.loans.push_back({loanTokenId, amountInCurrency});
+        result.loans.push_back({loanTokenId, *amountInCurrency});
     }
     return Res::Ok();
 }
@@ -1197,7 +1197,7 @@ Res CCustomCSView::PopulateCollateralData(CVaultAssets &result,
             return Res::Err("Exceeded maximum collateral");
         }
 
-        result.collaterals.push_back({tokenId, amountInCurrency});
+        result.collaterals.push_back({tokenId, *amountInCurrency});
     }
     return Res::Ok();
 }

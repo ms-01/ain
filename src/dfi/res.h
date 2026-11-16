@@ -67,7 +67,7 @@ struct ResVal : public Res {
         assert(this->ok);  // if value if provided, then it's never an error
     }
 
-    operator bool() const { return ok; }
+    explicit operator bool() const { return ok; }
 
     explicit operator T() const {
         assert(ok);

@@ -136,6 +136,7 @@ class BalanceOverflowReorgTest(DefiTestFramework):
             "-metachainheight=1",
             "-df23height=1",
             "-df24height=1",
+            "-df25height=-1",
         ]
         self.extra_args = [
             forks + [f"-balanceoverflowheight={ACTIVATION_HEIGHT}"]
@@ -236,8 +237,7 @@ class BalanceOverflowReorgTest(DefiTestFramework):
             self.p2wpkh_script(producer, address) for address in recipients
         )
         script_addresses = {
-            self.p2wpkh_script(producer, address): address
-            for address in recipients
+            self.p2wpkh_script(producer, address): address for address in recipients
         }
         small_address, large_address = [script_addresses[s] for s in scripts]
         addresses = [source, small_address, large_address]
@@ -285,10 +285,15 @@ class BalanceOverflowReorgTest(DefiTestFramework):
 
         self.log.info("Fork A: the historical chain with the overflowing transfer")
         txid = producer.sendrawtransaction(historical_tx)
-        self.log.info("The overflowing transaction was accepted below the activation height: %s", txid)
+        self.log.info(
+            "The overflowing transaction was accepted below the activation height: %s",
+            txid,
+        )
         producer.generate(3)
         assert_equal(producer.getblockcount(), ACTIVATION_HEIGHT + 1)
-        self.submit_chain(producer, receiver, PARENT_HEIGHT + 1, producer.getblockcount())
+        self.submit_chain(
+            producer, receiver, PARENT_HEIGHT + 1, producer.getblockcount()
+        )
         check_state(True)
         self.log.info("The historical block below the activation height was applied")
 
@@ -297,15 +302,21 @@ class BalanceOverflowReorgTest(DefiTestFramework):
         alternate.generate(4)
         assert_equal(alternate.getblockcount(), ACTIVATION_HEIGHT + 2)
         require_stronger(alternate)
-        self.submit_chain(alternate, receiver, PARENT_HEIGHT + 1, alternate.getblockcount())
+        self.submit_chain(
+            alternate, receiver, PARENT_HEIGHT + 1, alternate.getblockcount()
+        )
         check_state(False)
         self.log.info("The reorganization restored the balances of the valid chain")
 
-        self.log.info("Back to fork A: the historical block is replayed above the activation height")
+        self.log.info(
+            "Back to fork A: the historical block is replayed above the activation height"
+        )
         producer.generate(2)
         assert_equal(producer.getblockcount(), ACTIVATION_HEIGHT + 3)
         require_stronger(producer)
-        self.submit_chain(producer, receiver, ACTIVATION_HEIGHT + 2, producer.getblockcount())
+        self.submit_chain(
+            producer, receiver, ACTIVATION_HEIGHT + 2, producer.getblockcount()
+        )
         check_state(True)
         self.log.info(
             "The reorganization replayed the historical rule of the block below the activation height"
@@ -344,7 +355,9 @@ class BalanceOverflowReorgTest(DefiTestFramework):
         alternate.generate(2)
         assert_equal(alternate.getblockcount(), ACTIVATION_HEIGHT + 4)
         require_stronger(alternate)
-        self.submit_chain(alternate, receiver, ACTIVATION_HEIGHT + 3, alternate.getblockcount())
+        self.submit_chain(
+            alternate, receiver, ACTIVATION_HEIGHT + 3, alternate.getblockcount()
+        )
         check_state(False)
 
         # The node under test has to match the independently maintained

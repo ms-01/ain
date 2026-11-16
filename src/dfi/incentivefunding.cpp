@@ -39,7 +39,7 @@ Res CCommunityBalancesView::AddCommunityBalance(CommunityAccountType account, CA
     if (!sum) {
         return sum;
     }
-    return SetCommunityBalance(account, sum);
+    return SetCommunityBalance(account, *sum);
 }
 
 Res CCommunityBalancesView::SubCommunityBalance(CommunityAccountType account, CAmount amount) {
