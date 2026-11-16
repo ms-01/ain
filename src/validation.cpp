@@ -2254,6 +2254,15 @@ int32_t ComputeBlockVersion(const CBlockIndex *pindexPrev, const Consensus::Para
         }
     }
 
+    // From the masternode version gate height on, every block has to signal the
+    // balance overflow fix via VERSION_BIT_BALANCE_OVERFLOW. Expect that bit here
+    // as well, otherwise the version of such blocks is reported as unexpected and
+    // the unknown versionbit warning is raised.
+    const int nHeight = pindexPrev ? pindexPrev->nHeight + 1 : 0;
+    if (nHeight >= params.nMNVersionGateHeight) {
+        nVersion |= Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW;
+    }
+
     return nVersion;
 }
 
