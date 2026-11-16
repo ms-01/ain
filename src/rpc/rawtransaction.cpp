@@ -1042,10 +1042,30 @@ UniValue decodepsbt(const JSONRPCRequest& request)
 
     UniValue result(UniValue::VOBJ);
 
+    // The version of the PSBT (0 = BIP174, 2 = PSBTv2)
+    result.pushKV("psbt_version", static_cast<uint64_t>(psbtx.GetVersion()));
+
+    // The global xpub records (PSBTv2 only)
+    UniValue xpubs(UniValue::VARR);
+    for (const PSBTXPub& xpub : psbtx.m_xpubs) {
+        UniValue x(UniValue::VOBJ);
+        x.pushKV("version", static_cast<uint64_t>(xpub.version));
+        x.pushKV("fingerprint", HexStr(xpub.origin.fingerprint, xpub.origin.fingerprint + sizeof(xpub.origin.fingerprint)));
+        UniValue path(UniValue::VARR);
+        for (const uint32_t p : xpub.origin.path) {
+            path.push_back(static_cast<uint64_t>(p));
+        }
+        x.pushKV("path", path);
+        xpubs.push_back(x);
+    }
+    result.pushKV("xpubs", xpubs);
+
     // Add the decoded tx
-    UniValue tx_univ(UniValue::VOBJ);
-    TxToUniv(CTransaction(*psbtx.tx), uint256(), tx_univ, false);
-    result.pushKV("tx", tx_univ);
+    if (psbtx.tx) {
+        UniValue tx_univ(UniValue::VOBJ);
+        TxToUniv(CTransaction(*psbtx.tx), uint256(), tx_univ, false);
+        result.pushKV("tx", tx_univ);
+    }
 
     // Unknown data
     UniValue unknowns(UniValue::VOBJ);
@@ -1346,6 +1366,7 @@ UniValue createpsbt(const JSONRPCRequest& request)
                     {"locktime", RPCArg::Type::NUM, /* default */ "0", "Raw locktime. Non-0 value also locktime-activates inputs"},
                     {"replaceable", RPCArg::Type::BOOL, /* default */ "false", "Marks this transaction as BIP125 replaceable.\n"
                             "                             Allows this transaction to be replaced by a transaction with higher fees. If provided, it is an error if explicit sequence numbers are incompatible."},
+                    {"psbt_version", RPCArg::Type::NUM, /* default */ "0", "The PSBT version number to use. 0 = BIP174 (PSBTv0), 2 = PSBTv2."},
                 },
                 RPCResult{
                             "  \"psbt\"        (string)  The resulting raw transaction (base64-encoded string)\n"
@@ -1361,6 +1382,7 @@ UniValue createpsbt(const JSONRPCRequest& request)
         UniValueType(), // ARR or OBJ, checked later
         UniValue::VNUM,
         UniValue::VBOOL,
+        UniValue::VNUM,
         }, true
     );
 
@@ -1368,6 +1390,8 @@ UniValue createpsbt(const JSONRPCRequest& request)
     if (!request.params[3].isNull()) {
         rbf = request.params[3].isTrue();
     }
+
+    const uint32_t psbt_version = ParsePSBTVersion(request.params[4]);
 
 //    std::shared_ptr<CWallet> const wallet = GetWalletForJSONRPCRequest(request);
 //    CWallet* const pwallet = wallet.get();
@@ -1379,14 +1403,7 @@ UniValue createpsbt(const JSONRPCRequest& request)
     CMutableTransaction rawTx = ConstructTransaction(request.params[0], request.params[1], request.params[2], rbf, *g_rpc_interfaces->chain);
 
     // Make a blank psbt
-    PartiallySignedTransaction psbtx;
-    psbtx.tx = rawTx;
-    for (unsigned int i = 0; i < rawTx.vin.size(); ++i) {
-        psbtx.inputs.push_back(PSBTInput());
-    }
-    for (unsigned int i = 0; i < rawTx.vout.size(); ++i) {
-        psbtx.outputs.push_back(PSBTOutput());
-    }
+    PartiallySignedTransaction psbtx(rawTx, psbt_version);
 
     // Serialize the PSBT
     CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION | (rawTx.nVersion < CTransaction::TOKENS_MIN_VERSION ? SERIALIZE_TRANSACTION_NO_TOKENS : 0));
@@ -1579,6 +1596,7 @@ UniValue joinpsbts(const JSONRPCRequest& request)
 
     int32_t best_version = 1;
     uint32_t best_locktime = 0xffffffff;
+    uint32_t psbt_version = 0;
     for (unsigned int i = 0; i < txs.size(); ++i) {
         PartiallySignedTransaction psbtx;
         std::string error;
@@ -1586,6 +1604,12 @@ UniValue joinpsbts(const JSONRPCRequest& request)
             throw JSONRPCError(RPC_DESERIALIZATION_ERROR, strprintf("TX decode failed %s", error));
         }
         psbtxs.push_back(psbtx);
+        // All PSBTs must have the same version
+        if (i == 0) {
+            psbt_version = psbtx.GetVersion();
+        } else if (psbtx.GetVersion() != psbt_version) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Cannot join PSBTs of different versions");
+        }
         // Choose the highest version number
         if (psbtx.tx->nVersion > best_version) {
             best_version = psbtx.tx->nVersion;
@@ -1601,18 +1625,26 @@ UniValue joinpsbts(const JSONRPCRequest& request)
     merged_psbt.tx = CMutableTransaction();
     merged_psbt.tx->nVersion = best_version;
     merged_psbt.tx->nLockTime = best_locktime;
+    merged_psbt.SetVersion(psbt_version);
+    if (psbt_version >= 2) {
+        // A PSBTv2 does not contain the unsigned transaction, the version and the locktime
+        // are part of the global map
+        merged_psbt.tx_version = best_version;
+        merged_psbt.fallback_locktime = best_locktime;
+    }
 
     // Merge
     for (auto& psbt : psbtxs) {
-        for (unsigned int i = 0; i < psbt.tx->vin.size(); ++i) {
+        for (unsigned int i = 0; i < psbt.inputs.size(); ++i) {
             if (!merged_psbt.AddInput(psbt.tx->vin[i], psbt.inputs[i])) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Input %s:%d exists in multiple PSBTs", psbt.tx->vin[i].prevout.hash.ToString().c_str(), psbt.tx->vin[i].prevout.n));
             }
         }
-        for (unsigned int i = 0; i < psbt.tx->vout.size(); ++i) {
+        for (unsigned int i = 0; i < psbt.outputs.size(); ++i) {
             merged_psbt.AddOutput(psbt.tx->vout[i], psbt.outputs[i]);
         }
         merged_psbt.unknown.insert(psbt.unknown.begin(), psbt.unknown.end());
+        merged_psbt.proprietary.insert(psbt.proprietary.begin(), psbt.proprietary.end());
     }
 
     CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);

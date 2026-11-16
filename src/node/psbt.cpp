@@ -21,9 +21,16 @@ PSBTAnalysis AnalyzePSBT(PartiallySignedTransaction psbtx)
     bool only_missing_final = false;
     CAmount in_amt = 0;
 
-    result.inputs.resize(psbtx.tx->vin.size());
+    // A PSBT without a transaction cannot be analyzed (e.g. a PSBTv2 that does not contain
+    // enough information to rebuild it). Report it as incomplete instead of failing.
+    if (!psbtx.tx) {
+        result.next = PSBTRole::UPDATER;
+        return result;
+    }
 
-    for (unsigned int i = 0; i < psbtx.tx->vin.size(); ++i) {
+    result.inputs.resize(psbtx.inputs.size());
+
+    for (unsigned int i = 0; i < psbtx.inputs.size(); ++i) {
         PSBTInput& input = psbtx.inputs[i];
         PSBTInputAnalysis& input_analysis = result.inputs[i];
 
@@ -93,7 +100,7 @@ PSBTAnalysis AnalyzePSBT(PartiallySignedTransaction psbtx)
         CCoinsViewCache view(&view_dummy);
         bool success = true;
 
-        for (unsigned int i = 0; i < psbtx.tx->vin.size(); ++i) {
+        for (unsigned int i = 0; i < psbtx.inputs.size(); ++i) {
             PSBTInput& input = psbtx.inputs[i];
             Coin newcoin;
 

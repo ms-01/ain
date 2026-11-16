@@ -80,6 +80,85 @@ class PSBTTest(DefiTestFramework):
         connect_nodes_bi(self.nodes, 0, 1)
         connect_nodes_bi(self.nodes, 0, 2)
 
+    def test_psbt_v2(self):
+        node = self.nodes[0]
+        other = self.nodes[2]
+        address = other.getnewaddress()
+
+        # The default is still a PSBTv0
+        psbt_v0 = node.walletcreatefundedpsbt([], {address: 10})["psbt"]
+        assert_equal(node.decodepsbt(psbt_v0)["psbt_version"], 0)
+
+        # A PSBTv2 can be created and is reported by decodepsbt
+        psbt_v2 = node.walletcreatefundedpsbt(
+            [], {address: 10}, 0, {"psbt_version": 2}
+        )["psbt"]
+        decoded_v2 = node.decodepsbt(psbt_v2)
+        assert_equal(decoded_v2["psbt_version"], 2)
+        assert "tx" in decoded_v2
+        assert_equal(decoded_v2["xpubs"], [])
+
+        # Only the versions 0 and 2 are supported
+        assert_raises_rpc_error(
+            -8,
+            "The PSBT version can only be 2 or 0",
+            node.walletcreatefundedpsbt,
+            [],
+            {address: 10},
+            0,
+            {"psbt_version": 1},
+        )
+        assert_raises_rpc_error(
+            -8,
+            "The PSBT version can only be 2 or 0",
+            node.createpsbt,
+            [],
+            {address: 10},
+            0,
+            False,
+            1,
+        )
+
+        # A PSBTv0 and a PSBTv2 of the same transaction contain the same unsigned transaction
+        utxos = node.listunspent()
+        inputs = [{"txid": utxo["txid"], "vout": utxo["vout"]} for utxo in utxos]
+        outputs = {address: 1}
+        created_v0 = node.createpsbt(inputs, outputs, 0, False)
+        created_v2 = node.createpsbt(inputs, outputs, 0, False, 2)
+        assert_equal(node.decodepsbt(created_v0)["psbt_version"], 0)
+        assert_equal(node.decodepsbt(created_v2)["psbt_version"], 2)
+        assert_equal(
+            node.decodepsbt(created_v0)["tx"]["txid"],
+            node.decodepsbt(created_v2)["tx"]["txid"],
+        )
+
+        # A PSBTv0 and a PSBTv2 cannot be combined
+        assert_raises_rpc_error(
+            -8, "PSBTs not compatible", node.combinepsbt, [created_v0, created_v2]
+        )
+
+        # A PSBTv2 can be processed, signed and finalized
+        processed = node.walletprocesspsbt(psbt_v2)["psbt"]
+        assert_equal(node.decodepsbt(processed)["psbt_version"], 2)
+        analyzed = node.analyzepsbt(processed)
+        assert analyzed["inputs"][0]["has_utxo"]
+
+        finalized = node.finalizepsbt(processed)
+        assert "hex" in finalized
+        # The finalized transaction must contain the same inputs and outputs
+        raw = node.decoderawtransaction(finalized["hex"])
+        unsigned = node.decodepsbt(psbt_v2)["tx"]
+        assert_equal(len(raw["vin"]), len(unsigned["vin"]))
+        assert_equal(len(raw["vout"]), len(unsigned["vout"]))
+        for index, txin in enumerate(raw["vin"]):
+            assert_equal(txin["txid"], unsigned["vin"][index]["txid"])
+            assert_equal(txin["vout"], unsigned["vin"][index]["vout"])
+
+        # A PSBTv2 without the DFI specific records can still be processed
+        # (the PSBT is created by an external signer that does not know about them)
+        processed_again = node.walletprocesspsbt(processed)["psbt"]
+        assert_equal(node.decodepsbt(processed_again)["psbt_version"], 2)
+
     def run_test(self):
         # Create and fund a raw tx for sending 10 BTC
         psbtx1 = self.nodes[0].walletcreatefundedpsbt(
@@ -437,6 +516,9 @@ class PSBTTest(DefiTestFramework):
             self.nodes[2].unloadwallet("wallet{}".format(i))
 
         self.test_utxo_conversion()
+
+        # Test the PSBTv2 support
+        self.test_psbt_v2()
 
         # Test that psbts with p2pkh outputs are created properly
         p2pkh = self.nodes[0].getnewaddress(address_type="legacy")
