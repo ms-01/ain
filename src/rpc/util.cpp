@@ -278,6 +278,18 @@ unsigned int ParseConfirmTarget(const UniValue& value, unsigned int max_target)
     return (unsigned int)target;
 }
 
+uint32_t ParsePSBTVersion(const UniValue& value)
+{
+    if (value.isNull()) {
+        return 0;
+    }
+    const int64_t version = value.getInt<int64_t>();
+    if (version != 0 && version != 2) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "The PSBT version can only be 2 or 0");
+    }
+    return static_cast<uint32_t>(version);
+}
+
 RPCErrorCode RPCErrorFromTransactionError(TransactionError terr)
 {
     switch (terr) {

@@ -3099,6 +3099,7 @@ void FundTransaction(CWallet* const pwallet, CMutableTransaction& tx, CAmount& f
                 {"replaceable", UniValueType(UniValue::VBOOL)},
                 {"conf_target", UniValueType(UniValue::VNUM)},
                 {"estimate_mode", UniValueType(UniValue::VSTR)},
+                {"psbt_version", UniValueType(UniValue::VNUM)},
             },
             true, true);
 
@@ -4196,6 +4197,7 @@ UniValue walletcreatefundedpsbt(const JSONRPCRequest& request)
                             "         \"UNSET\"\n"
                             "         \"ECONOMICAL\"\n"
                             "         \"CONSERVATIVE\""},
+                            {"psbt_version", RPCArg::Type::NUM, /* default */ "0", "The PSBT version number to use. 0 = BIP174 (PSBTv0), 2 = PSBTv2."},
                         },
                         "options"},
                     {"bip32derivs", RPCArg::Type::BOOL, /* default */ "false", "If true, includes the BIP 32 derivation paths for public keys if we know them"},
@@ -4231,11 +4233,13 @@ UniValue walletcreatefundedpsbt(const JSONRPCRequest& request)
         rbf = replaceable_arg.isTrue();
     }
 
+    const uint32_t psbt_version = ParsePSBTVersion(request.params[3]["psbt_version"]);
+
     CMutableTransaction rawTx = ConstructTransaction(request.params[0], request.params[1], request.params[2], rbf, pwallet->chain());
     FundTransaction(pwallet, rawTx, fee, change_position, request.params[3]);
 
     // Make a blank psbt
-    PartiallySignedTransaction psbtx(rawTx);
+    PartiallySignedTransaction psbtx(rawTx, psbt_version);
 
     // Fill transaction with out data but don't sign
     bool bip32derivs = request.params[4].isNull() ? false : request.params[4].get_bool();
