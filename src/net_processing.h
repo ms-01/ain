@@ -7,9 +7,13 @@
 #define DEFI_NET_PROCESSING_H
 
 #include <net.h>
+#include <net_processing_stalling.h>
 #include <validationinterface.h>
 #include <consensus/params.h>
 #include <sync.h>
+
+#include <atomic>
+#include <chrono>
 
 extern CCriticalSection cs_main;
 
@@ -89,6 +93,11 @@ public:
 
 private:
     int64_t m_stale_tip_check_time; //!< Next time to check for stale tip
+
+    /** Stalling timeout for blocks in IBD.
+     *  It is doubled whenever a peer is disconnected (or paused) for stalling block download and
+     *  slowly decays back to BLOCK_STALLING_TIMEOUT_DEFAULT whenever a block is connected. */
+    std::atomic<std::chrono::seconds> m_block_stalling_timeout{BLOCK_STALLING_TIMEOUT_DEFAULT};
 };
 
 struct CNodeStateStats {

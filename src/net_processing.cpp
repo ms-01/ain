@@ -249,6 +249,8 @@ struct CNodeState {
     int64_t nHeadersSyncTimeout;
     //! Since when we're stalling block download progress (in microseconds), or 0.
     int64_t nStallingSince;
+    //! Until when block downloads from this peer are paused (in microseconds), or 0.
+    int64_t nBlockDownloadPausedUntil;
     std::list<QueuedBlock> vBlocksInFlight;
     //! When the first entry in vBlocksInFlight started downloading. Don't care when vBlocksInFlight is empty.
     int64_t nDownloadingSince;
@@ -393,6 +395,7 @@ struct CNodeState {
         fSyncStarted = false;
         nHeadersSyncTimeout = 0;
         nStallingSince = 0;
+        nBlockDownloadPausedUntil = 0;
         nDownloadingSince = 0;
         nBlocksInFlight = 0;
         nBlocksInFlightValidHeaders = 0;
@@ -475,6 +478,29 @@ static bool MarkBlockAsReceived(const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs
         return true;
     }
     return false;
+}
+
+/** Release all block requests that are currently in flight for the given peer.
+ *
+ *  The released blocks are not marked as received, so that they can be requested from
+ *  other peers again. MarkBlockAsReceived() keeps mapBlocksInFlight, vBlocksInFlight,
+ *  nBlocksInFlight, nBlocksInFlightValidHeaders, nDownloadingSince and
+ *  nPeersWithValidatedDownloads consistent and also clears the stall marker of the peer.
+ *
+ *  Must be called with cs_main being held. */
+static void ReleaseInFlightBlockRequests(NodeId nodeid) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+    CNodeState *state = State(nodeid);
+    assert(state != nullptr);
+
+    // Collect the hashes first, as MarkBlockAsReceived() modifies vBlocksInFlight.
+    std::vector<uint256> hashes;
+    hashes.reserve(state->vBlocksInFlight.size());
+    for (const QueuedBlock &block : state->vBlocksInFlight) {
+        hashes.push_back(block.hash);
+    }
+    for (const uint256 &hash : hashes) {
+        MarkBlockAsReceived(hash);
+    }
 }
 
 // returns false, still setting pit, if the block was already in flight from the same peer
@@ -1154,9 +1180,19 @@ void static ProcessOrphanTx(CConnman* connman, std::set<uint256>& orphan_work_se
 /**
  * Evict orphan txn pool entries (EraseOrphanTx) based on a newly connected
  * block, and re-evaluate orphans whose missing parents were confirmed.
- * Also save the time of the last tip update.
+ * Also save the time of the last tip update and possibly reduce the dynamic
+ * block stalling timeout.
  */
 void PeerLogicValidation::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindex, const std::vector<CTransactionRef>& vtxConflicted) {
+    // In case the dynamic timeout was doubled once or more, reduce it slowly back to its default value
+    auto stalling_timeout = m_block_stalling_timeout.load();
+    if (stalling_timeout != BLOCK_STALLING_TIMEOUT_DEFAULT) {
+        const auto new_timeout = NextStallingTimeoutAfterBlock(stalling_timeout);
+        if (m_block_stalling_timeout.compare_exchange_strong(stalling_timeout, new_timeout)) {
+            LogPrint(BCLog::NET, "Decreased stalling timeout to %d seconds\n", (int)new_timeout.count());
+        }
+    }
+
     {
         LOCK(cs_recent_confirmed);
         if (recentConfirmed) {
@@ -4306,12 +4342,30 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
         // nNow is the current system time (GetTimeMicros is not mockable) and
         // should be replaced by the mockable current_time eventually
         nNow = GetTimeMicros();
-        if (state.nStallingSince && state.nStallingSince < nNow - 1000000 * BLOCK_STALLING_TIMEOUT) {
+        // The value is updated in place by the compare-exchange below, so it must not be const.
+        auto stalling_timeout = m_block_stalling_timeout.load();
+        if (state.nStallingSince && std::chrono::microseconds{state.nStallingSince} < current_time - stalling_timeout) {
             // Stalling only triggers when the block download window cannot move. During normal steady state,
             // the download window should be much larger than the to-be-downloaded set of blocks, so disconnection
             // should only happen during initial block download.
-            LogPrintf("Peer=%d is stalling block download, disconnecting\n", pto->GetId());
-            pto->fDisconnect = true;
+            if (pto->m_manual_connection) {
+                // Manual peers are not disconnected when they stall the block download. Instead, block
+                // downloads from them are paused for a cooldown period and their outstanding requests are
+                // released, so that the blocks can be requested from other peers again.
+                LogPrint(BCLog::NET, "Pausing block downloads from stalling manual peer=%d for %d seconds\n",
+                         pto->GetId(), (int)std::chrono::duration_cast<std::chrono::seconds>(MANUAL_PEER_BLOCK_DOWNLOAD_COOLDOWN).count());
+                state.nBlockDownloadPausedUntil = current_time.count() + std::chrono::duration_cast<std::chrono::microseconds>(MANUAL_PEER_BLOCK_DOWNLOAD_COOLDOWN).count();
+                ReleaseInFlightBlockRequests(pto->GetId());
+            } else {
+                LogPrintf("Peer=%d is stalling block download, disconnecting\n", pto->GetId());
+                pto->fDisconnect = true;
+            }
+            // Increase the timeout for the next peer, so that we don't repeatedly react to apparent
+            // stalls caused by insufficient local bandwidth.
+            const auto new_timeout = NextStallingTimeoutAfterStall(stalling_timeout);
+            if (stalling_timeout != new_timeout && m_block_stalling_timeout.compare_exchange_strong(stalling_timeout, new_timeout)) {
+                LogPrint(BCLog::NET, "Increased stalling timeout temporarily to %d seconds\n", (int)new_timeout.count());
+            }
             return true;
         }
         // In case there is a block that has been in flight from this peer for 2 + 0.5 * N times the block interval
@@ -4369,7 +4423,10 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
         // Message: getdata (blocks)
         //
         std::vector<CInv> vGetData;
-        if (!pto->fClient && ((fFetch && !pto->m_limited_node) || !::ChainstateActive().IsInitialBlockDownload()) && state.nBlocksInFlight < MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
+        // Block downloads from a peer are paused for a cooldown period after it stalled the
+        // block download (manual peers only).
+        const bool can_request_blocks_from_peer{current_time.count() >= state.nBlockDownloadPausedUntil};
+        if (!pto->fClient && can_request_blocks_from_peer && ((fFetch && !pto->m_limited_node) || !::ChainstateActive().IsInitialBlockDownload()) && state.nBlocksInFlight < MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
             std::vector<const CBlockIndex*> vToDownload;
             NodeId staller = -1;
             FindNextBlocksToDownload(pto->GetId(), MAX_BLOCKS_IN_TRANSIT_PER_PEER - state.nBlocksInFlight, vToDownload, staller, consensusParams);
@@ -4382,7 +4439,10 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
             }
             if (state.nBlocksInFlight == 0 && staller != -1) {
                 if (State(staller)->nStallingSince == 0) {
-                    State(staller)->nStallingSince = nNow;
+                    // Use the mockable clock here, so that the stalling behaviour can be tested
+                    // deterministically. It must be the same clock that is used to evaluate the
+                    // stalling timeout below.
+                    State(staller)->nStallingSince = current_time.count();
                     LogPrint(BCLog::NET, "Stall started peer=%d\n", staller);
                 }
             }
