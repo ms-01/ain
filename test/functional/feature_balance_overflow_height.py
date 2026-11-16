@@ -71,6 +71,7 @@ SOFTFORKS = [
     "-metachainheight=1",
     "-df23height=1",
     "-df24height=1",
+    "-df25height=-1",
 ]
 
 
@@ -276,7 +277,9 @@ class BalanceOverflowActivationTest(DefiTestFramework):
         dup_txid = strict.sendrawtransaction(dup_info["signed"])
         assert dup_txid, "duplicate key tx should be accepted as 1-sat transfer"
         strict.generate(1)
-        assert_equal(self.account_balance(strict, dup_info["recv"]), Decimal("0.00000001"))
+        assert_equal(
+            self.account_balance(strict, dup_info["recv"]), Decimal("0.00000001")
+        )
 
         # --- the strict rule (activation height 1) --------------------------
         info = self.prepare_attacker(strict)
@@ -291,7 +294,9 @@ class BalanceOverflowActivationTest(DefiTestFramework):
         # The chain is at height 201 here, so the historical behaviour
         # applies: the overflow error is swallowed, the sum stays truncated
         # at the first amount and the transaction is accepted.
-        assert legacy.getblockcount() < ACTIVATION_HEIGHT, "must be below the activation height"
+        assert (
+            legacy.getblockcount() < ACTIVATION_HEIGHT
+        ), "must be below the activation height"
 
         info = self.prepare_attacker(legacy)
         txid = legacy.sendrawtransaction(info["signed"])

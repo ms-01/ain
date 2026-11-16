@@ -562,7 +562,7 @@ static void ProcessOracleEvents(const CBlockIndex *pindex, CCustomCSView &cache,
         auto aggregatePrice = GetAggregatePrice(
             cache, fixedIntervalPrice.priceFeedId.first, fixedIntervalPrice.priceFeedId.second, pindex->nTime);
         if (aggregatePrice) {
-            fixedIntervalPrice.priceRecord[1] = aggregatePrice;
+            fixedIntervalPrice.priceRecord[1] = *aggregatePrice;
         } else {
             LogPrint(BCLog::ORACLE, "ProcessOracleEvents(): No aggregate price available: %s\n", aggregatePrice.msg);
         }
@@ -1896,13 +1896,13 @@ static Res PoolSplits(CCustomCSView &view,
                     refundBalances();
                     continue;
                 }
-                newPoolPair.totalLiquidity = resTotal;
+                newPoolPair.totalLiquidity = *resTotal;
 
                 auto resA = SafeAdd(newPoolPair.reserveA, amountA);
                 auto resB = SafeAdd(newPoolPair.reserveB, amountB);
                 if (resA && resB) {
-                    newPoolPair.reserveA = resA;
-                    newPoolPair.reserveB = resB;
+                    newPoolPair.reserveA = *resA;
+                    newPoolPair.reserveB = *resB;
                 } else {
                     refundBalances();
                     continue;
@@ -4199,7 +4199,7 @@ static void ProcessFuturesDUSD(const CBlockIndex *pindex, CCustomCSView &cache, 
             const auto tokenDUSD = view.GetToken("DUSD");
             assert(tokenDUSD);
 
-            const auto total = MultiplyAmounts(amount, discountPrice);
+            const auto total = MultiplyAmounts(amount, *discountPrice);
             view.AddMintedTokens(tokenDUSD->first, total);
             CTokenAmount destination{tokenDUSD->first, total};
             view.AddBalance(key.owner, destination);

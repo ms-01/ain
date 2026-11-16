@@ -317,7 +317,7 @@ Res CTokensView::AddMintedTokens(DCT_ID const &id, const CAmount &amount) {
         return Res::Err("overflow when adding to minted");
     }
 
-    tokenImpl->minted = resMinted;
+    tokenImpl->minted = *resMinted;
 
     WriteBy<ID>(id, *tokenImpl);
     return Res::Ok();

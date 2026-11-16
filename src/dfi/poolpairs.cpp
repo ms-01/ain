@@ -414,7 +414,7 @@ Res CPoolPair::AddLiquidity(CAmount amountA,
     if (!resTotal) {
         return Res::Err("can't add %d to totalLiquidity: %s", liquidity, resTotal.msg);
     }
-    totalLiquidity = resTotal;
+    totalLiquidity = *resTotal;
 
     // increasing reserves
     auto resA = SafeAdd(reserveA, amountA);
@@ -423,8 +423,8 @@ Res CPoolPair::AddLiquidity(CAmount amountA,
         return Res::Err("overflow when adding to reserves");
     }
 
-    reserveA = resA;
-    reserveB = resB;
+    reserveA = *resA;
+    reserveB = *resB;
 
     return onMint(liquidity);
 }

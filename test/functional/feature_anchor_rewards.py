@@ -208,7 +208,7 @@ class AnchorRewardsTest(DefiTestFramework):
 
         assert_raises_rpc_error(
             None,
-            "value is not an integer",
+            "JSON value of type string is not of expected type number",
             self.nodes[1].spv_createanchor,
             [
                 {
