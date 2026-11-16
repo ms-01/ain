@@ -465,6 +465,77 @@ BOOST_AUTO_TEST_CASE(collateralization_ratio)
     BOOST_CHECK_EQUAL(colls.val->ratio(), 78);
 }
 
+BOOST_AUTO_TEST_CASE(vault_loan_and_collateral_amounts)
+{
+    CCustomCSView mnview(*pcustomcsview);
+
+    // A scheme without interest and a loan token without interest keep the
+    // vault assets deterministic: no interest is accrued over the blocks used
+    // below, so the amounts are exactly the converted token amounts.
+    const std::string id("sch1");
+    CreateScheme(mnview, id, 150, 0);
+
+    COracle oracle;
+    oracle.weightage = 1;
+    oracle.availablePairs = {
+        {"DFI", "USD"},
+        {"TSLA", "USD"},
+    };
+    oracle.tokenPrices = {
+        {"DFI", {{"USD", {5 * COIN, 0}}}},
+        {"TSLA", {{"USD", {3 * COIN, 0}}}},
+    };
+    auto oracle_id = NextTx();
+    mnview.AppointOracle(oracle_id, oracle);
+
+    auto dfi_id = DCT_ID{0};
+    auto tesla_id = CreateLoanToken(mnview, "TSLA", "TESLA", "TSLA/USD", 0);
+
+    CFixedIntervalPrice fixedIntervalPrice{};
+    fixedIntervalPrice.priceFeedId = {"TSLA", "USD"};
+    fixedIntervalPrice.priceRecord[0] = 3 * COIN;
+    fixedIntervalPrice.priceRecord[1] = 3 * COIN;
+    BOOST_REQUIRE(mnview.SetFixedIntervalPrice(fixedIntervalPrice));
+
+    CreateCollateralToken(mnview, dfi_id, "DFI/USD");
+    fixedIntervalPrice.priceFeedId = {"DFI", "USD"};
+    fixedIntervalPrice.priceRecord[0] = 5 * COIN;
+    fixedIntervalPrice.priceRecord[1] = 5 * COIN;
+    BOOST_REQUIRE(mnview.SetFixedIntervalPrice(fixedIntervalPrice));
+
+    auto vault_id = NextTx();
+    CVaultData msg{};
+    msg.schemeId = id;
+    BOOST_REQUIRE(mnview.StoreVault(vault_id, msg));
+
+    BOOST_REQUIRE(mnview.AddLoanToken(vault_id, {tesla_id, 10 * COIN}));
+    BOOST_REQUIRE(mnview.IncreaseInterest(1, vault_id, id, tesla_id, 0, 10 * COIN));
+    BOOST_REQUIRE(mnview.AddVaultCollateral(vault_id, {dfi_id, 2 * COIN}));
+
+    auto collaterals = mnview.GetVaultCollaterals(vault_id);
+    BOOST_REQUIRE(collaterals);
+    BOOST_CHECK_EQUAL(collaterals->balances[dfi_id], 2 * COIN);
+
+    auto assets = mnview.GetVaultAssets(vault_id, *collaterals, 10, 0);
+    BOOST_REQUIRE(assets.ok);
+
+    // The per token amounts have to hold the real value in the vault currency.
+    // A silent collapse of the converted amount to a boolean (1 satoshi) breaks
+    // the DFI/DUSD collateral percentage check of a take loan and the split of
+    // the loan into auction batches.
+    BOOST_REQUIRE_EQUAL(assets.val->loans.size(), 1);
+    BOOST_CHECK_EQUAL(assets.val->loans[0].nTokenId.v, tesla_id.v);
+    BOOST_CHECK_EQUAL(assets.val->loans[0].nValue, 30 * COIN); // 10 TSLA @ 3 USD
+
+    BOOST_REQUIRE_EQUAL(assets.val->collaterals.size(), 1);
+    BOOST_CHECK_EQUAL(assets.val->collaterals[0].nTokenId.v, dfi_id.v);
+    BOOST_CHECK_EQUAL(assets.val->collaterals[0].nValue, 10 * COIN); // 2 DFI @ 5 USD
+
+    BOOST_CHECK_EQUAL(assets.val->totalLoans, 30 * COIN);
+    BOOST_CHECK_EQUAL(assets.val->totalCollaterals, 10 * COIN);
+    BOOST_CHECK_EQUAL(assets.val->ratio(), 33);
+}
+
 BOOST_AUTO_TEST_CASE(auction_batch_creator)
 {
     {
