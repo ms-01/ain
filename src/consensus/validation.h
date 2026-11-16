@@ -30,6 +30,9 @@ enum class ValidationInvalidReason {
     // Only blocks (or headers):
     CACHED_INVALID,          //!< this object was cached as being invalid, but we don't know why
     BLOCK_INVALID_HEADER,    //!< invalid proof of work or time too old
+    // Header does not signal a required version bit (masternode version gate). This is a
+    // version skew of the peer software and not a misbehaviour of the peer.
+    BLOCK_INVALID_HEADER_VERSION,
     BLOCK_MUTATED,           //!< the block's data didn't match the data committed to by the PoW
     BLOCK_MISSING_PREV,      //!< We don't have the previous block the checked one is built on
     BLOCK_INVALID_PREV,      //!< A block this one builds on is invalid
@@ -79,6 +82,7 @@ inline bool IsBlockReason(ValidationInvalidReason r)
            r == ValidationInvalidReason::RECENT_CONSENSUS_CHANGE ||
            r == ValidationInvalidReason::CACHED_INVALID ||
            r == ValidationInvalidReason::BLOCK_INVALID_HEADER ||
+           r == ValidationInvalidReason::BLOCK_INVALID_HEADER_VERSION ||
            r == ValidationInvalidReason::BLOCK_MUTATED ||
            r == ValidationInvalidReason::BLOCK_MISSING_PREV ||
            r == ValidationInvalidReason::BLOCK_INVALID_PREV ||

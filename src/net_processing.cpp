@@ -1106,6 +1106,16 @@ static bool MaybePunishNode(NodeId nodeid, const CValidationState& state, bool v
             Misbehaving(nodeid, 100, message);
         }
         return true;
+    case ValidationInvalidReason::BLOCK_INVALID_HEADER_VERSION:
+        {
+            // The peer is running software that does not signal the masternode version gate
+            // (VERSION_BIT_BALANCE_OVERFLOW). This is a version skew and not a misbehaviour of
+            // the peer, so it is not punished here. Punishing it would ban every peer that has
+            // not upgraded yet and would isolate the node from the whole network.
+            LOCK(cs_main);
+            LogPrint(BCLog::NET, "peer=%d: header rejected by the masternode version gate, peer software is too old: %s\n", nodeid, message);
+        }
+        return false;
     // Conflicting (but not necessarily invalid) data or different policy:
     case ValidationInvalidReason::BLOCK_MISSING_PREV:
         {
@@ -2765,8 +2775,24 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         LOCK(cs_main);
         if (::ChainstateActive().IsInitialBlockDownload() && !pfrom->HasPermission(PF_NOBAN)) {
-            LogPrint(BCLog::NET, "Ignoring getheaders from peer=%d because node is in initial block download\n", pfrom->GetId());
-            return true;
+            if (fImporting || fReindex) {
+                // While the block index is imported or rebuilt the headers of the active chain
+                // are not served at all, the peer has to wait until the import has finished.
+                LogPrint(BCLog::NET, "Ignoring getheaders from peer=%d because the node is importing or reindexing\n", pfrom->GetId());
+                return true;
+            }
+            const CBlockIndex* tip = ::ChainActive().Tip();
+            if (tip == nullptr || tip->nChainWork < nMinimumChainWork) {
+                // The active chain does not have the minimum amount of work yet, so its headers
+                // are not served. Answer with an empty headers message instead of staying
+                // silent, so that the peer does not consider the node unresponsive.
+                LogPrint(BCLog::NET, "getheaders from peer=%d answered with an empty headers message because the active chain has less than the minimum chain work\n", pfrom->GetId());
+                connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::HEADERS, std::vector<CBlock>()));
+                return true;
+            }
+            // Serving the headers during the initial block download is required to not dead-lock
+            // the header sync between nodes whose tips are older than the maximum tip age.
+            LogPrint(BCLog::NET, "getheaders from peer=%d served during the initial block download\n", pfrom->GetId());
         }
 
         CNodeState *nodestate = State(pfrom->GetId());
