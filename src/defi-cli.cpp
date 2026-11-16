@@ -378,9 +378,9 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string& strMethod, co
     RPCMetadata::ToHTTPHeader(meta, writerFunc);
 
     // Attach request data
-    auto request = rh->PrepareRequest(strMethod, args);
-    request.pushKV("jsonrpc", "2.0");
-    std::string strRequest = request.write() + "\n";
+    // The JSON-RPC version is added per request object by JSONRPCRequestObj(),
+    // so that batch requests (e.g. "-getinfo") carry it in every member.
+    std::string strRequest = rh->PrepareRequest(strMethod, args).write() + "\n";
     struct evbuffer* output_buffer = evhttp_request_get_output_buffer(req.get());
     assert(output_buffer);
     evbuffer_add(output_buffer, strRequest.data(), strRequest.size());
