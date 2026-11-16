@@ -350,5 +350,24 @@ BOOST_AUTO_TEST_CASE(versionbits_computeblockversion)
     //BOOST_CHECK_EQUAL(ComputeBlockVersion(lastBlock, mainnetParams) & VERSIONBITS_TOP_MASK, VERSIONBITS_TOP_BITS);
 }
 
+BOOST_AUTO_TEST_CASE(versionbits_mn_version_gate)
+{
+    const auto chainParams = CreateChainParams(CBaseChainParams::REGTEST);
+    Consensus::Params params = chainParams->GetConsensus();
+    params.nMNVersionGateHeight = 10;
+
+    // Below gate height (genesis / height 0 when pindexPrev is nullptr)
+    BOOST_CHECK_EQUAL(ComputeBlockVersion(nullptr, params) & Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW, 0);
+
+    VersionBitsTester chain;
+    CBlockIndex *prev = chain.Mine(10, 0, VERSIONBITS_TOP_BITS).Tip();
+    BOOST_REQUIRE(prev != nullptr);
+    BOOST_CHECK_EQUAL(prev->nHeight, 9);
+    // Block at height 8 -> next block is height 9 < nMNVersionGateHeight -> bit 24 must NOT be set
+    BOOST_CHECK_EQUAL(ComputeBlockVersion(prev->pprev, params) & Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW, 0);
+    // Block at height 9 -> next block is height 10 == nMNVersionGateHeight -> bit 24 must be set
+    BOOST_CHECK_NE(ComputeBlockVersion(prev, params) & Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW, 0);
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()

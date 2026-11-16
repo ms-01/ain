@@ -21,6 +21,8 @@ This test:
     Node 0's block is accepted and contains bit 24.
 """
 
+import os
+
 from test_framework.test_framework import DefiTestFramework
 from test_framework.util import assert_equal
 
@@ -90,6 +92,15 @@ class MasternodeVersionGateTest(DefiTestFramework):
         # Node 0's block MUST have bit 24 set
         assert (block205_upgraded["version"] & VERSION_BIT_BALANCE_OVERFLOW) != 0, \
             f"Expected bit 24 set in version {hex(block205_upgraded['version'])}"
+
+        # ComputeBlockVersion must expect bit 24 from GATE_HEIGHT on, so no
+        # 'unexpected version' warning may be emitted in debug.log or RPC warnings.
+        assert_equal(node0.getnetworkinfo()["warnings"], "")
+        debug_log = os.path.join(node0.datadir, "regtest", "debug.log")
+        with open(debug_log, "r", encoding="utf-8") as f:
+            log_contents = f.read()
+        assert "unexpected version" not in log_contents, \
+            "Unexpected 'unexpected version' warning found in debug.log after GATE_HEIGHT"
 
 
 if __name__ == "__main__":

@@ -2254,6 +2254,11 @@ int32_t ComputeBlockVersion(const CBlockIndex *pindexPrev, const Consensus::Para
         }
     }
 
+    const int nHeight = pindexPrev ? pindexPrev->nHeight + 1 : 0;
+    if (nHeight >= params.nMNVersionGateHeight) {
+        nVersion |= Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW;
+    }
+
     return nVersion;
 }
 
