@@ -207,7 +207,7 @@ BOOST_AUTO_TEST_CASE(outbound_slow_chain_eviction)
 
 BOOST_AUTO_TEST_CASE(DoS_banning)
 {
-    auto banman = std::make_unique<BanMan>(GetDataDir() / "banlist.dat", nullptr, DEFAULT_MISBEHAVING_BANTIME);
+    auto banman = std::make_unique<BanMan>(GetDataDir() / "banlist", nullptr, DEFAULT_MISBEHAVING_BANTIME);
     auto connman = std::make_unique<CConnman>(0x1337, 0x1337);
     auto peerLogic = std::make_unique<PeerLogicValidation>(connman.get(), banman.get(), scheduler);
 
@@ -262,7 +262,7 @@ BOOST_AUTO_TEST_CASE(DoS_banning)
 
 BOOST_AUTO_TEST_CASE(DoS_banscore)
 {
-    auto banman = std::make_unique<BanMan>(GetDataDir() / "banlist.dat", nullptr, DEFAULT_MISBEHAVING_BANTIME);
+    auto banman = std::make_unique<BanMan>(GetDataDir() / "banlist", nullptr, DEFAULT_MISBEHAVING_BANTIME);
     auto connman = std::make_unique<CConnman>(0x1337, 0x1337);
     auto peerLogic = std::make_unique<PeerLogicValidation>(connman.get(), banman.get(), scheduler);
 
@@ -309,7 +309,7 @@ BOOST_AUTO_TEST_CASE(DoS_banscore)
 
 BOOST_AUTO_TEST_CASE(DoS_bantime)
 {
-    auto banman = std::make_unique<BanMan>(GetDataDir() / "banlist.dat", nullptr, DEFAULT_MISBEHAVING_BANTIME);
+    auto banman = std::make_unique<BanMan>(GetDataDir() / "banlist", nullptr, DEFAULT_MISBEHAVING_BANTIME);
     auto connman = std::make_unique<CConnman>(0x1337, 0x1337);
     auto peerLogic = std::make_unique<PeerLogicValidation>(connman.get(), banman.get(), scheduler);
 

@@ -127,6 +127,14 @@ class NetTest(DefiTestFramework):
         assert_equal(peer_info[1][0]["addrbind"], peer_info[0][0]["addr"])
         assert_equal(peer_info[0][0]["minfeefilter"], Decimal("0.00000500"))
         assert_equal(peer_info[1][0]["minfeefilter"], Decimal("0.00001000"))
+        # the network of the peer connection is reported
+        for peer in peer_info[0] + peer_info[1]:
+            assert_equal(peer["network"], "ipv4")
+        # the deprecated fields were removed (upstream #20755)
+        for peer in peer_info[0] + peer_info[1]:
+            assert "addnode" not in peer
+            assert "banscore" not in peer
+            assert "whitelisted" not in peer
 
     def _test_getnodeaddresses(self):
         self.nodes[0].add_p2p_connection(P2PInterface())
@@ -154,9 +162,25 @@ class NetTest(DefiTestFramework):
             assert_equal(a["services"], NODE_NETWORK | NODE_WITNESS)
             assert a["address"] in imported_addrs
             assert_equal(a["port"], 8555)
+            assert_equal(a["network"], "ipv4")
 
         assert_raises_rpc_error(
             -8, "Address count out of range", self.nodes[0].getnodeaddresses, -1
+        )
+
+        # the network filter only returns addresses of the requested network
+        node_addresses = self.nodes[0].getnodeaddresses(REQUEST_COUNT, "ipv4")
+        assert_equal(len(node_addresses), REQUEST_COUNT)
+        for a in node_addresses:
+            assert_equal(a["network"], "ipv4")
+
+        # no ipv6 addresses are known, so the filter returns nothing
+        node_addresses = self.nodes[0].getnodeaddresses(REQUEST_COUNT, "ipv6")
+        assert_equal(len(node_addresses), 0)
+
+        # an unknown network is rejected
+        assert_raises_rpc_error(
+            -8, "Network not recognized: foo", self.nodes[0].getnodeaddresses, 10, "foo"
         )
 
         # addrman's size cannot be known reliably after insertion, as hash collisions may occur

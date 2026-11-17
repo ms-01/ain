@@ -165,7 +165,7 @@ TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(cha
     StartScriptCheckWorkerThreads(script_check_threads);
     g_parallel_script_checks = true;
 
-    g_banman = std::make_unique<BanMan>(GetDataDir() / "banlist.dat", nullptr, DEFAULT_MISBEHAVING_BANTIME);
+    g_banman = std::make_unique<BanMan>(GetDataDir() / "banlist", nullptr, DEFAULT_MISBEHAVING_BANTIME);
     g_connman = std::make_unique<CConnman>(0x1337, 0x1337); // Deterministic randomness for tests.
 }
 

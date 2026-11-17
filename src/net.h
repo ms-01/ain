@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include <deque>
+#include <optional>
 #include <stdint.h>
 #include <thread>
 #include <memory>
@@ -251,7 +252,7 @@ public:
     void SetServices(const CService &addr, ServiceFlags nServices);
     void MarkAddressGood(const CAddress& addr);
     void AddNewAddresses(const std::vector<CAddress>& vAddr, const CAddress& addrFrom, int64_t nTimePenalty = 0);
-    std::vector<CAddress> GetAddresses();
+    std::vector<CAddress> GetAddresses(std::optional<Network> network = std::nullopt);
 
     // This allows temporarily exceeding nMaxOutbound, with the goal of finding
     // a peer that is better than all our current peers.

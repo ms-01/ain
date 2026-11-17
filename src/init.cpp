@@ -1512,7 +1512,7 @@ void SetupScriptCheckThreads() {
 
 bool SetupNetwork() {
     assert(!g_banman);
-    g_banman = std::make_unique<BanMan>(GetDataDir() / "banlist.dat", &uiInterface, gArgs.GetArg("-bantime", DEFAULT_MISBEHAVING_BANTIME));
+    g_banman = std::make_unique<BanMan>(GetDataDir() / "banlist", &uiInterface, gArgs.GetArg("-bantime", DEFAULT_MISBEHAVING_BANTIME));
     assert(!g_connman);
     g_connman = std::unique_ptr<CConnman>(new CConnman(GetRand(std::numeric_limits<uint64_t>::max()), GetRand(std::numeric_limits<uint64_t>::max())));
 

@@ -1,6 +1,7 @@
 Filename            | Description
 --------------------|----------------------------------------------------------------------------------------------------------------------------
-banlist.dat         | stores the IPs/Subnets of banned nodes
+banlist.json       | stores the IPs/Subnets of banned nodes (human-readable JSON)
+banlist.dat        | legacy binary banlist of banned nodes; read once for migration, no longer written
 defi.conf        | contains configuration settings for defid
 defid.pid        | stores the process id of defid while running
 blocks/blk000??.dat | block data (custom, 128 MiB per file); since 0.8.0

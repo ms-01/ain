@@ -14,6 +14,7 @@
 #include <util/system.h>
 
 #include <map>
+#include <optional>
 #include <set>
 #include <stdint.h>
 #include <vector>
@@ -259,7 +260,7 @@ protected:
 #endif
 
     //! Select several addresses at once.
-    void GetAddr_(std::vector<CAddress> &vAddr) EXCLUSIVE_LOCKS_REQUIRED(cs);
+    void GetAddr_(std::vector<CAddress> &vAddr, std::optional<Network> network) EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     //! Mark an entry as currently-connected-to.
     void Connected_(const CService &addr, int64_t nTime) EXCLUSIVE_LOCKS_REQUIRED(cs);
@@ -592,13 +593,14 @@ public:
     }
 
     //! Return a bunch of addresses, selected at random.
-    std::vector<CAddress> GetAddr()
+    //! If `network` is set, only addresses of that network are returned.
+    std::vector<CAddress> GetAddr(std::optional<Network> network = std::nullopt)
     {
         Check();
         std::vector<CAddress> vAddr;
         {
             LOCK(cs);
-            GetAddr_(vAddr);
+            GetAddr_(vAddr, network);
         }
         Check();
         return vAddr;
