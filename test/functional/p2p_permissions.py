@@ -27,14 +27,12 @@ class P2PPermissionsTests(DefiTestFramework):
             # default permissions (no specific permissions)
             ["-whitelist=127.0.0.1"],
             ["relay", "noban", "mempool"],
-            True,
         )
 
         self.checkpermission(
             # relay permission removed (no specific permissions)
             ["-whitelist=127.0.0.1", "-whitelistrelay=0"],
             ["noban", "mempool"],
-            True,
         )
 
         self.checkpermission(
@@ -43,7 +41,6 @@ class P2PPermissionsTests(DefiTestFramework):
             # if whitelistforcerelay is true
             ["-whitelist=127.0.0.1", "-whitelistforcerelay"],
             ["forcerelay", "relay", "noban", "mempool"],
-            True,
         )
 
         # Let's make sure permissions are merged correctly
@@ -57,7 +54,6 @@ class P2PPermissionsTests(DefiTestFramework):
             ["-whitelist=noban@127.0.0.1"],
             # Check parameter interaction forcerelay should activate relay
             ["noban", "bloomfilter", "forcerelay", "relay"],
-            False,
         )
         self.replaceinconfig(
             1, "whitebind=bloomfilter,forcerelay@" + ip_port, "bind=127.0.0.1"
@@ -67,28 +63,24 @@ class P2PPermissionsTests(DefiTestFramework):
             # legacy whitelistrelay should be ignored
             ["-whitelist=noban,mempool@127.0.0.1", "-whitelistrelay"],
             ["noban", "mempool"],
-            False,
         )
 
         self.checkpermission(
             # legacy whitelistforcerelay should be ignored
             ["-whitelist=noban,mempool@127.0.0.1", "-whitelistforcerelay"],
             ["noban", "mempool"],
-            False,
         )
 
         self.checkpermission(
             # missing mempool permission to be considered legacy whitelisted
             ["-whitelist=noban@127.0.0.1"],
             ["noban"],
-            False,
         )
 
         self.checkpermission(
             # all permission added
             ["-whitelist=all@127.0.0.1"],
             ["forcerelay", "noban", "mempool", "bloomfilter", "relay"],
-            False,
         )
 
         self.stop_node(1)
@@ -108,11 +100,14 @@ class P2PPermissionsTests(DefiTestFramework):
             match=ErrorMatch.PARTIAL_REGEX,
         )
 
-    def checkpermission(self, args, expectedPermissions, whitelisted):
+    def checkpermission(self, args, expectedPermissions):
         self.restart_node(1, args)
         connect_nodes(self.nodes[0], 1)
         peerinfo = self.nodes[1].getpeerinfo()[0]
-        assert_equal(peerinfo["whitelisted"], whitelisted)
+        # The deprecated `whitelisted` field was removed from `getpeerinfo`
+        # (upstream #20755), the granted permissions supersede it.
+        assert "whitelisted" not in peerinfo
+        assert_equal(peerinfo["network"], "ipv4")
         assert_equal(len(expectedPermissions), len(peerinfo["permissions"]))
         for p in expectedPermissions:
             if not p in peerinfo["permissions"]:

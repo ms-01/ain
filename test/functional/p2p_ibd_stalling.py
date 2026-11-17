@@ -229,9 +229,10 @@ class P2PStallingTest(DefiTestFramework):
             peer.block_store = block_dict
             peers.append(peer)
 
-        # The peers are manual peers.
+        # The peers are manual peers. The deprecated `addnode` field was removed
+        # from `getpeerinfo` (upstream #20755), manual peers are outbound.
         for peer_info in node.getpeerinfo():
-            assert_equal(peer_info['addnode'], True)
+            assert_equal(peer_info['inbound'], False)
 
         headers = self.headers_message(blocks)
 

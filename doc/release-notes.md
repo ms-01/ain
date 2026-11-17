@@ -1,3 +1,49 @@
+DeFiChain release notes (unreleased)
+====================================
+
+P2P persistence and RPC observability
+-------------------------------------
+
+- The banlist is now persisted in a human-readable JSON file `banlist.json`
+  (upstream Bitcoin Core #20966) instead of the binary `banlist.dat`. The file
+  uses the upstream key `banned_nets` and contains one object per ban with the
+  fields `version`, `address`, `ban_created`, `banned_until` and `ban_reason`.
+
+  The legacy binary `banlist.dat` is still read **once** as a migration
+  fallback if `banlist.json` does not exist yet. It is never written again and
+  never deleted, so the pre-migration bans stay available on disk.
+
+  **Downgrade note:** bans that are created after the migration only exist in
+  `banlist.json`. A downgrade to an older binary therefore only sees the bans
+  that were present before the migration.
+
+  **Format deviations compared to upstream Bitcoin Core:**
+  - DeFiChain stores the ban reason (`ban_reason`) in the file as well, so that
+    `listbanned` stays informative. Files written by upstream Bitcoin Core
+    (without `ban_reason`) are still read correctly; the reason is then
+    reported as `unknown`.
+  - DeFiChain writes the banned address in its `CSubNet::ToString()` form, which
+    always contains an explicit netmask (e.g. `1.2.3.4/32` or
+    `<onion-address>.onion/128`), while upstream omits the mask for single
+    addresses.
+
+- The `listbanned` RPC now also returns `ban_duration` (the total duration of
+  the ban in seconds) and `time_remaining` (the seconds until the ban expires,
+  clamped at 0) next to `address`, `ban_created`, `banned_until` and
+  `ban_reason` (upstream Bitcoin Core #21602).
+
+- The `getnodeaddresses` RPC now returns the `network` of every address and
+  accepts an optional `network` argument that filters the result (upstream
+  Bitcoin Core #21594 and #21843). Supported network names are `ipv4`, `ipv6`
+  and `onion`. Note that, unlike upstream, the chain requires `count > 0` and
+  the result is always capped by the smaller of `ADDRMAN_GETADDR_MAX` or
+  `ADDRMAN_GETADDR_MAX_PCT` percent of all known addresses.
+
+- The `getpeerinfo` RPC now returns the `network` the peer connection was made
+  over (`ipv4`, `ipv6` or `onion`). The deprecated `addnode`, `banscore` and
+  `whitelisted` fields were removed (upstream Bitcoin Core #20755); the
+  `permissions` field supersedes `whitelisted`.
+
 *After branching off for a major version release of Bitcoin Core, use this
 template to create the initial release notes draft.*
 

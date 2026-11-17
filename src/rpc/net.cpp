@@ -18,6 +18,7 @@
 #include <sync.h>
 #include <timedata.h>
 #include <util/strencodings.h>
+#include <util/string.h>
 #include <util/system.h>
 #include <validation.h>
 #include <version.h>
@@ -25,6 +26,9 @@
 #include <BRPeer.h>
 
 #include <univalue.h>
+
+#include <algorithm>
+#include <optional>
 
 static const int64_t DEFAULT_MINIMUM_ACTIVE_NODE_PEERS = 5;
 static const int64_t DEFAULT_ACTIVE_PEER_CONNECTION_TIMEOUT = 300;
@@ -85,6 +89,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
             "    \"addr\":\"host:port\",      (string) The IP address and port of the peer\n"
             "    \"addrbind\":\"ip:port\",    (string) Bind address of the connection to the peer\n"
             "    \"addrlocal\":\"ip:port\",   (string) Local address as reported by the peer\n"
+            "    \"network\":\"ipv4\",        (string) The network the peer connected over (ipv4, ipv6 or onion)\n"
             "    \"services\":\"xxxxxxxxxxxxxxxx\",   (string) The services offered\n"
             "    \"relaytxes\":true|false,    (boolean) Whether peer has asked us to relay transactions to it\n"
             "    \"lastsend\": ttt,           (numeric) The time in seconds since epoch (Jan 1 1970 GMT) of the last send\n"
@@ -99,9 +104,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
             "    \"version\": v,              (numeric) The peer version, such as 70001\n"
             "    \"subver\": \"/Satoshi:0.8.5/\",  (string) The string version\n"
             "    \"inbound\": true|false,     (boolean) Inbound (true) or Outbound (false)\n"
-            "    \"addnode\": true|false,     (boolean) Whether connection was due to addnode/-connect or if it was an automatic/inbound connection\n"
             "    \"startingheight\": n,       (numeric) The starting height (block) of the peer\n"
-            "    \"banscore\": n,             (numeric) The ban score\n"
             "    \"synced_headers\": n,       (numeric) The last header we have in common with this peer\n"
             "    \"synced_blocks\": n,        (numeric) The last block we have in common with this peer\n"
             "    \"inflight\": [\n"
@@ -110,7 +113,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
             "    ],\n"
             "    \"addr_processed\": n,       (numeric) The total number of addresses processed, excluding those dropped due to rate limiting\n"
             "    \"addr_rate_limited\": n,    (numeric) The total number of addresses dropped due to rate limiting\n"
-            "    \"whitelisted\": true|false, (boolean) Whether the peer is whitelisted\n"
+            "    \"permissions\": [ ... ],    (json array) An array of special permissions the peer has been granted\n"
             "    \"minfeefilter\": n,         (numeric) The minimum fee rate for transactions this peer accepts\n"
             "    \"bytessent_per_msg\": {\n"
             "       \"msg\": n,               (numeric) The total bytes sent aggregated by message type\n"
@@ -152,6 +155,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
             obj.pushKV("addrlocal", stats.addrLocal);
         if (stats.addrBind.IsValid())
             obj.pushKV("addrbind", stats.addrBind.ToString());
+        obj.pushKV("network", GetNetworkName(stats.addr.GetNetClass()));
         obj.pushKV("services", strprintf("%016x", stats.nServices));
         obj.pushKV("relaytxes", stats.fRelayTxes);
         obj.pushKV("lastsend", stats.nLastSend);
@@ -172,10 +176,8 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
         // their ver message.
         obj.pushKV("subver", stats.cleanSubVer);
         obj.pushKV("inbound", stats.fInbound);
-        obj.pushKV("addnode", stats.m_manual_connection);
         obj.pushKV("startingheight", stats.nStartingHeight);
         if (fStateStats) {
-            obj.pushKV("banscore", statestats.nMisbehavior);
             obj.pushKV("synced_headers", statestats.nSyncHeight);
             obj.pushKV("synced_blocks", statestats.nCommonHeight);
             UniValue heights(UniValue::VARR);
@@ -186,7 +188,6 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
         }
         obj.pushKV("addr_processed", stats.nProcessedAddrs);
         obj.pushKV("addr_rate_limited", stats.nRatelimitedAddrs);
-        obj.pushKV("whitelisted", stats.m_legacyWhitelisted);
         UniValue permissions(UniValue::VARR);
         for (const auto& permission : NetPermissions::ToStrings(stats.m_permissionFlags)) {
             permissions.push_back(permission);
@@ -642,7 +643,7 @@ static UniValue setban(const JSONRPCRequest& request)
     const RPCHelpMan help{"setban",
                 "\nAttempts to add or remove an IP/Subnet from the banned list.\n",
                 {
-                    {"subnet", RPCArg::Type::STR, RPCArg::Optional::NO, "The IP/Subnet (see getpeerinfo for nodes IP) with an optional netmask (default is /32 = single IP)"},
+                    {"subnet", RPCArg::Type::STR, RPCArg::Optional::NO, "The IP/Subnet (see getpeerinfo for nodes IP) with an optional netmask (default is /32 = single IP). Onion addresses are supported as well."},
                     {"command", RPCArg::Type::STR, RPCArg::Optional::NO, "'add' to add an IP/Subnet to the list, 'remove' to remove an IP/Subnet from the list"},
                     {"bantime", RPCArg::Type::NUM, /* default */ "0", "time in seconds how long (or until when if [absolute] is set) the IP is banned (0 or empty means using the default time of 24h which can also be overwritten by the -bantime startup argument)"},
                     {"absolute", RPCArg::Type::BOOL, /* default */ "false", "If set, the bantime must be an absolute timestamp in seconds since epoch (Jan 1 1970 GMT)"},
@@ -735,6 +736,7 @@ static UniValue listbanned(const JSONRPCRequest& request)
 
     banmap_t banMap;
     g_banman->GetBanned(banMap);
+    const int64_t current_time{GetTime()};
 
     UniValue bannedAddresses(UniValue::VARR);
     for (const auto& entry : banMap)
@@ -742,8 +744,10 @@ static UniValue listbanned(const JSONRPCRequest& request)
         const CBanEntry& banEntry = entry.second;
         UniValue rec(UniValue::VOBJ);
         rec.pushKV("address", entry.first.ToString());
-        rec.pushKV("banned_until", banEntry.nBanUntil);
         rec.pushKV("ban_created", banEntry.nCreateTime);
+        rec.pushKV("banned_until", banEntry.nBanUntil);
+        rec.pushKV("ban_duration", (banEntry.nBanUntil - banEntry.nCreateTime));
+        rec.pushKV("time_remaining", std::max<int64_t>(0, (banEntry.nBanUntil - current_time)));
         rec.pushKV("ban_reason", banEntry.banReasonToString());
 
         bannedAddresses.push_back(rec);
@@ -797,7 +801,8 @@ static UniValue getnodeaddresses(const JSONRPCRequest& request)
             RPCHelpMan{"getnodeaddresses",
                 "\nReturn known addresses which can potentially be used to find new nodes in the network\n",
                 {
-                    {"count", RPCArg::Type::NUM, /* default */ "1", "How many addresses to return. Limited to the smaller of " + std::to_string(ADDRMAN_GETADDR_MAX) + " or " + std::to_string(ADDRMAN_GETADDR_MAX_PCT) + "% of all known addresses."},
+                    {"count", RPCArg::Type::NUM, /* default */ "1", "How many addresses to return. Must be greater than 0. Limited to the smaller of " + std::to_string(ADDRMAN_GETADDR_MAX) + " or " + std::to_string(ADDRMAN_GETADDR_MAX_PCT) + "% of all known addresses."},
+                    {"network", RPCArg::Type::STR, /* default */ "all networks", "Return only addresses of the specified network. Can be one of: " + Join(GetNetworkNames(), ", ") + "."},
                 },
                 RPCResult{
             "[\n"
@@ -806,13 +811,16 @@ static UniValue getnodeaddresses(const JSONRPCRequest& request)
             "    \"services\": n,              (numeric) The services offered\n"
             "    \"address\": \"host\",          (string) The address of the node\n"
             "    \"port\": n                   (numeric) The port of the node\n"
+            "    \"network\": \"ipv4\"          (string) The network the node connected through\n"
             "  }\n"
             "  ,....\n"
             "]\n"
                 },
                 RPCExamples{
                     HelpExampleCli("getnodeaddresses", "8")
+            + HelpExampleCli("getnodeaddresses", "4 \"ipv4\"")
             + HelpExampleRpc("getnodeaddresses", "8")
+            + HelpExampleRpc("getnodeaddresses", "4, \"ipv4\"")
                 },
             }.Check(request);
     if (!g_connman) {
@@ -826,8 +834,18 @@ static UniValue getnodeaddresses(const JSONRPCRequest& request)
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Address count out of range");
         }
     }
+
+    std::optional<Network> network = std::nullopt;
+    if (!request.params[1].isNull()) {
+        const std::string network_name = request.params[1].get_str();
+        network = ParseNetwork(network_name);
+        if (network == NET_UNROUTABLE) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Network not recognized: %s", network_name));
+        }
+    }
+
     // returns a shuffled list of CAddress
-    std::vector<CAddress> vAddr = g_connman->GetAddresses();
+    std::vector<CAddress> vAddr = g_connman->GetAddresses(network);
     UniValue ret(UniValue::VARR);
 
     int address_return_count = std::min<int>(count, vAddr.size());
@@ -838,6 +856,7 @@ static UniValue getnodeaddresses(const JSONRPCRequest& request)
         obj.pushKV("services", (uint64_t)addr.nServices);
         obj.pushKV("address", addr.ToStringIP());
         obj.pushKV("port", addr.GetPort());
+        obj.pushKV("network", GetNetworkName(addr.GetNetClass()));
         ret.push_back(obj);
     }
     return ret;
@@ -861,7 +880,7 @@ static const CRPCCommand commands[] =
     { "network",            "listbanned",             &listbanned,             {} },
     { "network",            "clearbanned",            &clearbanned,            {} },
     { "network",            "setnetworkactive",       &setnetworkactive,       {"state"} },
-    { "network",            "getnodeaddresses",       &getnodeaddresses,       {"count"} },
+    { "network",            "getnodeaddresses",       &getnodeaddresses,       {"count", "network"} },
 };
 // clang-format on
 

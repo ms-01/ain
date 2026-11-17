@@ -473,7 +473,7 @@ int CAddrMan::Check_()
 }
 #endif
 
-void CAddrMan::GetAddr_(std::vector<CAddress>& vAddr)
+void CAddrMan::GetAddr_(std::vector<CAddress>& vAddr, std::optional<Network> network)
 {
     unsigned int nNodes = ADDRMAN_GETADDR_MAX_PCT * vRandom.size() / 100;
     if (nNodes > ADDRMAN_GETADDR_MAX)
@@ -489,6 +489,10 @@ void CAddrMan::GetAddr_(std::vector<CAddress>& vAddr)
         assert(mapInfo.count(vRandom[n]) == 1);
 
         const CAddrInfo& ai = mapInfo[vRandom[n]];
+
+        // Filter by network (optional)
+        if (network != std::nullopt && ai.GetNetClass() != network) continue;
+
         if (!ai.IsTerrible())
             vAddr.push_back(ai);
     }

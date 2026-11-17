@@ -324,6 +324,23 @@ enum Network CNetAddr::GetNetwork() const
     return NET_IPV6;
 }
 
+enum Network CNetAddr::GetNetClass() const
+{
+    if (IsTor())
+        return NET_ONION;
+
+    if (IsInternal())
+        return NET_INTERNAL;
+
+    if (IsIPv4())
+        return NET_IPV4;
+
+    if (IsValid() && IsIPv6())
+        return NET_IPV6;
+
+    return NET_UNROUTABLE;
+}
+
 std::string CNetAddr::ToStringIP() const
 {
     if (IsTor())

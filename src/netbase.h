@@ -40,6 +40,8 @@ public:
 
 enum Network ParseNetwork(const std::string& net);
 std::string GetNetworkName(enum Network net);
+//! Get the names of all publicly routable network types.
+std::vector<std::string> GetNetworkNames(bool append_unroutable = false);
 bool SetProxy(enum Network net, const proxyType &addrProxy);
 bool GetProxy(enum Network net, proxyType &proxyInfoOut);
 bool IsProxy(const CNetAddr &addr);

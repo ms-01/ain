@@ -74,6 +74,14 @@ class CNetAddr
         bool IsInternal() const;
         bool IsValid() const;
         enum Network GetNetwork() const;
+        /**
+         * Get the network type of this address.
+         *
+         * In contrast to GetNetwork(), the result does not depend on the
+         * routability of the address, e.g. a private IPv4 address is reported
+         * as NET_IPV4.
+         */
+        enum Network GetNetClass() const;
         std::string ToString() const;
         std::string ToStringIP() const;
         unsigned int GetByte(int n) const;
