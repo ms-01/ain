@@ -8,6 +8,7 @@
 #include <dbwrapper.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
+#include <string>
 #include <threadinterrupt.h>
 #include <uint256.h>
 #include <validationinterface.h>
@@ -43,6 +44,21 @@ private:
 
     /// The last block in the chain that the index is in sync with.
     std::atomic<const CBlockIndex*> m_best_block_index{nullptr};
+
+    /**
+     * The name under which the prune lock of this index is registered. It is
+     * cached here, because the (virtual) name of the index is not available
+     * anymore when the index is destroyed. It is only accessed while holding
+     * cs_main.
+     */
+    std::string m_prune_lock_name;
+
+    /**
+     * Set the best block of the index and, if the index allows pruning,
+     * publish the matching prune lock so that the block (and undo) data which
+     * is still needed by the index is not pruned away.
+     */
+    void SetBestBlockIndex(const CBlockIndex* block);
 
     std::thread m_thread_sync;
     CThreadInterrupt m_interrupt;
@@ -90,6 +106,18 @@ protected:
     virtual const char* GetName() const = 0;
 
 public:
+    /**
+     * Whether the index can be used while the node runs in prune mode.
+     *
+     * An index which needs the block data (and the undo data) of the blocks it
+     * has not processed yet must not be pruned away. Such an index publishes a
+     * prune lock which keeps the required data on disk.
+     *
+     * The default is false: only indexes which explicitly opt in (e.g. the
+     * block filter index) may run in prune mode.
+     */
+    virtual bool AllowPrune() const { return false; }
+
     /// Destructor interrupts sync thread if running and blocks until it exits.
     virtual ~BaseIndex();
 

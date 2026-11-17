@@ -8,6 +8,7 @@
 #include <tinyformat.h>
 #include <ui_interface.h>
 #include <util/system.h>
+#include <util/translation.h>
 #include <validation.h>
 #include <warnings.h>
 
@@ -60,13 +61,80 @@ bool BaseIndex::Init()
     }
 
     LOCK(cs_main);
+    CChain& active_chain = ::ChainActive();
     if (locator.IsNull()) {
-        m_best_block_index = nullptr;
+        SetBestBlockIndex(nullptr);
     } else {
-        m_best_block_index = FindForkInGlobalIndex(::ChainActive(), locator);
+        SetBestBlockIndex(FindForkInGlobalIndex(active_chain, locator));
     }
-    m_synced = m_best_block_index.load() == ::ChainActive().Tip();
+    m_synced = m_best_block_index.load() == active_chain.Tip();
+    if (!m_synced) {
+        // Check whether the data which is needed to continue the index is still
+        // available. If the index best block lies beyond the pruned data, the
+        // index can never catch up again and the node has to be reindexed.
+        bool prune_violation = false;
+        if (!m_best_block_index) {
+            // The index is not built yet: make sure we have all block data back
+            // to the genesis.
+            const CBlockIndex* block = active_chain.Tip();
+            while (block->pprev && (block->pprev->nStatus & BLOCK_HAVE_DATA)) {
+                block = block->pprev;
+            }
+            prune_violation = block != active_chain.Genesis();
+        } else {
+            // The index has a best block set and is not fully synced: check if
+            // we have the required blocks to continue building the index.
+            const CBlockIndex* block_to_test = m_best_block_index.load();
+            if (!active_chain.Contains(block_to_test)) {
+                // The best block is not part of the active chain, find the fork
+                // and make sure we have all data down to the fork.
+                block_to_test = active_chain.FindFork(block_to_test);
+            }
+            const CBlockIndex* block = active_chain.Tip();
+            prune_violation = true;
+            // Check backwards from the tip if we have all block data until we
+            // reach the index best block.
+            while (block_to_test && block->pprev && (block->pprev->nStatus & BLOCK_HAVE_DATA)) {
+                if (block_to_test == block) {
+                    prune_violation = false;
+                    break;
+                }
+                block = block->pprev;
+            }
+        }
+        if (prune_violation) {
+            return InitError(strprintf(_("%s best block of the index goes beyond pruned data (including undo data). Please disable the index or reindex (which will download the whole blockchain again)").translated, GetName()));
+        }
+    }
     return true;
+}
+
+void BaseIndex::SetBestBlockIndex(const CBlockIndex* block)
+{
+    assert(!fPruneMode || AllowPrune());
+
+    if (AllowPrune()) {
+        // Publish the prune lock so that the block (and undo) data which is
+        // still needed by this index is not pruned away.
+        PruneLockInfo prune_lock;
+        prune_lock.height_first = block ? block->nHeight : 0;
+        WITH_LOCK(cs_main, {
+            if (m_prune_lock_name.empty()) m_prune_lock_name = GetName();
+            g_blockman.UpdatePruneLock(m_prune_lock_name, prune_lock);
+        });
+    } else if (fPruneMode) {
+        // Defensive: an index which does not allow pruning must never run in
+        // prune mode. The startup checks reject this combination, so this
+        // should never be reached.
+        LogPrintf("%s: WARNING: index does not allow pruning, but the node runs in prune mode\n", GetName());
+    }
+
+    // Intentionally set m_best_block_index as the last step in this function,
+    // after updating the prune lock above, so that
+    // BlockUntilSyncedToCurrentChain() can be used to wait for the last
+    // BlockConnected notification and safely assume that the prune locks are
+    // updated.
+    m_best_block_index = block;
 }
 
 static const CBlockIndex* NextSyncBlock(const CBlockIndex* pindex_prev) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
@@ -95,7 +163,7 @@ void BaseIndex::ThreadSync()
         int64_t last_locator_write_time = 0;
         while (true) {
             if (m_interrupt) {
-                m_best_block_index = pindex;
+                SetBestBlockIndex(pindex);
                 // No need to handle errors in Commit. If it fails, the error will be already be
                 // logged. The best way to recover is to continue, as index cannot be corrupted by
                 // a missed commit to disk for an advanced index state.
@@ -107,7 +175,7 @@ void BaseIndex::ThreadSync()
                 LOCK(cs_main);
                 const CBlockIndex* pindex_next = NextSyncBlock(pindex);
                 if (!pindex_next) {
-                    m_best_block_index = pindex;
+                    SetBestBlockIndex(pindex);
                     m_synced = true;
                     // No need to handle errors in Commit. See rationale above.
                     Commit();
@@ -129,7 +197,7 @@ void BaseIndex::ThreadSync()
             }
 
             if (last_locator_write_time + SYNC_LOCATOR_WRITE_INTERVAL < current_time) {
-                m_best_block_index = pindex;
+                SetBestBlockIndex(pindex);
                 last_locator_write_time = current_time;
                 // No need to handle errors in Commit. See rationale above.
                 Commit();
@@ -146,6 +214,10 @@ void BaseIndex::ThreadSync()
                            __func__, pindex->GetBlockHash().ToString());
                 return;
             }
+            // Publish the prune lock for every processed block, so that the
+            // block (and undo) data which is still needed by this index is
+            // never pruned away.
+            SetBestBlockIndex(pindex);
         }
     }
 
@@ -178,10 +250,10 @@ bool BaseIndex::Rewind(const CBlockIndex* current_tip, const CBlockIndex* new_ti
     assert(current_tip->GetAncestor(new_tip->nHeight) == new_tip);
 
     // In the case of a reorg, ensure persisted block locator is not stale.
-    m_best_block_index = new_tip;
+    SetBestBlockIndex(new_tip);
     if (!Commit()) {
         // If commit fails, revert the best block index to avoid corruption.
-        m_best_block_index = current_tip;
+        SetBestBlockIndex(current_tip);
         return false;
     }
 
@@ -223,7 +295,7 @@ void BaseIndex::BlockConnected(const std::shared_ptr<const CBlock>& block, const
     }
 
     if (WriteBlock(*block, pindex)) {
-        m_best_block_index = pindex;
+        SetBestBlockIndex(pindex);
     } else {
         FatalError("%s: Failed to write block %s to index",
                    __func__, pindex->GetBlockHash().ToString());
@@ -320,4 +392,13 @@ void BaseIndex::Stop()
     if (m_thread_sync.joinable()) {
         m_thread_sync.join();
     }
+
+    // The index does not need the block data anymore, so the prune lock can be
+    // released. The name of the lock is cached, because the (virtual) name of
+    // the index is not available anymore when the index is destroyed.
+    WITH_LOCK(cs_main, {
+        if (!m_prune_lock_name.empty()) {
+            g_blockman.DeletePruneLock(m_prune_lock_name);
+        }
+    });
 }

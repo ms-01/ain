@@ -43,6 +43,13 @@ protected:
 
     const char* GetName() const override { return m_name.c_str(); }
 
+    /**
+     * The block filter index only needs the blocks it has already processed
+     * (and their undo data), so it can be used while the node runs in prune
+     * mode. A prune lock keeps the required data on disk.
+     */
+    bool AllowPrune() const override { return true; }
+
 public:
     /** Constructs the index, which becomes available to be queried. */
     explicit BlockFilterIndex(BlockFilterType filter_type,

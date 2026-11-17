@@ -28,10 +28,12 @@
 #include <algorithm>
 #include <atomic>
 #include <exception>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -91,6 +93,10 @@ static const unsigned int MAX_BLOCKFILE_SIZE = 0x8000000;  // 128 MiB
 static const unsigned int BLOCKFILE_CHUNK_SIZE = 0x2000000;  // 32 MiB
 /** The pre-allocation chunk size for rev?????.dat files (since 0.8) */
 static const unsigned int UNDOFILE_CHUNK_SIZE = 0x200000;  // 2 MiB
+/** The pre-allocation chunk size for blk?????.dat files when -fastprune is set (16 KiB) */
+static const unsigned int FASTPRUNE_BLOCKFILE_CHUNK_SIZE = 0x4000;  // 16 KiB
+/** The maximum size of a blk?????.dat file when -fastprune is set (64 KiB) */
+static const unsigned int FASTPRUNE_MAX_BLOCKFILE_SIZE = 0x10000;  // 64 KiB
 
 /** Maximum number of dedicated script-checking threads allowed */
 static const int MAX_SCRIPTCHECK_THREADS = 15;
@@ -210,6 +216,13 @@ namespace spv {
 
 /** Block files containing a block-height within MIN_BLOCKS_TO_KEEP of ::ChainActive().Tip() will not be pruned. */
 static const unsigned int MIN_BLOCKS_TO_KEEP = 288;
+/**
+ * Number of blocks that are kept in addition to the best block of an index
+ * which requires the block (and undo) data to stay on disk (e.g. the block
+ * filter index). Blocks below `index_best_block - PRUNE_LOCK_BUFFER - 1` may
+ * be pruned.
+ */
+static const unsigned int PRUNE_LOCK_BUFFER = 10;
 /** Minimum blocks required to signal NODE_NETWORK_LIMITED */
 static const unsigned int NODE_NETWORK_LIMITED_MIN_BLOCKS = 288;
 
@@ -527,6 +540,19 @@ struct CBlockIndexWorkComparator {
 };
 
 /**
+ * Prune lock of an index which requires block data (and undo data) to remain
+ * available on disk.
+ *
+ * `height_first` is the height of the earliest block which still has to be
+ * kept on disk. Everything below `height_first - PRUNE_LOCK_BUFFER - 1` may be
+ * pruned.
+ */
+struct PruneLockInfo {
+    /// Height of earliest block that should be kept and not pruned
+    int height_first{std::numeric_limits<int>::max()};
+};
+
+/**
  * Maintains a tree of blocks (stored in `m_block_index`) which is consulted
  * to determine where the most-work tip is.
  *
@@ -564,6 +590,16 @@ public:
     std::multimap<CBlockIndex *, CBlockIndex *> m_blocks_unlinked;
 
     /**
+     * Prune locks of the running indexes which need block data (and undo data)
+     * to stay on disk, keyed by the name of the index.
+     *
+     * A prune lock prevents the pruning code from removing block files which
+     * are still needed by the index (e.g. the block filter index, which needs
+     * the undo data of every block it has not processed yet).
+     */
+    std::unordered_map<std::string, PruneLockInfo> m_prune_locks GUARDED_BY(cs_main);
+
+    /**
      * Load the blocktree off disk and into memory. Populate certain metadata
      * per index entry (nStatus, nChainWork, nTimeMax, etc.) as well as peripheral
      * collections like setDirtyBlockIndex.
@@ -591,7 +627,36 @@ public:
                            CValidationState &state,
                            const CChainParams &chainparams,
                            CBlockIndex **ppindex) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+    /**
+     * Register (or update) the prune lock of the index with the given name.
+     */
+    void UpdatePruneLock(const std::string& name, const PruneLockInfo& lock_info) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+    /**
+     * Remove the prune lock of the index with the given name. Returns true if a
+     * lock was removed.
+     */
+    bool DeletePruneLock(const std::string& name) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 };
+
+/** The global block manager (tree of blocks, prune locks, ...). */
+extern BlockManager g_blockman;
+
+/**
+ * Compute the highest height which may be pruned, taking the currently active
+ * prune locks into account.
+ *
+ * @param[in] prune_locks   The active prune locks, keyed by the index name.
+ * @param[in] tip_height    The height of the active chain tip.
+ * @param[out] limiting_lock If not nullptr, the name of the prune lock which
+ *                          determined the returned height (empty if no lock was
+ *                          limiting).
+ * @return The highest height which may be pruned (at least 1).
+ */
+int GetLastPrunableHeight(const std::unordered_map<std::string, PruneLockInfo>& prune_locks,
+                          int tip_height,
+                          std::string* limiting_lock = nullptr);
 
 /**
  * A convenience class for constructing the CCoinsView* hierarchy used

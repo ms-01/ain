@@ -345,6 +345,7 @@ BASE_SCRIPTS = [
     "p2p_node_network_limited.py",
     "p2p_permissions.py",
     "feature_blocksdir.py",
+    "feature_blockfilterindex_prune.py",
     "feature_config_args.py",
     "feature_account_mining.py",
     "feature_account_overflow.py",
