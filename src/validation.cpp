@@ -113,11 +113,12 @@ bool CBlockIndexWorkComparator::operator()(const CBlockIndex *pa, const CBlockIn
 }
 
 namespace {
-    BlockManager g_blockman;
-
     // Store subsidy at each reduction
     std::map<uint32_t, CAmount> subsidyReductions;
 }  // namespace
+
+// The global block manager (tree of blocks, prune locks, ...).
+BlockManager g_blockman;
 
 std::unique_ptr<CChainState> g_chainstate;
 
@@ -231,8 +232,8 @@ CBlockIndex *FindForkInGlobalIndex(const CChain &chain, const CBlockLocator &loc
 std::unique_ptr<CBlockTreeDB> pblocktree;
 
 // See definition for documentation
-static void FindFilesToPruneManual(std::set<int> &setFilesToPrune, int nManualPruneHeight);
-static void FindFilesToPrune(std::set<int> &setFilesToPrune, uint64_t nPruneAfterHeight);
+static void FindFilesToPruneManual(std::set<int> &setFilesToPrune, int nManualPruneHeight, int nLastPrune);
+static void FindFilesToPrune(std::set<int> &setFilesToPrune, uint64_t nPruneAfterHeight, int nLastPrune);
 bool CheckInputs(const CTransaction &tx,
                  CValidationState &state,
                  const CCoinsViewCache &inputs,
@@ -245,6 +246,12 @@ bool CheckInputs(const CTransaction &tx,
 static FILE *OpenUndoFile(const FlatFilePos &pos, bool fReadOnly = false);
 static FlatFileSeq BlockFileSeq();
 static FlatFileSeq UndoFileSeq();
+/** True if the -fastprune debug option is set (smaller block files, regtest only). */
+static bool FastPruneEnabled();
+/** The pre-allocation chunk size of the blk?????.dat files. */
+static unsigned int BlockFileChunkSize();
+/** The maximum size of a blk?????.dat file. */
+static unsigned int MaxBlockFileSize();
 
 bool CheckFinalTx(const CTransaction &tx, int flags) {
     AssertLockHeld(cs_main);
@@ -3514,10 +3521,19 @@ bool CChainState::FlushStateToDisk(const CChainParams &chainparams,
             bool fFlushForPrune = false;
             bool fDoFullFlush = false;
             if (fPruneMode && (fCheckForPruning || nManualPruneHeight > 0) && !fReindex) {
+                // Make sure we don't prune above the best block of an index
+                // which still needs the block (and undo) data on disk, e.g. the
+                // block filter index. The lock derived height bounds both the
+                // automatic and the manual prune path.
+                std::string limiting_lock;
+                const int last_prune = GetLastPrunableHeight(g_blockman.m_prune_locks, m_chain.Height(), &limiting_lock);
+                if (!limiting_lock.empty()) {
+                    LogPrint(BCLog::PRUNE, "%s limited pruning to height %d\n", limiting_lock, last_prune);
+                }
                 if (nManualPruneHeight > 0) {
-                    FindFilesToPruneManual(setFilesToPrune, nManualPruneHeight);
+                    FindFilesToPruneManual(setFilesToPrune, std::min(last_prune, nManualPruneHeight), last_prune);
                 } else {
-                    FindFilesToPrune(setFilesToPrune, chainparams.PruneAfterHeight());
+                    FindFilesToPrune(setFilesToPrune, chainparams.PruneAfterHeight(), last_prune);
                     fCheckForPruning = false;
                 }
                 if (!setFilesToPrune.empty()) {
@@ -3808,6 +3824,19 @@ bool CChainState::DisconnectTip(CValidationState &state,
         }
     }
     LogPrint(BCLog::BENCH, "- Disconnect block: %.2fms\n", (GetTimeMicros() - nStart) * MILLI);
+    {
+        // Prune locks that began at or after the tip should be moved backward so
+        // they get a chance to reorg.
+        const int max_height_first{pindexDelete->nHeight - 1};
+        WITH_LOCK(cs_main, {
+            for (auto &prune_lock : g_blockman.m_prune_locks) {
+                if (prune_lock.second.height_first <= max_height_first) continue;
+
+                prune_lock.second.height_first = max_height_first;
+                LogPrint(BCLog::PRUNE, "%s prune lock moved back to %d\n", prune_lock.first, max_height_first);
+            }
+        });
+    }
     // Write the chain state to disk, if necessary.
     if (!FlushStateToDisk(chainparams, state, FlushStateMode::IF_NEEDED)) {
         m_disconnectTip = false;
@@ -4797,7 +4826,7 @@ static bool FindBlockPos(FlatFilePos &pos,
     }
 
     if (!fKnown) {
-        while (vinfoBlockFile[nFile].nSize + nAddSize >= MAX_BLOCKFILE_SIZE) {
+        while (vinfoBlockFile[nFile].nSize + nAddSize >= MaxBlockFileSize()) {
             nFile++;
             if (vinfoBlockFile.size() <= nFile) {
                 vinfoBlockFile.resize(nFile + 1);
@@ -5856,6 +5885,29 @@ bool TestBlockValidity(CValidationState &state,
  * BLOCK PRUNING CODE
  */
 
+/**
+ * The -fastprune debug option (regtest only) makes the node use much smaller
+ * block files and a lower minimum prune height. It exists so that the pruning
+ * code (and the interaction between pruning and the indexes) can be tested
+ * without having to write gigabytes of block data.
+ *
+ * Note that a data directory created with -fastprune uses a different on-disk
+ * layout and must not be reused without the option (and vice versa).
+ */
+static bool FastPruneEnabled() {
+    return gArgs.GetBoolArg("-fastprune", false);
+}
+
+/** The pre-allocation chunk size of the blk?????.dat files. */
+static unsigned int BlockFileChunkSize() {
+    return FastPruneEnabled() ? FASTPRUNE_BLOCKFILE_CHUNK_SIZE : BLOCKFILE_CHUNK_SIZE;
+}
+
+/** The maximum size of a blk?????.dat file. */
+static unsigned int MaxBlockFileSize() {
+    return FastPruneEnabled() ? FASTPRUNE_MAX_BLOCKFILE_SIZE : MAX_BLOCKFILE_SIZE;
+}
+
 /* Calculate the amount of disk space the block & undo files currently use */
 uint64_t CalculateCurrentUsage() {
     LOCK(cs_LastBlockFile);
@@ -5910,7 +5962,7 @@ void UnlinkPrunedFiles(const std::set<int> &setFilesToPrune) {
 }
 
 /* Calculate the block/rev files to delete based on height specified by user with RPC command pruneblockchain */
-static void FindFilesToPruneManual(std::set<int> &setFilesToPrune, int nManualPruneHeight) {
+static void FindFilesToPruneManual(std::set<int> &setFilesToPrune, int nManualPruneHeight, int nLastPrune) {
     assert(fPruneMode && nManualPruneHeight > 0);
 
     LOCK2(cs_main, cs_LastBlockFile);
@@ -5918,9 +5970,15 @@ static void FindFilesToPruneManual(std::set<int> &setFilesToPrune, int nManualPr
         return;
     }
 
-    // last block to prune is the lesser of (user-specified height, MIN_BLOCKS_TO_KEEP from the tip)
-    unsigned int nLastBlockWeCanPrune =
-        std::min((unsigned)nManualPruneHeight, ::ChainActive().Tip()->nHeight - MIN_BLOCKS_TO_KEEP);
+    // last block to prune is the lesser of (user-specified height, the height
+    // which may be pruned according to the prune locks, MIN_BLOCKS_TO_KEEP from
+    // the tip)
+    const int tip_height = ::ChainActive().Tip()->nHeight;
+    const unsigned int max_prunable = tip_height > static_cast<int>(MIN_BLOCKS_TO_KEEP)
+                                          ? static_cast<unsigned int>(tip_height - MIN_BLOCKS_TO_KEEP)
+                                          : 0;
+    unsigned int nLastBlockWeCanPrune = std::min(static_cast<unsigned int>(nManualPruneHeight), max_prunable);
+    nLastBlockWeCanPrune = std::min(nLastBlockWeCanPrune, (unsigned)std::max(0, nLastPrune));
     int count = 0;
     for (int fileNumber = 0; fileNumber < nLastBlockFile; fileNumber++) {
         if (vinfoBlockFile[fileNumber].nSize == 0 || vinfoBlockFile[fileNumber].nHeightLast > nLastBlockWeCanPrune) {
@@ -5957,7 +6015,7 @@ void PruneBlockFilesManual(int nManualPruneHeight) {
  *
  * @param[out]   setFilesToPrune   The set of file indices that can be unlinked will be returned
  */
-static void FindFilesToPrune(std::set<int> &setFilesToPrune, uint64_t nPruneAfterHeight) {
+static void FindFilesToPrune(std::set<int> &setFilesToPrune, uint64_t nPruneAfterHeight, int nLastPrune) {
     LOCK2(cs_main, cs_LastBlockFile);
     if (::ChainActive().Tip() == nullptr || nPruneTarget == 0) {
         return;
@@ -5967,11 +6025,14 @@ static void FindFilesToPrune(std::set<int> &setFilesToPrune, uint64_t nPruneAfte
     }
 
     unsigned int nLastBlockWeCanPrune = ::ChainActive().Tip()->nHeight - MIN_BLOCKS_TO_KEEP;
+    // Never prune above the height which is allowed by the prune locks of the
+    // running indexes (e.g. the block filter index).
+    nLastBlockWeCanPrune = std::min(nLastBlockWeCanPrune, (unsigned)std::max(0, nLastPrune));
     uint64_t nCurrentUsage = CalculateCurrentUsage();
     // We don't check to prune until after we've allocated new space for files
     // So we should leave a buffer under our target to account for another allocation
     // before the next pruning.
-    uint64_t nBuffer = BLOCKFILE_CHUNK_SIZE + UNDOFILE_CHUNK_SIZE;
+    uint64_t nBuffer = BlockFileChunkSize() + UNDOFILE_CHUNK_SIZE;
     uint64_t nBytesToPrune;
     int count = 0;
 
@@ -6020,7 +6081,7 @@ static void FindFilesToPrune(std::set<int> &setFilesToPrune, uint64_t nPruneAfte
 }
 
 static FlatFileSeq BlockFileSeq() {
-    return FlatFileSeq(GetBlocksDir(), "blk", BLOCKFILE_CHUNK_SIZE);
+    return FlatFileSeq(GetBlocksDir(), "blk", BlockFileChunkSize());
 }
 
 static FlatFileSeq UndoFileSeq() {
@@ -6038,6 +6099,38 @@ static FILE *OpenUndoFile(const FlatFilePos &pos, bool fReadOnly) {
 
 fs::path GetBlockPosFilename(const FlatFilePos &pos) {
     return BlockFileSeq().FileName(pos);
+}
+
+void BlockManager::UpdatePruneLock(const std::string &name, const PruneLockInfo &lock_info) {
+    AssertLockHeld(cs_main);
+    m_prune_locks[name] = lock_info;
+}
+
+bool BlockManager::DeletePruneLock(const std::string &name) {
+    AssertLockHeld(cs_main);
+    return m_prune_locks.erase(name) > 0;
+}
+
+int GetLastPrunableHeight(const std::unordered_map<std::string, PruneLockInfo> &prune_locks,
+                          int tip_height,
+                          std::string *limiting_lock) {
+    // The last height we may prune. Without any prune lock this is the tip of
+    // the active chain, i.e. only the MIN_BLOCKS_TO_KEEP window limits the
+    // pruning (see FindFilesToPrune()).
+    int last_prune = std::max(0, tip_height);
+    if (limiting_lock) limiting_lock->clear();
+
+    for (const auto &prune_lock : prune_locks) {
+        if (prune_lock.second.height_first == std::numeric_limits<int>::max()) continue;
+        // Remove the buffer and one additional block here to get the actual
+        // height that is outside of the buffer.
+        const int lock_height = prune_lock.second.height_first - static_cast<int>(PRUNE_LOCK_BUFFER) - 1;
+        last_prune = std::max(1, std::min(last_prune, lock_height));
+        if (last_prune == lock_height && limiting_lock) {
+            *limiting_lock = prune_lock.first;
+        }
+    }
+    return last_prune;
 }
 
 CBlockIndex *BlockManager::InsertBlockIndex(const uint256 &hash) {

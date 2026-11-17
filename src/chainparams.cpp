@@ -1223,7 +1223,9 @@ public:
         pchMessageStartPostAMK[2] = pchMessageStart[2] = 0xb5;
         pchMessageStartPostAMK[3] = pchMessageStart[3] = 0xda;
         nDefaultPort = 19555;
-        nPruneAfterHeight = 1000;
+        // The -fastprune debug option lowers the minimum prune height so that
+        // the pruning code can be tested without writing gigabytes of blocks.
+        nPruneAfterHeight = gArgs.GetBoolArg("-fastprune", false) ? 100 : 1000;
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;
 

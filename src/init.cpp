@@ -638,6 +638,7 @@ void SetupServerArgs()
     gArgs.AddArg("-evmtxpriorityfeepercentile", strprintf("Set the suggested priority fee for EVM transactions (default: %u)", DEFAULT_SUGGESTED_PRIORITY_FEE_PERCENTILE), ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     gArgs.AddArg("-evmestimategaserrorratio", strprintf("Set the gas estimation error ratio for eth_estimateGas RPC (default: %u)", DEFAULT_ESTIMATE_GAS_ERROR_RATIO), ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     gArgs.AddArg("-uacomment=<cmt>", "Append comment to the user agent string", ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
+    gArgs.AddArg("-fastprune", "Use smaller block files and lower minimum prune height for testing purposes. This changes the on-disk layout of the block files, so a data directory created with -fastprune must not be reused without it (and vice versa). Only allowed on regtest.", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
 
     SetupChainParamsBaseOptions();
 
@@ -1211,12 +1212,18 @@ bool AppInitParameterInteraction()
     if (gArgs.GetArg("-prune", 0)) {
         if (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX))
             return InitError(_("Prune mode is incompatible with -txindex.").translated);
-        if (!g_enabled_filter_types.empty()) {
-            return InitError(_("Prune mode is incompatible with -blockfilterindex.").translated);
-        }
         if (gArgs.GetBoolArg("-txospenderindex", DEFAULT_TXOSPENDERINDEX)) {
             return InitError(_("Prune mode is incompatible with -txospenderindex.").translated);
         }
+        // Note: -blockfilterindex is compatible with prune mode. The index
+        // registers a prune lock which keeps the block (and undo) data it
+        // still needs on disk.
+    }
+
+    // -fastprune changes the on-disk layout of the block files and is only
+    // meant to be used for testing on regtest.
+    if (gArgs.GetBoolArg("-fastprune", false) && chainparams.NetworkIDString() != CBaseChainParams::REGTEST) {
+        return InitError(_("-fastprune is only allowed on regtest.").translated);
     }
 
     // -bind and -whitebind can't be set when not listening
