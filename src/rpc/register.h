@@ -11,6 +11,8 @@ class CRPCTable;
 
 /** Register block chain RPC commands */
 void RegisterBlockchainRPCCommands(CRPCTable &tableRPC);
+/** Register mempool RPC commands */
+void RegisterMempoolRPCCommands(CRPCTable &tableRPC);
 /** Register P2P networking RPC commands */
 void RegisterNetRPCCommands(CRPCTable &tableRPC);
 /** Register stats RPC commands */
@@ -49,6 +51,7 @@ void RegisterEVMRPCCommands(CRPCTable &tableRPC);
 static inline void RegisterAllCoreRPCCommands(CRPCTable &t)
 {
     RegisterBlockchainRPCCommands(t);
+    RegisterMempoolRPCCommands(t);
     RegisterNetRPCCommands(t);
     RegisterStatsRPCCommands(t);
     RegisterMiscRPCCommands(t);

@@ -30,6 +30,7 @@ struct InitInterfaces
 struct CacheSizes {
     int64_t customCacheSize;
     int64_t txIndexCache;
+    int64_t txoSpenderIndexCache;
     int64_t blockTreeDBCache;
     int64_t filterIndexCache;
     int64_t coinDBCache;

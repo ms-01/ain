@@ -21,6 +21,7 @@
 #include <httpserver.h>
 #include <index/blockfilterindex.h>
 #include <index/txindex.h>
+#include <index/txospenderindex.h>
 #include <key.h>
 #include <key_io.h>
 #include <ain_rs_exports.h>
@@ -199,6 +200,9 @@ void Interrupt()
     if (g_txindex) {
         g_txindex->Interrupt();
     }
+    if (g_txospenderindex) {
+        g_txospenderindex->Interrupt();
+    }
     ForEachBlockFilterIndex([](BlockFilterIndex& index) { index.Interrupt(); });
 }
 
@@ -239,6 +243,7 @@ void Shutdown(InitInterfaces& interfaces)
     if (peerLogic) UnregisterValidationInterface(peerLogic.get());
     if (g_connman) g_connman->Stop();
     if (g_txindex) g_txindex->Stop();
+    if (g_txospenderindex) g_txospenderindex->Stop();
     ForEachBlockFilterIndex([](BlockFilterIndex& index) { index.Stop(); });
 
     StopTorControl();
@@ -257,6 +262,7 @@ void Shutdown(InitInterfaces& interfaces)
     g_connman.reset();
     g_banman.reset();
     g_txindex.reset();
+    g_txospenderindex.reset();
     DestroyAllBlockFilterIndexes();
 
     if (::mempool.IsLoaded() && gArgs.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
@@ -465,6 +471,7 @@ void SetupServerArgs()
     hidden_args.emplace_back("-sysperms");
 #endif
     gArgs.AddArg("-txindex", strprintf("Maintain a full transaction index, used by the getrawtransaction rpc call (default: %u)", DEFAULT_TXINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-txospenderindex", strprintf("Maintain a transaction output spender index, used by the gettxspendingprevout rpc call (default: %u)", DEFAULT_TXOSPENDERINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-acindex", strprintf("Maintain a full account history index, tracking all accounts balances changes. Used by the listaccounthistory, getaccounthistory and accounthistorycount rpc calls (default: %u)", DEFAULT_ACINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-vaultindex", strprintf("Maintain a full vault history index, tracking all vault changes. Used by the listvaulthistory rpc call (default: %u)", DEFAULT_VAULTINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-blockfilterindex=<type>",
@@ -1207,6 +1214,9 @@ bool AppInitParameterInteraction()
         if (!g_enabled_filter_types.empty()) {
             return InitError(_("Prune mode is incompatible with -blockfilterindex.").translated);
         }
+        if (gArgs.GetBoolArg("-txospenderindex", DEFAULT_TXOSPENDERINDEX)) {
+            return InitError(_("Prune mode is incompatible with -txospenderindex.").translated);
+        }
     }
 
     // -bind and -whitebind can't be set when not listening
@@ -1618,6 +1628,9 @@ void SetupCacheSizes(CacheSizes& cacheSizes) {
     cacheSizes.txIndexCache = std::min(totalCache / 8, gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX) ? nMaxTxIndexCache << 20 : 0);
     totalCache -= cacheSizes.txIndexCache;
 
+    cacheSizes.txoSpenderIndexCache = std::min(totalCache / 20, gArgs.GetBoolArg("-txospenderindex", DEFAULT_TXOSPENDERINDEX) ? nMaxTxIndexCache << 20 : 0);
+    totalCache -= cacheSizes.txoSpenderIndexCache;
+
     cacheSizes.filterIndexCache = 0;
     if (!g_enabled_filter_types.empty()) {
         size_t n_indexes = g_enabled_filter_types.size();
@@ -1647,6 +1660,9 @@ void SetupCacheSizes(CacheSizes& cacheSizes) {
     LogPrintf("* Using %.1f MiB for block index database\n", cacheSizes.blockTreeDBCache * (1.0 / 1024 / 1024));
     if (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
         LogPrintf("* Using %.1f MiB for transaction index database\n", cacheSizes.txIndexCache * (1.0 / 1024 / 1024));
+    }
+    if (gArgs.GetBoolArg("-txospenderindex", DEFAULT_TXOSPENDERINDEX)) {
+        LogPrintf("* Using %.1f MiB for transaction output spender index database\n", cacheSizes.txoSpenderIndexCache * (1.0 / 1024 / 1024));
     }
     for (BlockFilterType filter_type : g_enabled_filter_types) {
         LogPrintf("* Using %.1f MiB for %s block filter index database\n",
@@ -2225,6 +2241,11 @@ bool AppInitMain(InitInterfaces& interfaces)
     if (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
         g_txindex = std::make_unique<TxIndex>(nCacheSizes.txIndexCache, false, fReindex);
         g_txindex->Start();
+    }
+
+    if (gArgs.GetBoolArg("-txospenderindex", DEFAULT_TXOSPENDERINDEX)) {
+        g_txospenderindex = std::make_unique<TxoSpenderIndex>(nCacheSizes.txoSpenderIndexCache, false, fReindex);
+        g_txospenderindex->Start();
     }
 
     for (const auto& filter_type : g_enabled_filter_types) {

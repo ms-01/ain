@@ -27,6 +27,26 @@ P2P persistence and RPC observability
     `<onion-address>.onion/128`), while upstream omits the mask for single
     addresses.
 
+Transaction output spender index and `gettxspendingprevout` RPC
+----------------------------------------------------------------
+
+- The new optional `-txospenderindex` setting maintains an index that maps a
+  spent output (`txid`, `vout`) to the transaction that spends it (upstream
+  Bitcoin Core #23077). The index is disabled by default, requires the
+  historical block data and is therefore incompatible with `-prune`.
+
+- The new `gettxspendingprevout` RPC reports which transaction spends a given
+  output. It looks into the mempool first and, if the `-txospenderindex` is
+  enabled and synced, also into the confirmed chain.
+
+  **Call syntax deviations compared to upstream Bitcoin Core:**
+  - Upstream takes the options as named arguments (`mempool_only` and
+    `return_spending_tx`), while DeFiChain passes them as a single object
+    argument, e.g.
+    `gettxspendingprevout '[{"txid":"...","vout":0}]' '{"return_spending_tx":true}'`.
+  - `mempool_only` defaults to `true` if the `-txospenderindex` is not
+    available and to `false` otherwise, which is the same default as upstream.
+
 - The `listbanned` RPC now also returns `ban_duration` (the total duration of
   the ban in seconds) and `time_remaining` (the seconds until the ban expires,
   clamped at 0) next to `address`, `ban_created`, `banned_until` and
