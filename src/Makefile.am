@@ -149,7 +149,9 @@ DEFI_CORE_H = \
   httpserver.h \
   index/base.h \
   index/blockfilterindex.h \
+  index/disktxpos.h \
   index/txindex.h \
+  index/txospenderindex.h \
   indirectmap.h \
   ocean.h \
   init.h \
@@ -405,6 +407,7 @@ libdefi_server_a_SOURCES = \
   index/base.cpp \
   index/blockfilterindex.cpp \
   index/txindex.cpp \
+  index/txospenderindex.cpp \
   interfaces/chain.cpp \
   ocean.cpp \
   init.cpp \
@@ -484,6 +487,7 @@ libdefi_server_a_SOURCES = \
   pos_kernel.cpp \
   rest.cpp \
   rpc/blockchain.cpp \
+  rpc/mempool.cpp \
   rpc/mining.cpp \
   rpc/misc.cpp \
   rpc/net.cpp \
