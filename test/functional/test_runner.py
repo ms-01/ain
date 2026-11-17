@@ -338,6 +338,7 @@ BASE_SCRIPTS = [
     "feature_vault_creation_fee.py",
     "feature_vault_pct_check_factor.py",
     "feature_vault_asset_amounts.py",
+    "feature_loan_fixed_price_record.py",
     "feature_address_map.py",
     "p2p_node_network_limited.py",
     "p2p_permissions.py",
