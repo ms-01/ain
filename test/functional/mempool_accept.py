@@ -358,7 +358,7 @@ class MempoolAcceptanceTest(DefiTestFramework):
 
         self.log.info("Some nonstandard transactions")
         tx.deserialize(BytesIO(hex_str_to_bytes(raw_tx_reference)))
-        tx.nVersion = 3  # A version currently non-standard
+        tx.nVersion = 5  # A version currently non-standard (MAX_STANDARD_VERSION = 4)
         self.check_mempool_result(
             result_expected=[
                 {"txid": tx.rehash(), "allowed": False, "reject-reason": "version"}

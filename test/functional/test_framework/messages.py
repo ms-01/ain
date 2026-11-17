@@ -144,13 +144,12 @@ def deser_vector(f, c):
 # entries in the vector (we use this for serializing the vector of transactions
 # for a witness block).
 def ser_vector(l, ser_function_name=None):
-    r = ser_compact_size(len(l))
-    for i in l:
-        if ser_function_name:
-            r += getattr(i, ser_function_name)()
-        else:
-            r += i.serialize()
-    return r
+    chunks = [ser_compact_size(len(l))]
+    if ser_function_name:
+        chunks.extend(getattr(i, ser_function_name)() for i in l)
+    else:
+        chunks.extend(i.serialize() for i in l)
+    return b"".join(chunks)
 
 
 def deser_uint256_vector(f):
