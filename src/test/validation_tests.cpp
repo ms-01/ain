@@ -7,6 +7,7 @@
 #include <consensus/params.h>
 #include <consensus/validation.h>
 #include <init.h>
+#include <key.h>
 #include <net.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
@@ -14,12 +15,17 @@
 #include <txdb.h>
 #include <util/system.h>
 #include <validation.h>
+#include <validationinterface.h>
 
 #include <test/setup_common.h>
 
 #include <boost/signals2/signal.hpp>
 #include <boost/test/unit_test.hpp>
 
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <thread>
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(validation_tests, TestingSetup)
@@ -239,6 +245,140 @@ BOOST_AUTO_TEST_CASE(check_block_merkle_window_parameter_sensitivity)
     BOOST_CHECK(!CheckBlock(block, state2, active, ctxState2, true, height, true));
     BOOST_CHECK(state2.IsInvalid());
     BOOST_CHECK_EQUAL(state2.GetRejectReason(), "bad-txnmrklroot");
+}
+
+/**
+ * The minter key of a header must be recovered on demand: CBlockHeader must not keep the
+ * recovered key in a mutable member, because a block is shared between the net thread, the
+ * validation thread and the RPC layer via a std::shared_ptr<const CBlock>.
+ */
+BOOST_AUTO_TEST_CASE(extract_minter_key_is_pure_and_reentrant)
+{
+    CBlock block = MakeCheckBlockTestBlock();
+
+    CKey key;
+    key.MakeNewKey(true);
+    BOOST_REQUIRE(key.SignCompact(block.GetHashToSign(), block.sig));
+    const CKeyID expectedKeyID = key.GetPubKey().GetID();
+
+    CKeyID recoveredKeyID;
+    BOOST_REQUIRE(block.ExtractMinterKey(recoveredKeyID));
+    BOOST_CHECK(recoveredKeyID == expectedKeyID);
+
+    // The extraction must not modify the header in any way.
+    const std::vector<uint8_t> serializedBefore = SerializeBlockForTest(block);
+    CKeyID recoveredKeyID2;
+    BOOST_REQUIRE(block.ExtractMinterKey(recoveredKeyID2));
+    BOOST_CHECK(recoveredKeyID2 == expectedKeyID);
+    BOOST_CHECK(serializedBefore == SerializeBlockForTest(block));
+
+    // Concurrent readers of the very same (shared, immutable) block must all see the same
+    // results - there is no shared mutable state that could be raced on.
+    std::shared_ptr<const CBlock> sharedBlock = std::make_shared<const CBlock>(block);
+    const uint256 expectedHash = sharedBlock->GetHash();
+
+    std::atomic<int> failures{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 8; ++i) {
+        threads.emplace_back([&sharedBlock, &expectedKeyID, expectedHash, &failures]() {
+            for (int j = 0; j < 100; ++j) {
+                CKeyID keyID;
+                if (!sharedBlock->ExtractMinterKey(keyID) || keyID != expectedKeyID) {
+                    ++failures;
+                }
+                if (sharedBlock->GetHash() != expectedHash) {
+                    ++failures;
+                }
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    BOOST_CHECK_EQUAL(failures.load(), 0);
+}
+
+/**
+ * The stateless block check must not require cs_main: it is executed outside of the critical
+ * section of the block admission path.
+ */
+BOOST_AUTO_TEST_CASE(check_block_does_not_require_cs_main)
+{
+    const Consensus::Params consensus = MerkleRootAlwaysCheckedParams();
+
+    CBlock block = MakeCheckBlockTestBlock();
+    block.hashMerkleRoot = BlockMerkleRoot(block);
+
+    std::promise<void> done;
+    auto future = done.get_future();
+    std::thread worker([&block, &consensus, &done]() {
+        CheckContextState ctxState;
+        CValidationState state;
+        CheckBlock(block, state, consensus, ctxState, false, 1, true);
+        done.set_value();
+    });
+
+    {
+        // While cs_main is held by this thread the stateless check has to make progress.
+        LOCK(cs_main);
+        BOOST_CHECK(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+    }
+    worker.join();
+}
+
+/**
+ * Collects the reject reason of the last block that failed the stateless check.
+ */
+class BlockCheckedCatcher : public CValidationInterface
+{
+public:
+    std::string rejectReason;
+
+    void BlockChecked(const CBlock& block, const CValidationState& state) override
+    {
+        rejectReason = state.GetRejectReason();
+    }
+};
+
+/**
+ * A block with an unknown parent must still be rejected with "prev-blk-not-found".
+ */
+BOOST_AUTO_TEST_CASE(process_new_block_rejects_unknown_parent)
+{
+    CBlock block = MakeCheckBlockTestBlock();
+    block.hashPrevBlock = uint256S("0x01");
+
+    BlockCheckedCatcher catcher;
+    RegisterValidationInterface(&catcher);
+
+    bool newBlock{false};
+    const bool processed = ProcessNewBlock(Params(), std::make_shared<CBlock>(block), true, &newBlock);
+
+    UnregisterValidationInterface(&catcher);
+
+    BOOST_CHECK(!processed);
+    BOOST_CHECK_EQUAL(catcher.rejectReason, "prev-blk-not-found");
+}
+
+/**
+ * A block with a manipulated merkle root must still be rejected with "bad-txnmrklroot".
+ */
+BOOST_AUTO_TEST_CASE(process_new_block_rejects_manipulated_merkle_root)
+{
+    CBlock block = MakeCheckBlockTestBlock();
+    block.hashPrevBlock = Params().GenesisBlock().GetHash();
+    block.hashMerkleRoot = uint256();
+
+    BlockCheckedCatcher catcher;
+    RegisterValidationInterface(&catcher);
+
+    bool newBlock{false};
+    const bool processed = ProcessNewBlock(Params(), std::make_shared<CBlock>(block), true, &newBlock);
+
+    UnregisterValidationInterface(&catcher);
+
+    BOOST_CHECK(!processed);
+    BOOST_CHECK_EQUAL(catcher.rejectReason, "bad-txnmrklroot");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

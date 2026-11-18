@@ -17,12 +17,14 @@
  * to everyone and the block is added to the block chain.  The first transaction
  * in the block is a special one that creates a new coin owned by the creator
  * of the block.
+ *
+ * A block header is immutable once constructed: it does not carry any mutable or cached state.
+ * This makes a CBlock/CBlockHeader safe to share between threads via a
+ * std::shared_ptr<const CBlock>, as the block objects are handed out to the net thread, the
+ * validation thread and the RPC layer concurrently.
  */
 class CBlockHeader
 {
-    // memory only
-    mutable CPubKey recoveredPubKey;
-
 public:
     // header
     int32_t nVersion;
@@ -67,7 +69,6 @@ public:
         deprecatedHeight = 0;
         mintedBlocks = 0;
         sig = {};
-        recoveredPubKey = CPubKey{};
     }
 
     bool IsNull() const
@@ -84,12 +85,18 @@ public:
         return (int64_t)nTime;
     }
 
+    /**
+     * Recover the public key that signed this header and return its key id.
+     *
+     * The key is recovered on demand into a local variable: the header itself is never
+     * modified, so this method is pure, re-entrant and safe to call concurrently on a shared
+     * block instance.
+     */
     bool ExtractMinterKey(CKeyID &key) const
     {
-        if (!recoveredPubKey.IsValid()) {
-            if (!recoveredPubKey.RecoverCompact(GetHashToSign(), sig)) {
-                return false;
-            }
+        CPubKey recoveredPubKey;
+        if (!recoveredPubKey.RecoverCompact(GetHashToSign(), sig)) {
+            return false;
         }
 
         key = recoveredPubKey.GetID();
