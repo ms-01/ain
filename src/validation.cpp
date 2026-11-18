@@ -4122,13 +4122,22 @@ static bool FindBlockPos(FlatFilePos &pos,
                          bool fKnown = false) {
     LOCK(cs_LastBlockFile);
 
+    // Use smaller blockfiles in test-only -fastprune mode - but avoid
+    // the possibility of having a block not fit into the block file.
+    uint64_t maxBlockFileSize{MaxBlockFileSize()};
+    if (FastPruneEnabled() && nAddSize >= maxBlockFileSize) {
+        // dynamically adjust the blockfile size to be larger than the added size
+        maxBlockFileSize = static_cast<uint64_t>(nAddSize) + 1;
+    }
+    assert(nAddSize < maxBlockFileSize);
+
     unsigned int nFile = fKnown ? pos.nFile : nLastBlockFile;
     if (vinfoBlockFile.size() <= nFile) {
         vinfoBlockFile.resize(nFile + 1);
     }
 
     if (!fKnown) {
-        while (vinfoBlockFile[nFile].nSize + nAddSize >= MaxBlockFileSize()) {
+        while (static_cast<uint64_t>(vinfoBlockFile[nFile].nSize) + nAddSize >= maxBlockFileSize) {
             nFile++;
             if (vinfoBlockFile.size() <= nFile) {
                 vinfoBlockFile.resize(nFile + 1);
