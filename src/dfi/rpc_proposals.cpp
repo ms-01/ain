@@ -641,8 +641,11 @@ UniValue votegovbatch(const JSONRPCRequest &request) {
     RPCTypeCheck(request.params, {UniValue::VARR}, false);
 
     const auto &keys = request.params[0].get_array();
-    auto sleepTime =
-        (request.params.size() > 1 && request.params[1].isNull()) ? SLEEP_TIME_MILLIS : request.params[1].getInt<int>();
+    auto sleepTime = SLEEP_TIME_MILLIS;
+    if (request.params.size() > 1 && !request.params[1].isNull()) {
+        RPCTypeCheck(request.params, {UniValue::VARR, UniValue::VNUM}, true);
+        sleepTime = request.params[1].getInt<int>();
+    }
     auto neutralVotesAllowed = gArgs.GetBoolArg("-rpc-governance-accept-neutral", DEFAULT_RPC_GOV_NEUTRAL);
 
     auto [view, accountView, vaultView] = GetSnapshots();

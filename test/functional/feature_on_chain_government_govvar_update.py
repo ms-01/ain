@@ -206,7 +206,9 @@ class CFPFeeDistributionTest(DefiTestFramework):
         self.nodes[0].generate(1)
 
         # Vote during first cycle
-        self.nodes[0].votegov(propId, self.mn0, "yes")
+        # Use the batch variant with an explicit sleep time to also cover the
+        # optional `sleepTime` argument of `votegovbatch`.
+        self.nodes[0].votegovbatch([[propId, self.mn0, "yes"]], 500)
         self.nodes[0].generate(1)
         self.sync_blocks(timeout=120)
         self.nodes[1].votegov(propId, self.mn1, "yes")
