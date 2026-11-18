@@ -861,4 +861,81 @@ BOOST_AUTO_TEST_CASE(ccoins_write)
                     CheckWriteCoins(parent_value, child_value, parent_value, parent_flags, child_flags, parent_flags);
 }
 
+BOOST_AUTO_TEST_CASE(ccoins_batchwrite_uncache_invariants)
+{
+    /* Regression guard for the coins layer, which is deliberately not modified by this
+     * change: it locks down the BatchWrite()/Uncache() invariants of the coins cache.
+     *
+     * 1) A child entry without the FRESH flag is written to the parent as DIRTY.
+     * 2) A child entry with the FRESH flag keeps the FRESH flag in the parent.
+     * 3) A FRESH flag misapplied to a child entry whose parent entry is unspent is a
+     *    logic error and must not corrupt the parent cache silently.
+     * 4) Uncache() only drops entries without any flag; dirty entries are kept.
+     */
+
+    // 1) Child entry without FRESH -> parent entry is DIRTY.
+    {
+        CCoinsView root;
+        CCoinsViewCacheTest parent{&root};
+        CCoinsMap child;
+        InsertCoinsMapEntry(child, VALUE2, DIRTY);
+        BOOST_CHECK(parent.BatchWrite(child, uint256()));
+
+        CAmount result_value;
+        char result_flags;
+        GetCoinsMapEntry(parent.map(), result_value, result_flags);
+        BOOST_CHECK_EQUAL(result_value, VALUE2);
+        BOOST_CHECK_EQUAL(result_flags, DIRTY);
+    }
+
+    // 2) Child entry with FRESH -> parent entry is DIRTY|FRESH.
+    {
+        CCoinsView root;
+        CCoinsViewCacheTest parent{&root};
+        CCoinsMap child;
+        InsertCoinsMapEntry(child, VALUE2, char(DIRTY | FRESH));
+        BOOST_CHECK(parent.BatchWrite(child, uint256()));
+
+        CAmount result_value;
+        char result_flags;
+        GetCoinsMapEntry(parent.map(), result_value, result_flags);
+        BOOST_CHECK_EQUAL(result_value, VALUE2);
+        BOOST_CHECK_EQUAL(result_flags, char(DIRTY | FRESH));
+    }
+
+    // 3) FRESH misapplied on top of an unspent parent entry -> std::logic_error.
+    {
+        SingleEntryCacheTest test(ABSENT, VALUE1, char(0));
+        bool logic_error = false;
+        try {
+            WriteCoinsViewEntry(test.cache, VALUE2, char(DIRTY | FRESH));
+        } catch (const std::logic_error &) {
+            logic_error = true;
+        }
+        BOOST_CHECK(logic_error);
+    }
+
+    // 4) Uncache() drops clean entries only.
+    {
+        SingleEntryCacheTest test(ABSENT, VALUE1, char(0));
+        test.cache.Uncache(OUTPOINT);
+
+        CAmount result_value;
+        char result_flags;
+        GetCoinsMapEntry(test.cache.map(), result_value, result_flags);
+        BOOST_CHECK_EQUAL(result_value, ABSENT);
+        BOOST_CHECK_EQUAL(result_flags, NO_ENTRY);
+    }
+    {
+        SingleEntryCacheTest test(ABSENT, VALUE1, DIRTY);
+        test.cache.Uncache(OUTPOINT);
+
+        CAmount result_value;
+        char result_flags;
+        GetCoinsMapEntry(test.cache.map(), result_value, result_flags);
+        BOOST_CHECK_EQUAL(result_value, VALUE1);
+        BOOST_CHECK_EQUAL(result_flags, DIRTY);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

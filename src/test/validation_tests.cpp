@@ -3,8 +3,14 @@
 // file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <chainparams.h>
+#include <consensus/merkle.h>
+#include <consensus/params.h>
+#include <consensus/validation.h>
 #include <init.h>
 #include <net.h>
+#include <primitives/block.h>
+#include <primitives/transaction.h>
+#include <streams.h>
 #include <txdb.h>
 #include <util/system.h>
 #include <validation.h>
@@ -13,6 +19,8 @@
 
 #include <boost/signals2/signal.hpp>
 #include <boost/test/unit_test.hpp>
+
+#include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(validation_tests, TestingSetup)
 
@@ -123,6 +131,114 @@ BOOST_AUTO_TEST_CASE(cache_sizes_budget_and_scaling)
     gArgs.ForceSetArg("-dbcache", savedDbCache.empty() ? std::to_string(nDefaultDbCache) : savedDbCache);
     nCoinCacheUsage = savedCoinCache;
     nCustomMemUsage = savedCustomMem;
+}
+
+//! Build a minimal block with a single (valid) coinbase transaction.
+static CBlock MakeCheckBlockTestBlock()
+{
+    CBlock block;
+    block.nVersion = 1;
+    block.hashPrevBlock = uint256();
+    block.nTime = 1231006505;
+    block.nBits = 0x207fffff;
+
+    CMutableTransaction coinbase;
+    coinbase.vin.resize(1);
+    coinbase.vin[0].scriptSig = CScript() << OP_0 << OP_0;
+    coinbase.vin[0].nSequence = 0xffffffff;
+    coinbase.vout.resize(1);
+    coinbase.vout[0].nValue = 50 * COIN;
+    coinbase.vout[0].scriptPubKey = CScript() << OP_TRUE;
+    block.vtx.push_back(MakeTransactionRef(std::move(coinbase)));
+
+    return block;
+}
+
+//! Consensus params with the merkle root check enabled for every height > 0.
+static Consensus::Params MerkleRootAlwaysCheckedParams()
+{
+    Consensus::Params params = Params().GetConsensus();
+    params.DF8EunosHeight = 1;
+    params.DF9EunosKampungHeight = 1;
+    return params;
+}
+
+static std::vector<uint8_t> SerializeBlockForTest(const CBlock &block)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << block;
+    return std::vector<uint8_t>(ss.begin(), ss.end());
+}
+
+BOOST_AUTO_TEST_CASE(check_block_is_stateless)
+{
+    // CheckBlock() must not cache its verdict on the block object: it has to be a pure
+    // function of the block contents and the given parameters.
+    const Consensus::Params consensus = MerkleRootAlwaysCheckedParams();
+
+    CBlock block = MakeCheckBlockTestBlock();
+    block.hashMerkleRoot = BlockMerkleRoot(block);
+
+    const std::vector<uint8_t> serializedBefore = SerializeBlockForTest(block);
+
+    CheckContextState ctxState;
+    CValidationState state;
+    BOOST_CHECK(CheckBlock(block, state, consensus, ctxState, false, 100, true));
+    BOOST_CHECK(state.IsValid());
+
+    // The block must not be modified by the check.
+    BOOST_CHECK(serializedBefore == SerializeBlockForTest(block));
+
+    // A repeated check must yield the same verdict (no hidden "already checked" state).
+    CheckContextState ctxState2;
+    CValidationState state2;
+    BOOST_CHECK(CheckBlock(block, state2, consensus, ctxState2, false, 100, true));
+    BOOST_CHECK(state2.IsValid());
+    BOOST_CHECK(serializedBefore == SerializeBlockForTest(block));
+
+    // A block mutated after a successful check must be rejected by the next check.
+    CMutableTransaction mutated(*block.vtx[0]);
+    mutated.vout[0].nValue = 49 * COIN;
+    block.vtx[0] = MakeTransactionRef(std::move(mutated));
+
+    CheckContextState ctxState3;
+    CValidationState state3;
+    BOOST_CHECK(!CheckBlock(block, state3, consensus, ctxState3, false, 100, true));
+    BOOST_CHECK(state3.IsInvalid());
+    BOOST_CHECK_EQUAL(state3.GetRejectReason(), "bad-txnmrklroot");
+}
+
+BOOST_AUTO_TEST_CASE(check_block_merkle_window_parameter_sensitivity)
+{
+    // A block with a deliberately wrong merkle root.
+    CBlock block = MakeCheckBlockTestBlock();
+    block.hashMerkleRoot = uint256();
+
+    // Inside the [DF8EunosHeight, DF9EunosKampungHeight) window the merkle root check is
+    // skipped, so the block is accepted.
+    Consensus::Params windowed = Params().GetConsensus();
+    windowed.DF8EunosHeight = 1;
+    windowed.DF9EunosKampungHeight = 1000;
+
+    // Outside of that window the merkle root check is active for the very same height.
+    Consensus::Params active = Params().GetConsensus();
+    active.DF8EunosHeight = 1;
+    active.DF9EunosKampungHeight = 50;
+
+    const int height = 100;
+
+    CheckContextState ctxState;
+    CValidationState state;
+    BOOST_CHECK(CheckBlock(block, state, windowed, ctxState, true, height, true));
+    BOOST_CHECK(state.IsValid());
+
+    // The same block must be rejected once the merkle root check applies. A cached
+    // "already checked" state would wrongly accept it here.
+    CheckContextState ctxState2;
+    CValidationState state2;
+    BOOST_CHECK(!CheckBlock(block, state2, active, ctxState2, true, height, true));
+    BOOST_CHECK(state2.IsInvalid());
+    BOOST_CHECK_EQUAL(state2.GetRejectReason(), "bad-txnmrklroot");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
