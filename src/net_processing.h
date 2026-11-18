@@ -17,6 +17,17 @@
 
 extern CCriticalSection cs_main;
 
+/**
+ * Lock that guards all peer/relay bookkeeping of the P2P layer (see
+ * src/net_processing.cpp for the full lock hierarchy).
+ *
+ * The peer state is *not* chain state: it used to be guarded by cs_main, which
+ * made every peer-state access contend with ConnectTip() / FlushStateToDisk().
+ * The peer state is now guarded by this dedicated mutex, which is always
+ * acquired *before* cs_main (never the other way around).
+ */
+extern RecursiveMutex g_cs_peer_state;
+
 /** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
 static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100;
 /** Default number of orphan+recently-replaced txn to keep around for block reconstruction */
@@ -44,7 +55,7 @@ private:
     CConnman* const connman;
     BanMan* const m_banman;
 
-    bool CheckIfBanned(CNode* pnode) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+    bool CheckIfBanned(CNode* pnode) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_state);
 public:
     PeerLogicValidation(CConnman* connman, BanMan* banman, CScheduler &scheduler);
 
@@ -85,11 +96,11 @@ public:
     bool SendMessages(CNode* pto) override EXCLUSIVE_LOCKS_REQUIRED(pto->cs_sendProcessing);
 
     /** Consider evicting an outbound peer based on the amount of time they've been behind our tip */
-    void ConsiderEviction(CNode *pto, int64_t time_in_seconds) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+    void ConsiderEviction(CNode *pto, int64_t time_in_seconds) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_state, cs_main);
     /** Evict extra outbound peers. If we think our tip may be stale, connect to an extra outbound */
     void CheckForStaleTipAndEvictPeers(const Consensus::Params &consensusParams);
     /** If we have extra outbound peers, try to disconnect the one with the oldest block announcement */
-    void EvictExtraOutboundPeers(int64_t time_in_seconds) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+    void EvictExtraOutboundPeers(int64_t time_in_seconds) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_state);
 
 private:
     int64_t m_stale_tip_check_time; //!< Next time to check for stale tip
