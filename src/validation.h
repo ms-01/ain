@@ -911,13 +911,23 @@ public:
                            const CChainParams &chainparams,
                            std::shared_ptr<const CBlock> pblock) LOCKS_EXCLUDED(cs_main);
 
+    /**
+     * Accept a block into the block index.
+     *
+     * @param nCheckedHeight  If >= 0, the caller already executed the identical stateless
+     *                        CheckBlock() for this very block at this height and the internal
+     *                        duplicate check is skipped. The check is only skipped if the height
+     *                        of the newly created block index matches nCheckedHeight exactly.
+     *                        Pass -1 (default) to always run the internal check.
+     */
     bool AcceptBlock(const std::shared_ptr<const CBlock> &pblock,
                      CValidationState &state,
                      const CChainParams &chainparams,
                      CBlockIndex **ppindex,
                      bool fRequested,
                      const FlatFilePos *dbp,
-                     bool *fNewBlock) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+                     bool *fNewBlock,
+                     int nCheckedHeight = -1) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     // Block (dis)connection on a given view:
     DisconnectResult DisconnectBlock(const CBlock &block,

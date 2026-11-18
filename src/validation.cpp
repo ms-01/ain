@@ -4823,7 +4823,8 @@ bool CChainState::AcceptBlock(const std::shared_ptr<const CBlock> &pblock,
                               CBlockIndex **ppindex,
                               bool fRequested,
                               const FlatFilePos *dbp,
-                              bool *fNewBlock) {
+                              bool *fNewBlock,
+                              int nCheckedHeight) {
     const CBlock &block = *pblock;
 
     if (fNewBlock) {
@@ -4884,12 +4885,20 @@ bool CChainState::AcceptBlock(const std::shared_ptr<const CBlock> &pblock,
     }
 
     CheckContextState ctxState;
-    if (!CheckBlock(block,
-                    state,
-                    chainparams.GetConsensus(),
-                    ctxState,
-                    false,
-                    pindex->nHeight) ||  // false cause we can check pos context only on ConnectBlock
+    // The caller may have already executed the identical stateless check for this block at this
+    // height (see ProcessNewBlock()). In that case the duplicate execution is skipped, but only
+    // if the height of the block index that was just created matches exactly - otherwise the
+    // check is run here as before.
+    bool checkPassed{true};
+    if (nCheckedHeight < 0 || nCheckedHeight != pindex->nHeight) {
+        checkPassed = CheckBlock(block,
+                                 state,
+                                 chainparams.GetConsensus(),
+                                 ctxState,
+                                 false,
+                                 pindex->nHeight);  // false cause we can check pos context only on ConnectBlock
+    }
+    if (!checkPassed ||
         !ContextualCheckBlock(block, state, chainparams.GetConsensus(), pindex->pprev)) {
         assert(IsBlockReason(state.GetReason()));
         if (state.IsInvalid() && state.GetReason() != ValidationInvalidReason::BLOCK_MUTATED) {
@@ -5072,40 +5081,81 @@ bool ProcessNewBlock(const CChainParams &chainparams,
         }
         CValidationState state;
 
-        // The critical section below covers the lookup of the previous block index and the
-        // AcceptBlock() call, both of which operate on the chain state. CheckBlock() itself is
-        // free of shared mutable state (it neither caches its verdict on the block nor modifies
-        // it), so it does not require the lock for its own sake; it is kept inside the critical
-        // section until the block admission path is restructured for parallel validation.
-        LOCK(cs_main);
-
-        // Get previous block index
         bool ret{true};
-        const auto prevIndex = LookupBlockIndex(pblock->hashPrevBlock);
-        if (!prevIndex) {
-            ret = false;
-            state.Invalid(ValidationInvalidReason::BLOCK_MISSING_PREV,
-                          error("%s: prev block not found", __func__),
-                          "prev-blk-not-found");
+        // Height of the block that is being checked. Only the plain height (an int) crosses the
+        // cs_main boundary: a CBlockIndex pointer must not be dereferenced after the lock has
+        // been released, because BlockManager::Unload() may delete the index objects.
+        int checkedHeight{-1};
+
+        // Phase 1 (under cs_main): resolve the anchor of the block and capture its height.
+        {
+            LOCK(cs_main);
+
+            // Get previous block index
+            const auto prevIndex = LookupBlockIndex(pblock->hashPrevBlock);
+            if (!prevIndex) {
+                ret = false;
+                state.Invalid(ValidationInvalidReason::BLOCK_MISSING_PREV,
+                              error("%s: prev block not found", __func__),
+                              "prev-blk-not-found");
+            } else {
+                checkedHeight = prevIndex->nHeight + 1;
+            }
+        }
+        if (!ret) {
+            GetMainSignals().BlockChecked(*pblock, state);
+            return error("%s: AcceptBlock FAILED (%s)", __func__, FormatStateMessage(state));
         }
 
-        // Ensure that CheckBlock() passes before calling AcceptBlock, as
-        // belt-and-suspenders.
+        // Phase 2 (outside cs_main): ensure that CheckBlock() passes before calling
+        // AcceptBlock, as belt-and-suspenders.
         // reverts a011b9db38ce6d3d5c1b67c1e3bad9365b86f2ce
         // we can end up in isolation banning all other nodes
+        //
+        // CheckBlock() is free of any shared mutable state (it neither caches its verdict on the
+        // block nor modifies it), so it does not require cs_main and can run outside of the
+        // critical section. The fCheckPOS branch is not taken here (the PoS contextual checks
+        // are performed in ConnectBlock), therefore no chain state is touched at all.
         CheckContextState ctxState;
-        if (ret) {
-            ret = CheckBlock(*pblock,
-                             state,
-                             chainparams.GetConsensus(),
-                             ctxState,
-                             false,
-                             prevIndex->nHeight + 1);  // false cause we can check pos context only on ConnectBlock
+        ret = CheckBlock(*pblock,
+                         state,
+                         chainparams.GetConsensus(),
+                         ctxState,
+                         false,
+                         checkedHeight);  // false cause we can check pos context only on ConnectBlock
+        if (!ret) {
+            GetMainSignals().BlockChecked(*pblock, state);
+            return error("%s: AcceptBlock FAILED (%s)", __func__, FormatStateMessage(state));
         }
-        if (ret) {
-            // Store to disk
-            ret = ::ChainstateActive().AcceptBlock(
-                pblock, state, chainparams, &pindex, fForceProcessing, nullptr, fNewBlock);
+
+        // Phase 3 (under cs_main): re-resolve the anchor and store the block. The height of a
+        // block is a pure function of the height of its parent index and a CBlockIndex never
+        // changes its height, so the height can only differ if the anchor was replaced in the
+        // meantime (e.g. by a reindex). In that rare case the stateless check is repeated with
+        // the corrected height.
+        {
+            LOCK(cs_main);
+
+            const auto prevIndex = LookupBlockIndex(pblock->hashPrevBlock);
+            if (!prevIndex) {
+                ret = false;
+                state.Invalid(ValidationInvalidReason::BLOCK_MISSING_PREV,
+                              error("%s: prev block not found", __func__),
+                              "prev-blk-not-found");
+            } else if (prevIndex->nHeight + 1 != checkedHeight) {
+                checkedHeight = prevIndex->nHeight + 1;
+                ret = CheckBlock(*pblock,
+                                 state,
+                                 chainparams.GetConsensus(),
+                                 ctxState,
+                                 false,
+                                 checkedHeight);
+            }
+            if (ret) {
+                // Store to disk
+                ret = ::ChainstateActive().AcceptBlock(
+                    pblock, state, chainparams, &pindex, fForceProcessing, nullptr, fNewBlock, checkedHeight);
+            }
         }
         if (!ret) {
             GetMainSignals().BlockChecked(*pblock, state);
