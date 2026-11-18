@@ -7,9 +7,15 @@
 
 #include <test/setup_common.h>
 #include <checkqueue.h>
+#include <coins.h>
+#include <key.h>
+#include <primitives/transaction.h>
+#include <script/script.h>
+#include <validation.h>
 #include <boost/test/unit_test.hpp>
 #include <atomic>
 #include <thread>
+#include <type_traits>
 #include <vector>
 #include <mutex>
 #include <condition_variable>
@@ -81,8 +87,9 @@ struct MemoryCheck {
     {
         // We have to do this to make sure that destructor calls are paired
         //
-        // Really, copy constructor should be deletable, but CCheckQueue breaks
-        // if it is deleted because of internal push_back.
+        // Note: this is the copy constructor of the *check* type, not of the
+        // queue. The queue itself is neither copyable nor movable (it owns
+        // its worker threads), see the static_asserts below.
         fake_allocated_memory.fetch_add(b, std::memory_order_relaxed);
     };
     MemoryCheck(bool b_) : b(b_)
@@ -137,6 +144,12 @@ typedef CCheckQueue<UniqueCheck> Unique_Queue;
 typedef CCheckQueue<MemoryCheck> Memory_Queue;
 typedef CCheckQueue<FrozenCleanupCheck> FrozenCleanup_Queue;
 
+// The queue owns its worker threads, so it must neither be copied nor moved.
+static_assert(!std::is_copy_constructible<Correct_Queue>::value, "CCheckQueue must not be copy constructible");
+static_assert(!std::is_copy_assignable<Correct_Queue>::value, "CCheckQueue must not be copy assignable");
+static_assert(!std::is_move_constructible<Correct_Queue>::value, "CCheckQueue must not be move constructible");
+static_assert(!std::is_move_assignable<Correct_Queue>::value, "CCheckQueue must not be move assignable");
+
 
 /** This test case checks that the CCheckQueue works properly
  * with each specified size_t Checks pushed.
@@ -150,7 +163,7 @@ static void Correct_Queue_range(std::vector<size_t> range)
     for (const size_t i : range) {
         size_t total = i;
         FakeCheckCheckCompletion::n_calls = 0;
-        CCheckQueueControl<FakeCheckCheckCompletion> control(small_queue.get());
+        CCheckQueueControl<FakeCheckCheckCompletion> control(*small_queue);
         while (total) {
             vChecks.resize(std::min(total, (size_t) InsecureRandRange(10)));
             total -= vChecks.size();
@@ -161,7 +174,6 @@ static void Correct_Queue_range(std::vector<size_t> range)
             BOOST_REQUIRE_EQUAL(FakeCheckCheckCompletion::n_calls, i);
         }
     }
-    small_queue->StopWorkerThreads();
 }
 
 /** Test that 0 checks is correct
@@ -207,7 +219,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
     fail_queue->StartWorkerThreads(SCRIPT_CHECK_THREADS);
 
     for (size_t i = 0; i < 1001; ++i) {
-        CCheckQueueControl<FailingCheck> control(fail_queue.get());
+        CCheckQueueControl<FailingCheck> control(*fail_queue);
         size_t remaining = i;
         while (remaining) {
             size_t r = InsecureRandRange(10);
@@ -225,7 +237,6 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
             BOOST_REQUIRE(success);
         }
     }
-    fail_queue->StopWorkerThreads();
 }
 // Test that a block validation which fails does not interfere with
 // future blocks, ie, the bad state is cleared.
@@ -236,7 +247,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Recovers_From_Failure)
 
     for (auto times = 0; times < 10; ++times) {
         for (const bool end_fails : {true, false}) {
-            CCheckQueueControl<FailingCheck> control(fail_queue.get());
+            CCheckQueueControl<FailingCheck> control(*fail_queue);
             {
                 std::vector<FailingCheck> vChecks;
                 vChecks.resize(100, false);
@@ -247,7 +258,6 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Recovers_From_Failure)
             BOOST_REQUIRE(r != end_fails);
         }
     }
-    fail_queue->StopWorkerThreads();
 }
 
 // Test that unique checks are actually all called individually, rather than
@@ -261,7 +271,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_UniqueCheck)
     size_t COUNT = 100000;
     size_t total = COUNT;
     {
-        CCheckQueueControl<UniqueCheck> control(queue.get());
+        CCheckQueueControl<UniqueCheck> control(*queue);
         while (total) {
             size_t r = InsecureRandRange(10);
             std::vector<UniqueCheck> vChecks;
@@ -275,7 +285,6 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_UniqueCheck)
     for (size_t i = 0; i < COUNT; ++i)
         r = r && UniqueCheck::results.count(i) == 1;
     BOOST_REQUIRE(r);
-    queue->StopWorkerThreads();
 }
 
 
@@ -291,7 +300,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Memory)
     for (size_t i = 0; i < 1000; ++i) {
         size_t total = i;
         {
-            CCheckQueueControl<MemoryCheck> control(queue.get());
+            CCheckQueueControl<MemoryCheck> control(*queue);
             while (total) {
                 size_t r = InsecureRandRange(10);
                 std::vector<MemoryCheck> vChecks;
@@ -306,7 +315,6 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Memory)
         }
         BOOST_REQUIRE_EQUAL(MemoryCheck::fake_allocated_memory, 0U);
     }
-    queue->StopWorkerThreads();
 }
 
 // Test that a new verification cannot occur until all checks
@@ -317,7 +325,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_FrozenCleanup)
     bool fails = false;
     queue->StartWorkerThreads(SCRIPT_CHECK_THREADS);
     std::thread t0([&]() {
-        CCheckQueueControl<FrozenCleanupCheck> control(queue.get());
+        CCheckQueueControl<FrozenCleanupCheck> control(*queue);
         std::vector<FrozenCleanupCheck> vChecks(1);
         // Freezing can't be the default initialized behavior given how the queue
         // swaps in default initialized Checks (otherwise freezing destructor
@@ -346,7 +354,6 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_FrozenCleanup)
     // Wait for control to finish
     t0.join();
     BOOST_REQUIRE(!fails);
-    queue->StopWorkerThreads();
 }
 
 
@@ -361,7 +368,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueueControl_Locks)
         for (size_t i = 0; i < 3; ++i) {
             tg.emplace_back(
                     [&]{
-                    CCheckQueueControl<FakeCheck> control(queue.get());
+                    CCheckQueueControl<FakeCheck> control(*queue);
                     // While sleeping, no other thread should execute to this point
                     auto observed = ++nThreads;
                     UninterruptibleSleep(std::chrono::milliseconds{10});
@@ -384,7 +391,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueueControl_Locks)
         {
             std::unique_lock<std::mutex> l(m);
             tg.emplace_back([&]{
-                    CCheckQueueControl<FakeCheck> control(queue.get());
+                    CCheckQueueControl<FakeCheck> control(*queue);
                     std::unique_lock<std::mutex> ll(m);
                     has_lock = true;
                     cv.notify_one();
@@ -414,5 +421,67 @@ BOOST_AUTO_TEST_CASE(test_CheckQueueControl_Locks)
         }
     }
 }
+/**
+ * Execute a script check for a transaction with an invalid signature.
+ *
+ * This is the inline execution path: it is what happens when the script check
+ * queue has no worker threads and the checks cannot be deferred to the queue.
+ */
+static bool RunInlineScriptCheck()
+{
+    CKey key;
+    key.MakeNewKey(true);
+    const CScript scriptPubKey = CScript() << ToByteVector(key.GetPubKey()) << OP_CHECKSIG;
+
+    CMutableTransaction mtx;
+    mtx.vin.resize(1);
+    mtx.vin[0].prevout = COutPoint(uint256(), 0);
+    // A bogus signature: the script check below must fail.
+    mtx.vin[0].scriptSig = CScript() << std::vector<unsigned char>(72, 0x00);
+    mtx.vout.resize(1);
+    mtx.vout[0].nValue = 0;
+    mtx.vout[0].scriptPubKey = CScript() << OP_TRUE;
+
+    const CTransaction tx(mtx);
+
+    Coin coin;
+    coin.nHeight = 1;
+    coin.fCoinBase = false;
+    coin.out.nValue = 1000;
+    coin.out.scriptPubKey = scriptPubKey;
+
+    PrecomputedTransactionData txdata(tx);
+    CScriptCheck check(coin.out, tx, 0, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS, false, &txdata);
+    return check();
+}
+
+/**
+ * Test the no-worker path of the script check queue.
+ *
+ * Without worker threads the parallel script check path must not be used at
+ * all: the script checks are executed inline by the caller, so an invalid
+ * script must still be rejected (no script verification may be skipped).
+ */
+BOOST_AUTO_TEST_CASE(test_CheckQueue_NoWorkerThreads_VerifiesScripts)
+{
+    // The fixture provides a worker pool; replace it by a queue without worker
+    // threads to exercise the serial (inline) script verification path.
+    auto worker_pool = std::move(g_script_check_queue);
+    g_script_check_queue = std::make_unique<CScriptCheckQueue>(0);
+    BOOST_REQUIRE(!g_script_check_queue->HasThreads());
+
+    // Without worker threads the parallel path is disabled ...
+    BOOST_REQUIRE(!UseParallelScriptChecks(true));
+    // ... hence the script checks are executed inline, which rejects the
+    // invalid script.
+    BOOST_REQUIRE(!RunInlineScriptCheck());
+
+    // Restore the worker pool of the fixture: with worker threads the
+    // parallel path is used again.
+    g_script_check_queue = std::move(worker_pool);
+    BOOST_REQUIRE(g_script_check_queue->HasThreads());
+    BOOST_REQUIRE(UseParallelScriptChecks(true));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 

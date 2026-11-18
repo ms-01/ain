@@ -162,8 +162,9 @@ TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(cha
     }
 
     constexpr int script_check_threads = 2;
-    StartScriptCheckWorkerThreads(script_check_threads);
     g_parallel_script_checks = true;
+    assert(!g_script_check_queue);
+    g_script_check_queue = std::make_unique<CScriptCheckQueue>(script_check_threads);
 
     g_banman = std::make_unique<BanMan>(GetDataDir() / "banlist", nullptr, DEFAULT_MISBEHAVING_BANTIME);
     g_connman = std::make_unique<CConnman>(0x1337, 0x1337); // Deterministic randomness for tests.
@@ -172,7 +173,8 @@ TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(cha
 TestingSetup::~TestingSetup()
 {
     scheduler.stop();
-    StopScriptCheckWorkerThreads();
+    // Stop and join the script check worker threads (deterministic teardown).
+    g_script_check_queue.reset();
     GetMainSignals().FlushBackgroundCallbacks();
     GetMainSignals().UnregisterBackgroundSignalScheduler();
     g_connman.reset();
