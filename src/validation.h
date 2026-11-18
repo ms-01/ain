@@ -357,6 +357,38 @@ bool AcceptToMemoryPool(CTxMemPool &pool,
                         const CAmount nAbsurdFee,
                         bool test_accept = false) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+/** (try to) add transaction to memory pool with a specified acceptance time **/
+bool AcceptToMemoryPoolWithTime(const CChainParams &chainparams,
+                                CTxMemPool &pool,
+                                CValidationState &state,
+                                const CTransactionRef &tx,
+                                bool *pfMissingInputs,
+                                int64_t nAcceptTime,
+                                std::list<CTransactionRef> *plTxnReplaced,
+                                bool bypass_limits,
+                                const CAmount nAbsurdFee,
+                                bool test_accept) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+/** Returns the script flags which should be checked for a given block **/
+unsigned int GetBlockScriptFlags(const CBlockIndex *pindex, const Consensus::Params &chainparams);
+
+/** Verify a transaction with the given script flags **/
+bool CheckInputs(const CTransaction &tx,
+                 CValidationState &state,
+                 const CCoinsViewCache &inputs,
+                 bool fScriptChecks,
+                 unsigned int flags,
+                 bool cacheSigStore,
+                 bool cacheFullScriptStore,
+                 PrecomputedTransactionData &txdata,
+                 std::vector<CScriptCheck> *pvChecks = nullptr);
+
+/** Trim the mempool to the given size and remove the expired transactions **/
+void LimitMempoolSize(CTxMemPool &pool,
+                      size_t limit,
+                      unsigned long age,
+                      unsigned long evmAge) EXCLUSIVE_LOCKS_REQUIRED(pool.cs, ::cs_main);
+
 /** Get the BIP9 state for a given deployment at the current tip. */
 ThresholdState VersionBitsTipState(const Consensus::Params &params, Consensus::DeploymentPos pos);
 
