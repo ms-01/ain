@@ -23,7 +23,7 @@ from test_framework.messages import (
     CTxIn,
     CTxOut,
     MAX_BLOCK_BASE_SIZE,
-    uint256_from_compact,
+    # uint256_from_compact,  # only used by the disabled PoW subtest below
     uint256_from_str,
 )
 from test_framework.mininode import P2PDataStore
@@ -720,17 +720,29 @@ class FullBlockTest(DefiTestFramework):
             [b46], success=False, reject_reason="bad-blk-length", reconnect=True
         )
 
-        # Disabled due to POS complexity emulation
-        self.log.info("Reject a block with invalid work")
-        self.move_tip(44)
-        b47 = self.next_block(47, solve=False)
-        target = uint256_from_compact(b47.nBits)
-        while b47.sha256 < target:
-            b47.stakeModifier += 1
-            b47.rehash()
-        self.send_blocks(
-            [b47], False, force_send=True, reject_reason="high-hash", reconnect=True
-        )
+        # Disabled due to POS complexity emulation.
+        #
+        # DeFiChain has no proof of work: proof of stake replaced it, so there is
+        # no block-hash-vs-target ("high-hash") check in the node at all. On top
+        # of that, functional test nodes are started with -dummypos=1, which
+        # disables proof of stake validation entirely (kernel/target check,
+        # header signature check and stake modifier check). A block can
+        # therefore neither be constructed to violate a target nor be rejected
+        # for doing so, which makes the expectation below unreachable.
+        #
+        # The equivalent proof of stake validation is covered by the C++ unit
+        # tests in src/test/pos_tests.cpp and src/test/blockencodings_tests.cpp.
+        #
+        # self.log.info("Reject a block with invalid work")
+        # self.move_tip(44)
+        # b47 = self.next_block(47, solve=False)
+        # target = uint256_from_compact(b47.nBits)
+        # while b47.sha256 < target:
+        #     b47.stakeModifier += 1
+        #     b47.rehash()
+        # self.send_blocks(
+        #     [b47], False, force_send=True, reject_reason="high-hash", reconnect=True
+        # )
 
         self.log.info("Reject a block with a timestamp >2 hours in the future")
         self.move_tip(44)
