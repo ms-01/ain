@@ -219,6 +219,7 @@ DEFI_CORE_H = \
   dfi/validation.h \
   dfi/vault.h \
   dfi/vaulthistory.h \
+  mempool_accept.h \
   memusage.h \
   merkleblock.h \
   miner.h \
@@ -472,6 +473,7 @@ libdefi_server_a_SOURCES = \
   dfi/validation.cpp \
   dfi/vault.cpp \
   dfi/vaulthistory.cpp \
+  mempool_accept.cpp \
   miner.cpp \
   net.cpp \
   net_processing.cpp \
