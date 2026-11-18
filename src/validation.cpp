@@ -1263,6 +1263,15 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock &block,
                                               CCoinsViewCache &view,
                                               CCustomCSView &mnview,
                                               std::vector<CAnchorConfirmMessage> &disconnectedAnchorConfirms) {
+    AssertLockHeld(cs_main);
+
+    // The genesis block is never disconnected, so every disconnected block must have a
+    // predecessor. Guard against a corrupted block index instead of dereferencing a null pointer.
+    if (pindex == nullptr || pindex->pprev == nullptr) {
+        error("%s: block %s has no predecessor", __func__, pindex ? pindex->GetBlockHash().ToString() : "(null)");
+        return DISCONNECT_FAILED;
+    }
+
     bool fClean = true;
 
     CBlockUndo blockUndo;
@@ -3794,6 +3803,16 @@ bool PreciousBlock(CValidationState &state, const CChainParams &params, CBlockIn
 }
 
 bool CChainState::InvalidateBlock(CValidationState &state, const CChainParams &chainparams, CBlockIndex *pindex) {
+    // The genesis block can never be invalidated: doing so would leave the node without a
+    // valid chain. Guard before any access to the block's predecessor (candidate loop below).
+    assert(pindex);
+    if (pindex->nHeight == 0) {
+        state.Invalid(ValidationInvalidReason::CONSENSUS,
+                      error("Cannot invalidate the genesis block"),
+                      "genesis-block");
+        return false;
+    }
+
     CBlockIndex *to_mark_failed = pindex;
     bool pindex_was_in_chain = false;
     int disconnected = 0;
@@ -4146,6 +4165,17 @@ static bool FindUndoPos(CValidationState &state, int nFile, FlatFilePos &pos, un
     return true;
 }
 
+/**
+ * Context-independent validity checks of a block.
+ *
+ * This function is free of any shared mutable state: it neither caches its result on the
+ * block object nor modifies the block in any way. The verdict therefore only depends on the
+ * arguments (block contents, consensus params and the check flags), which makes the function
+ * re-entrant and safe to call concurrently on the same CBlock instance.
+ *
+ * Note: the proof-of-stake contextual branch (fCheckPOS == true) reads the custom CS view
+ * (masternode state) and therefore still requires cs_main to be held by the caller.
+ */
 bool CheckBlock(const CBlock &block,
                 CValidationState &state,
                 const Consensus::Params &consensusParams,
@@ -4154,10 +4184,6 @@ bool CheckBlock(const CBlock &block,
                 const int height,
                 bool fCheckMerkleRoot) {
     // These are checks that are independent of context.
-
-    if (block.fChecked) {
-        return true;
-    }
 
     // Check that the header is valid (particularly PoW).  This is mostly
     // redundant with the call in AcceptBlockHeader.
@@ -4263,10 +4289,6 @@ bool CheckBlock(const CBlock &block,
     }
     if (nSigOps * WITNESS_SCALE_FACTOR > MAX_BLOCK_SIGOPS_COST) {
         return state.Invalid(ValidationInvalidReason::CONSENSUS, false, "bad-blk-sigops", "out-of-bounds SigOpCount");
-    }
-
-    if (fCheckPOS && fCheckMerkleRoot) {
-        block.fChecked = true;
     }
 
     return true;
@@ -5021,8 +5043,11 @@ bool ProcessNewBlock(const CChainParams &chainparams,
         }
         CValidationState state;
 
-        // CheckBlock() does not support multi-threaded block validation because CBlock::fChecked can cause data race.
-        // Therefore, the following critical section must include the CheckBlock() call as well.
+        // The critical section below covers the lookup of the previous block index and the
+        // AcceptBlock() call, both of which operate on the chain state. CheckBlock() itself is
+        // free of shared mutable state (it neither caches its verdict on the block nor modifies
+        // it), so it does not require the lock for its own sake; it is kept inside the critical
+        // section until the block admission path is restructured for parallel validation.
         LOCK(cs_main);
 
         // Get previous block index

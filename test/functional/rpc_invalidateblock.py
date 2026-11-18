@@ -8,6 +8,7 @@ from test_framework.test_framework import DefiTestFramework
 from test_framework.address import ADDRESS_BCRT1_UNSPENDABLE
 from test_framework.util import (
     assert_equal,
+    assert_raises_rpc_error,
     connect_nodes_bi,
     wait_until,
 )
@@ -22,6 +23,16 @@ class InvalidateTest(DefiTestFramework):
         self.setup_nodes()
 
     def run_test(self):
+        self.log.info("Verify that the genesis block cannot be invalidated")
+        genesis_hash = self.nodes[0].getblockhash(0)
+        tip_before = self.nodes[0].getbestblockhash()
+        height_before = self.nodes[0].getblockcount()
+        assert_raises_rpc_error(-20, "genesis-block", self.nodes[0].invalidateblock, genesis_hash)
+        # The chain must be left untouched by the rejected invalidation.
+        assert_equal(self.nodes[0].getbestblockhash(), tip_before)
+        assert_equal(self.nodes[0].getblockcount(), height_before)
+        assert_equal(self.nodes[0].getblockchaininfo()["blocks"], height_before)
+
         self.log.info(
             "Make sure we repopulate setBlockIndexCandidates after InvalidateBlock:"
         )
