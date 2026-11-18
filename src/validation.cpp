@@ -64,6 +64,7 @@
 
 #include <future>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <boost/algorithm/string/replace.hpp>
@@ -1500,14 +1501,29 @@ static bool WriteUndoDataForBlock(const CBlockUndo &blockundo,
     return true;
 }
 
-static CCheckQueue<CScriptCheck> scriptcheckqueue(128);
+static const unsigned int SCRIPT_CHECK_BATCH_SIZE = 128;
 
-void StartScriptCheckWorkerThreads(int threads_num) {
-    scriptcheckqueue.StartWorkerThreads(threads_num);
+std::unique_ptr<CScriptCheckQueue> g_script_check_queue;
+
+CScriptCheckQueue::CScriptCheckQueue(int worker_threads)
+    : m_queue(std::make_unique<CCheckQueue<CScriptCheck>>(SCRIPT_CHECK_BATCH_SIZE)) {
+    if (worker_threads > 0) {
+        m_queue->StartWorkerThreads(worker_threads);
+    }
 }
 
-void StopScriptCheckWorkerThreads() {
-    scriptcheckqueue.StopWorkerThreads();
+CScriptCheckQueue::~CScriptCheckQueue() = default;
+
+CCheckQueue<CScriptCheck>& CScriptCheckQueue::GetQueue() {
+    return *m_queue;
+}
+
+bool CScriptCheckQueue::HasThreads() const {
+    return m_queue->HasThreads();
+}
+
+bool UseParallelScriptChecks(bool fScriptChecks) {
+    return fScriptChecks && g_parallel_script_checks && g_script_check_queue && g_script_check_queue->HasThreads();
 }
 
 VersionBitsCache versionbitscache GUARDED_BY(cs_main);
@@ -2278,7 +2294,15 @@ bool CChainState::ConnectBlock(const CBlock &block,
 
     CBlockUndo blockundo;
 
-    CCheckQueueControl<CScriptCheck> control(fScriptChecks && g_parallel_script_checks ? &scriptcheckqueue : nullptr);
+    // The parallel script check decision must be taken exactly once: the same
+    // flag decides whether a queue control is created and whether the script
+    // checks are collected for the queue (see UseParallelScriptChecks()).
+    const bool use_parallel_script_checks = UseParallelScriptChecks(fScriptChecks);
+
+    std::optional<CCheckQueueControl<CScriptCheck>> control;
+    if (use_parallel_script_checks) {
+        control.emplace(g_script_check_queue->GetQueue());
+    }
 
     std::vector<std::pair<AccountHistoryKey, AccountHistoryValue>> writeBurnEntries;
     std::vector<int> prevheights;
@@ -2453,7 +2477,7 @@ bool CChainState::ConnectBlock(const CBlock &block,
                              fCacheResults,
                              fCacheResults,
                              txdata[i],
-                             g_parallel_script_checks ? &vChecks : nullptr)) {
+                             use_parallel_script_checks ? &vChecks : nullptr)) {
                 if (state.GetReason() == ValidationInvalidReason::TX_NOT_STANDARD) {
                     // CheckInputs may return NOT_STANDARD for extra flags we passed,
                     // but we can't return that, as it's not defined for a block, so
@@ -2502,7 +2526,12 @@ bool CChainState::ConnectBlock(const CBlock &block,
                 }
             }
 
-            control.Add(vChecks);
+            // The checks are only collected when the parallel path is used, in
+            // which case the control is always present.
+            assert(vChecks.empty() || control.has_value());
+            if (control) {
+                control->Add(vChecks);
+            }
         } else {
             std::vector<unsigned char> metadata;
             if (IsAnchorRewardTxPlus(tx, metadata)) {
@@ -2597,7 +2626,7 @@ bool CChainState::ConnectBlock(const CBlock &block,
         return state.Invalid(ValidationInvalidReason::CONSENSUS, error("%s: %s", __func__, res.msg), res.dbgMsg);
     }
 
-    if (!control.Wait()) {
+    if (control && !control->Wait()) {
         return state.Invalid(
             ValidationInvalidReason::CONSENSUS, error("%s: CheckQueue failed", __func__), "block-validation-failed");
     }

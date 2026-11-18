@@ -49,6 +49,8 @@ class CChainParams;
 class CInv;
 class CConnman;
 class CScriptCheck;
+template <typename T>
+class CCheckQueue;
 class CBlockPolicyEstimator;
 class CScopedTemplate;
 class CTxMemPool;
@@ -306,10 +308,6 @@ bool LoadBlockIndex(const CChainParams &chainparams) EXCLUSIVE_LOCKS_REQUIRED(cs
 bool LoadChainTip(const CChainParams &chainparams) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 /** Unload database information */
 void UnloadBlockIndex();
-/** Run instances of script checking worker threads */
-void StartScriptCheckWorkerThreads(int threads_num);
-/** Stop all of the script checking worker threads */
-void StopScriptCheckWorkerThreads();
 /** Retrieve a transaction (from memory pool, or from disk, if possible) */
 bool GetTransaction(const uint256 &hash,
                     CTransactionRef &tx,
@@ -487,6 +485,50 @@ public:
 
     ScriptError GetScriptError() const { return error; }
 };
+
+/**
+ * RAII owner of the script-check worker pool.
+ *
+ * The owner creates the check queue and starts its worker threads (if any).
+ * Destroying the owner stops and joins the worker threads, so the manual
+ * start/stop protocol of the worker pool is not needed anymore.
+ */
+class CScriptCheckQueue {
+public:
+    explicit CScriptCheckQueue(int worker_threads);
+    ~CScriptCheckQueue();
+
+    CScriptCheckQueue(const CScriptCheckQueue&) = delete;
+    CScriptCheckQueue& operator=(const CScriptCheckQueue&) = delete;
+    CScriptCheckQueue(CScriptCheckQueue&&) = delete;
+    CScriptCheckQueue& operator=(CScriptCheckQueue&&) = delete;
+
+    //! The underlying check queue.
+    CCheckQueue<CScriptCheck>& GetQueue();
+    //! Whether worker threads are available for parallel script checks.
+    bool HasThreads() const;
+
+private:
+    std::unique_ptr<CCheckQueue<CScriptCheck>> m_queue;
+};
+
+/**
+ * The globally owned script-check worker pool (nullptr => no pool available).
+ *
+ * The owner is created on startup and reset explicitly on shutdown to keep the
+ * teardown order deterministic (no reliance on static destruction order).
+ */
+extern std::unique_ptr<CScriptCheckQueue> g_script_check_queue;
+
+/**
+ * Whether script checks are executed in parallel.
+ *
+ * This is the single source of truth for the parallel script check decision:
+ * the very same value has to be used to decide whether a queue control is
+ * created and whether the script checks are collected for the queue. Otherwise
+ * script checks could be collected but never executed.
+ */
+bool UseParallelScriptChecks(bool fScriptChecks);
 
 /** Initializes the script-execution cache */
 void InitScriptExecutionCache();

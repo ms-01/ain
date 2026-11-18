@@ -254,7 +254,10 @@ void Shutdown(InitInterfaces& interfaces)
     for (auto& thread : threadGroup) {
         if (thread.joinable()) thread.join();
     }
-    StopScriptCheckWorkerThreads();
+    // Stop and join the script check worker threads (deterministic teardown,
+    // the owner is destroyed explicitly instead of relying on static
+    // destruction order).
+    g_script_check_queue.reset();
 
     // After the threads that potentially access these pointers have been stopped,
     // destruct and reset all to nullptr.
@@ -1523,8 +1526,10 @@ void SetupScriptCheckThreads() {
     LogPrintf("Script verification uses %d additional threads\n", script_threads);
     if (script_threads >= 1) {
         g_parallel_script_checks = true;
-        StartScriptCheckWorkerThreads(script_threads);
     }
+    // The RAII owner starts (and later joins) the worker threads.
+    assert(!g_script_check_queue);
+    g_script_check_queue = std::make_unique<CScriptCheckQueue>(script_threads);
 }
 
 bool SetupNetwork() {

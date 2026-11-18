@@ -174,23 +174,25 @@ public:
             m_worker_cv.notify_all();
     }
 
-    //! Stop all of the worker threads.
-    void StopWorkerThreads()
+    // Since this class manages its own resources, which is a thread
+    // pool `m_worker_threads`, copy and move operations are not appropriate.
+    CCheckQueue(const CCheckQueue&) = delete;
+    CCheckQueue& operator=(const CCheckQueue&) = delete;
+    CCheckQueue(CCheckQueue&&) = delete;
+    CCheckQueue& operator=(CCheckQueue&&) = delete;
+
+    //! Stop and join the worker threads (RAII).
+    ~CCheckQueue()
     {
         WITH_LOCK(m_mutex, m_request_stop = true);
         m_worker_cv.notify_all();
         for (std::thread& t : m_worker_threads) {
             t.join();
         }
-        m_worker_threads.clear();
-        WITH_LOCK(m_mutex, m_request_stop = false);
     }
 
-    ~CCheckQueue()
-    {
-        assert(m_worker_threads.empty());
-    }
-
+    //! Whether the queue has worker threads available.
+    bool HasThreads() const { return !m_worker_threads.empty(); }
 };
 
 /**
@@ -201,43 +203,35 @@ template <typename T>
 class CCheckQueueControl
 {
 private:
-    CCheckQueue<T> * const pqueue;
+    CCheckQueue<T>& m_queue;
     bool fDone;
 
 public:
     CCheckQueueControl() = delete;
     CCheckQueueControl(const CCheckQueueControl&) = delete;
     CCheckQueueControl& operator=(const CCheckQueueControl&) = delete;
-    explicit CCheckQueueControl(CCheckQueue<T> * const pqueueIn) : pqueue(pqueueIn), fDone(false)
+    explicit CCheckQueueControl(CCheckQueue<T>& queueIn) : m_queue(queueIn), fDone(false)
     {
-        // passed queue is supposed to be unused, or nullptr
-        if (pqueue != nullptr) {
-            ENTER_CRITICAL_SECTION(pqueue->m_control_mutex);
-        }
+        ENTER_CRITICAL_SECTION(m_queue.m_control_mutex);
     }
 
     bool Wait()
     {
-        if (pqueue == nullptr)
-            return true;
-        bool fRet = pqueue->Wait();
+        bool fRet = m_queue.Wait();
         fDone = true;
         return fRet;
     }
 
     void Add(std::vector<T>& vChecks)
     {
-        if (pqueue != nullptr)
-            pqueue->Add(vChecks);
+        m_queue.Add(vChecks);
     }
 
     ~CCheckQueueControl()
     {
         if (!fDone)
             Wait();
-        if (pqueue != nullptr) {
-            LEAVE_CRITICAL_SECTION(pqueue->m_control_mutex);
-        }
+        LEAVE_CRITICAL_SECTION(m_queue.m_control_mutex);
     }
 };
 
