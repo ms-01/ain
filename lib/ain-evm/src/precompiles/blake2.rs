@@ -172,11 +172,89 @@ impl Precompile for Blake2F {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::precompiles::test_vector_support::test_precompile_test_vectors;
+    use crate::precompiles::test_vector_support::{test_precompile_test_vectors, MockHandle};
+    use evm::Context;
+
+    fn context() -> Context {
+        Context {
+            address: Default::default(),
+            caller: Default::default(),
+            apparent_value: From::from(0),
+        }
+    }
+
+    fn handle(input: Vec<u8>) -> MockHandle {
+        MockHandle::new(input, Some(10_000_000), context())
+    }
+
+    fn error_message(failure: &PrecompileFailure) -> String {
+        match failure {
+            PrecompileFailure::Error { exit_status } => match exit_status {
+                ExitError::Other(msg) => msg.to_string(),
+                other => format!("{other:?}"),
+            },
+            PrecompileFailure::Revert { exit_status, .. } => format!("revert: {exit_status:?}"),
+            PrecompileFailure::Fatal { exit_status } => format!("fatal: {exit_status:?}"),
+        }
+    }
+
+    /// Builds a valid blake2 F input: [4 bytes rounds][64 bytes h][128 bytes m][8 bytes t0]
+    /// [8 bytes t1][1 byte f].
+    fn blake2_input(rounds: u32, f: u8) -> Vec<u8> {
+        let mut input = Vec::new();
+        input.extend_from_slice(&rounds.to_be_bytes());
+        input.extend_from_slice(&[0u8; 64]);
+        input.extend_from_slice(&[0u8; 128]);
+        input.extend_from_slice(&[0u8; 8]);
+        input.extend_from_slice(&[0u8; 8]);
+        input.push(f);
+        input
+    }
 
     #[test]
     fn process_consensus_tests() -> Result<(), String> {
         test_precompile_test_vectors::<Blake2F>("./testdata/blake2F.json")?;
         Ok(())
+    }
+
+    #[test]
+    fn test_blake2f_gas_cost() {
+        for rounds in [1u32, 2, 12, 100] {
+            let mut handle = handle(blake2_input(rounds, 1));
+
+            let result = Blake2F::execute(&mut handle).expect("blake2 F must not fail");
+
+            assert_eq!(result.output.len(), 64);
+            // https://eips.ethereum.org/EIPS/eip-152
+            assert_eq!(handle.gas_used, rounds as u64);
+            assert_eq!(handle.gas_used, rounds as u64 * Blake2F::GAS_COST_PER_ROUND);
+        }
+    }
+
+    #[test]
+    fn test_blake2f_invalid_input_length() {
+        let mut handle = handle(vec![0u8; 212]);
+
+        let failure = Blake2F::execute(&mut handle).expect_err("invalid input length");
+
+        assert_eq!(
+            error_message(&failure),
+            "input length for Blake2 F precompile should be exactly 213 bytes"
+        );
+        assert_eq!(handle.gas_used, 0);
+    }
+
+    #[test]
+    fn test_blake2f_invalid_final_block_indicator() {
+        let mut handle = handle(blake2_input(1, 2));
+
+        let failure = Blake2F::execute(&mut handle).expect_err("invalid final block flag");
+
+        assert_eq!(
+            error_message(&failure),
+            "incorrect final block indicator flag"
+        );
+        // The gas is charged before the final block indicator is validated.
+        assert_eq!(handle.gas_used, 1);
     }
 }

@@ -150,3 +150,79 @@ fn hash(a: u64) -> H160 {
 fn is_dst20(addr: H160) -> bool {
     matches!(addr.as_fixed_bytes(), [prefix, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ..] if prefix == &DST20_ADDR_PREFIX_BYTE)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds an address from the given hex string.
+    fn address(hex: &str) -> H160 {
+        H160::from_slice(&hex::decode(hex).expect("valid hex address"))
+    }
+
+    #[test]
+    fn test_used_addresses() {
+        let used = MetachainPrecompiles::used_addresses();
+
+        assert_eq!(used.len(), 10);
+        for (index, address) in used.iter().enumerate() {
+            assert_eq!(*address, hash(index as u64 + 1));
+        }
+    }
+
+    #[test]
+    fn test_is_precompile() {
+        let precompiles = MetachainPrecompiles::new(0);
+
+        for address in MetachainPrecompiles::used_addresses() {
+            match <MetachainPrecompiles as PrecompileSet>::is_precompile(&precompiles, address, 0) {
+                IsPrecompileResult::Answer {
+                    is_precompile,
+                    extra_cost,
+                } => {
+                    assert!(is_precompile, "{address:x} must be a precompile");
+                    assert_eq!(extra_cost, 0);
+                }
+                _ => panic!("unexpected result"),
+            }
+        }
+
+        for address in [H160::zero(), hash(0), hash(11)] {
+            match <MetachainPrecompiles as PrecompileSet>::is_precompile(&precompiles, address, 0) {
+                IsPrecompileResult::Answer {
+                    is_precompile,
+                    extra_cost,
+                } => {
+                    assert!(!is_precompile, "{address:x} must not be a precompile");
+                    assert_eq!(extra_cost, 0);
+                }
+                _ => panic!("unexpected result"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_dst20() {
+        // The DST20 intrinsic addresses are `0xff` followed by 17 zero bytes, i.e. the token
+        // id (which is stored in the last two bytes) must be below 0x10000.
+        assert!(is_dst20(address(
+            "ff00000000000000000000000000000000000000"
+        )));
+        assert!(is_dst20(address(
+            "ff0000000000000000000000000000000000000a"
+        )));
+        assert!(is_dst20(address(
+            "ff0000000000000000000000000000000000ffff"
+        )));
+        // A non zero byte in front of the token id does not match.
+        assert!(!is_dst20(address(
+            "ff00000000000000000000000000000000010000"
+        )));
+        assert!(!is_dst20(address(
+            "fe00000000000000000000000000000000000000"
+        )));
+        assert!(!is_dst20(address(
+            "0000000000000000000000000000000000000000"
+        )));
+    }
+}
