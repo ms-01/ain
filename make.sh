@@ -832,7 +832,17 @@ pkg_local_install_py_deps() {
     pip_install_requirements "${root_dir}/test/requirements.txt"
 
     # post dep for test
-    python3 -c 'from solcx import install_solc;install_solc("0.8.20")'
+    # The Solidity compiler is downloaded from the official Solidity binaries host, the
+    # legacy `solc-bin.ethereum.org` endpoint does not resolve anymore.
+    python3 -c '
+import solcx.install
+
+solcx.install.BINARY_DOWNLOAD_BASE = "https://binaries.soliditylang.org/{}-amd64/{}"
+
+from solcx import install_solc
+
+install_solc("0.8.20")
+'
 
     py_env_deactivate
     _fold_end
