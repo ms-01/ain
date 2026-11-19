@@ -792,7 +792,9 @@ public:
     bool checkAddressNonceAndFee(const CTxMemPoolEntry &pendingEntry,
                                  const uint64_t &entryFee,
                                  const EvmAddressData &txSender,
-                                 bool &senderLimitFlag);
+                                 bool &senderLimitFlag,
+                                 setEntries &evmConflicts);
+    void IncrementEvmRbfCount(const EvmAddressData &txSender);
 
 private:
     /** UpdateForDescendants is used by UpdateTransactionsFromBlock to update

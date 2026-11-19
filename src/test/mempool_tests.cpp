@@ -6,6 +6,7 @@
 #include <txmempool.h>
 #include <util/system.h>
 #include <util/time.h>
+#include <validation.h>
 
 #include <test/setup_common.h>
 
@@ -773,6 +774,89 @@ BOOST_AUTO_TEST_CASE(MempoolWtxidIndexingTest)
     BOOST_CHECK(info_txid.tx->GetWitnessHash() == tx->GetWitnessHash());
     BOOST_CHECK(info_wtxid.tx->GetHash() == tx->GetHash());
     BOOST_CHECK(pool.info(GenTxid::Wtxid(InsecureRand256())).tx == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(MempoolEvmRbfTests)
+{
+    CTxMemPool pool;
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper entry;
+
+    const EvmAddressData sender{{0x01, 0x02, 0x03}};
+    const EvmAddressWithNonce addrNonce{0, sender};
+
+    // Parent -> EVM tx -> UTXO descendant
+    CTransactionRef tx1 = make_tx({10 * COIN});
+    pool.addUnchecked(entry.Fee(1000LL).FromTx(tx1));
+
+    CTransactionRef tx2 = make_tx({5 * COIN}, {tx1});
+    auto entry2 = entry.Fee(1000LL).FromTx(tx2);
+    entry2.SetCustomTxType(CustomTxType::EvmTx);
+    entry2.SetEVMAddrAndNonce(addrNonce);
+    entry2.SetEVMRbfMinTipFee(100);
+    pool.addUnchecked(entry2);
+
+    CTransactionRef tx3 = make_tx({1 * COIN}, {tx2});
+    pool.addUnchecked(entry.Fee(1000LL).FromTx(tx3));
+
+    size_t ancestors, descendants;
+    pool.GetTransactionAncestry(tx1->GetHash(), ancestors, descendants);
+    BOOST_CHECK_EQUAL(descendants, 3ULL);
+    BOOST_CHECK(!pool.getAccountViewDirty());
+
+    // Low-fee replacement fails without mutating mempool
+    CTransactionRef txLow = make_tx({5 * COIN}, {tx1});
+    auto entryLow = entry.Fee(1000LL).FromTx(txLow);
+    entryLow.SetCustomTxType(CustomTxType::EvmTx);
+    entryLow.SetEVMAddrAndNonce(addrNonce);
+
+    bool senderLimitFlag{false};
+    CTxMemPool::setEntries evmConflicts;
+    BOOST_CHECK(!pool.checkAddressNonceAndFee(entryLow, 50, sender, senderLimitFlag, evmConflicts));
+    BOOST_CHECK(!senderLimitFlag);
+    BOOST_CHECK(evmConflicts.empty());
+    BOOST_CHECK(pool.exists(tx2->GetHash()));
+    BOOST_CHECK(pool.exists(tx3->GetHash()));
+    BOOST_CHECK(!pool.getAccountViewDirty());
+
+    // Valid-fee replacement collects conflicts without mutating mempool yet
+    CTransactionRef txHigh = make_tx({5 * COIN}, {tx1});
+    auto entryHigh = entry.Fee(2000LL).FromTx(txHigh);
+    entryHigh.SetCustomTxType(CustomTxType::EvmTx);
+    entryHigh.SetEVMAddrAndNonce(addrNonce);
+
+    BOOST_CHECK(pool.checkAddressNonceAndFee(entryHigh, 100, sender, senderLimitFlag, evmConflicts));
+    BOOST_CHECK(!senderLimitFlag);
+    BOOST_CHECK_EQUAL(evmConflicts.size(), 1ULL);
+    BOOST_CHECK(pool.exists(tx2->GetHash()));
+    BOOST_CHECK(pool.exists(tx3->GetHash()));
+    BOOST_CHECK(!pool.getAccountViewDirty());
+
+    // Staging descendants + RemoveStaged evicts tx2 and tx3, marks accountsViewDirty,
+    // and updates tx1's descendant count
+    CTxMemPool::setEntries allConflicting;
+    for (const auto &it : evmConflicts) {
+        pool.CalculateDescendants(it, allConflicting);
+    }
+    BOOST_CHECK_EQUAL(allConflicting.size(), 2ULL);
+    pool.RemoveStaged(allConflicting, false, MemPoolRemovalReason::REPLACED);
+
+    BOOST_CHECK(!pool.exists(tx2->GetHash()));
+    BOOST_CHECK(!pool.exists(tx3->GetHash()));
+    BOOST_CHECK(pool.getAccountViewDirty());
+    pool.GetTransactionAncestry(tx1->GetHash(), ancestors, descendants);
+    BOOST_CHECK_EQUAL(descendants, 1ULL);
+
+    // Re-add an EVM entry and verify MEMPOOL_MAX_ETH_RBF enforcement via IncrementEvmRbfCount
+    pool.addUnchecked(entry2);
+    for (uint32_t i = 0; i < MEMPOOL_MAX_ETH_RBF; ++i) {
+        pool.IncrementEvmRbfCount(sender);
+    }
+    senderLimitFlag = false;
+    evmConflicts.clear();
+    BOOST_CHECK(!pool.checkAddressNonceAndFee(entryHigh, 100, sender, senderLimitFlag, evmConflicts));
+    BOOST_CHECK(senderLimitFlag);
+    BOOST_CHECK(evmConflicts.empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -36,6 +36,7 @@ class EVMTest(DefiTestFramework):
                 "-metachainheight=105",
                 "-subsidytest=1",
                 "-ethdebug=1",
+                "-checkmempool=1",
             ],
         ]
 
@@ -470,6 +471,61 @@ class EVMTest(DefiTestFramework):
         block_height = self.nodes[0].getblockcount()
         assert_equal(block_height, self.start_height + 2)
 
+    def rbf_testmempoolaccept_does_not_evict(self):
+        self.rollback_to(self.start_height)
+        nonce = self.nodes[0].w3.eth.get_transaction_count(self.ethAddress)
+
+        # Build a replacement tx hex first, then clear mempool so we can test testmempoolaccept
+        tx2_tmp = self.nodes[0].evmtx(self.ethAddress, nonce, 30, 21000, self.toAddress, 1)
+        tx2_raw = self.nodes[0].getrawtransaction(tx2_tmp)
+        self.nodes[0].clearmempool()
+
+        # Submit initial EVM tx
+        tx1 = self.nodes[0].evmtx(self.ethAddress, nonce, 21, 21000, self.toAddress, 1)
+        assert tx1 in self.nodes[0].getrawmempool()
+
+        # testmempoolaccept must NOT evict tx1
+        res = self.nodes[0].testmempoolaccept([tx2_raw])
+        assert_equal(res[0]["allowed"], True)
+        assert tx1 in self.nodes[0].getrawmempool()
+
+        # Broadcast replacement tx2: must evict tx1
+        tx2 = self.nodes[0].sendrawtransaction(tx2_raw)
+        mempool_after_rbf = self.nodes[0].getrawmempool()
+        assert tx1 not in mempool_after_rbf
+        assert tx2 in mempool_after_rbf
+
+        # Replacement mines cleanly
+        self.nodes[0].generate(1)
+        assert_equal(len(self.nodes[0].getrawmempool()), 0)
+
+    def rbf_updates_accounts_view(self):
+        self.rollback_to(self.start_height)
+        nonce = self.nodes[0].w3.eth.get_transaction_count(self.ethAddress)
+
+        # ethAddress starts with 100 DFI in EVM.
+        # tx1 spends 95 DFI, leaving ~5 DFI in mempool accountsView.
+        tx1 = self.nodes[0].evmtx(self.ethAddress, nonce, 21, 21000, self.toAddress, 95)
+        assert tx1 in self.nodes[0].getrawmempool()
+
+        # tx2 replaces tx1 with higher gas price, spending only 1 DFI (leaving ~99 DFI).
+        tx2 = self.nodes[0].evmtx(self.ethAddress, nonce, 30, 21000, self.toAddress, 1)
+        mempool = self.nodes[0].getrawmempool()
+        assert tx1 not in mempool
+        assert tx2 in mempool
+
+        # tx3 (nonce + 1) spends 50 DFI; only succeeds if accountsView was marked dirty
+        # and rebuilt without tx1's 95 DFI transfer.
+        tx3 = self.nodes[0].evmtx(
+            self.ethAddress, nonce + 1, 21, 21000, self.toAddress, 50
+        )
+        mempool = self.nodes[0].getrawmempool()
+        assert tx2 in mempool
+        assert tx3 in mempool
+
+        self.nodes[0].generate(1)
+        assert_equal(len(self.nodes[0].getrawmempool()), 0)
+
     def run_test(self):
         self.setup()
 
@@ -487,6 +543,12 @@ class EVMTest(DefiTestFramework):
 
         # Mint pending TXs out of order
         self.pending_out_of_order_nonces()
+
+        # EVM RBF testmempoolaccept is side-effect-free
+        self.rbf_testmempoolaccept_does_not_evict()
+
+        # EVM RBF marks accountsView dirty so subsequent txs see post-eviction state
+        self.rbf_updates_accounts_view()
 
 
 if __name__ == "__main__":
