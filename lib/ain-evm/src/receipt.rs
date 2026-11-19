@@ -132,4 +132,14 @@ mod test {
 
         assert_eq!(actual, expected);
     }
+
+    #[test]
+    pub fn test_contract_address_for_the_next_nonce() {
+        let sender = H160::from_str("0f572e5295c57f15886f9b263e2f6d2d6c7b5ec6").unwrap();
+        let expected = H160::from_str("4546238540e9e3dd470a53c7f72c30a4e6ee4628").unwrap();
+
+        let actual = get_contract_address(&sender, &U256::from(89));
+
+        assert_eq!(actual, expected);
+    }
 }

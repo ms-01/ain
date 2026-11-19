@@ -308,3 +308,330 @@ pub enum CallTracerInner {
         value: U256,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+
+    use ethereum_types::{H160, U256};
+    use serde_json::json;
+
+    use crate::trace::{
+        formatters::{
+            blockscout::{BlockscoutCall, BlockscoutCallInner},
+            call_tracer::Formatter,
+            ResponseFormatter,
+        },
+        listeners::call_list::Listener,
+        types::{CallResult, CallType, CreateResult},
+    };
+
+    fn address(value: u64) -> H160 {
+        H160::from_low_u64_be(value)
+    }
+
+    fn call(
+        trace_address: Vec<u32>,
+        to: H160,
+        gas: u64,
+        gas_used: u64,
+        value: u64,
+        input: Vec<u8>,
+        res: CallResult,
+    ) -> BlockscoutCall {
+        BlockscoutCall {
+            from: address(0x1111),
+            trace_address,
+            subtraces: 0,
+            value: U256::from(value),
+            gas: U256::from(gas),
+            gas_used: U256::from(gas_used),
+            inner: BlockscoutCallInner::Call {
+                call_type: CallType::Call,
+                to,
+                input,
+                res,
+            },
+        }
+    }
+
+    fn listener_with(entry: BTreeMap<u32, BlockscoutCall>) -> Rc<RefCell<Listener>> {
+        let mut listener = Listener::default();
+        listener.entries = vec![entry];
+        Rc::new(RefCell::new(listener))
+    }
+
+    fn format(listener: Rc<RefCell<Listener>>, system_tx: bool) -> serde_json::Value {
+        let traces = Formatter::format(listener, system_tx).expect("expected a trace");
+        serde_json::to_value(traces).unwrap()
+    }
+
+    #[test]
+    fn call_tracer_formats_a_simple_call() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            0,
+            call(
+                vec![],
+                address(0x2222),
+                100_000,
+                21_000,
+                5,
+                vec![0xde, 0xad],
+                CallResult::Output(vec![0xbe, 0xef]),
+            ),
+        );
+
+        let actual = format(listener_with(entry), false);
+
+        assert_eq!(
+            actual,
+            json!([
+                {
+                    "from": "0x0000000000000000000000000000000000001111",
+                    "gas": "0x186a0",
+                    "gasUsed": "0x5208",
+                    "type": "CALL",
+                    "to": "0x0000000000000000000000000000000000002222",
+                    "input": "0xdead",
+                    "output": "0xbeef",
+                    "value": "0x5"
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn call_tracer_nests_child_calls() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            0,
+            call(
+                vec![],
+                address(0x2222),
+                100_000,
+                21_000,
+                5,
+                vec![0xde, 0xad],
+                CallResult::Output(vec![0xbe, 0xef]),
+            ),
+        );
+        entry.insert(
+            1,
+            call(
+                vec![0],
+                address(0x3333),
+                50_000,
+                10_000,
+                7,
+                vec![0x01],
+                CallResult::Output(vec![0x02]),
+            ),
+        );
+
+        let actual = format(listener_with(entry), false);
+
+        assert_eq!(
+            actual,
+            json!([
+                {
+                    "from": "0x0000000000000000000000000000000000001111",
+                    "gas": "0x186a0",
+                    "gasUsed": "0x5208",
+                    "type": "CALL",
+                    "to": "0x0000000000000000000000000000000000002222",
+                    "input": "0xdead",
+                    "output": "0xbeef",
+                    "value": "0x5",
+                    "calls": [
+                        {
+                            "from": "0x0000000000000000000000000000000000001111",
+                            "gas": "0xc350",
+                            "gasUsed": "0x2710",
+                            "type": "CALL",
+                            "to": "0x0000000000000000000000000000000000003333",
+                            "input": "0x01",
+                            "output": "0x02",
+                            "value": "0x7"
+                        }
+                    ]
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn call_tracer_reports_a_revert() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            0,
+            call(
+                vec![],
+                address(0x2222),
+                100_000,
+                21_000,
+                5,
+                vec![0xde, 0xad],
+                CallResult::Error(b"execution reverted".to_vec()),
+            ),
+        );
+
+        let actual = format(listener_with(entry), false);
+
+        assert_eq!(
+            actual,
+            json!([
+                {
+                    "from": "0x0000000000000000000000000000000000001111",
+                    "gas": "0x186a0",
+                    "gasUsed": "0x5208",
+                    "type": "CALL",
+                    "to": "0x0000000000000000000000000000000000002222",
+                    "input": "0xdead",
+                    "error": "execution reverted",
+                    "value": "0x5"
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn call_tracer_reports_an_out_of_gas_error() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            0,
+            call(
+                vec![],
+                address(0x2222),
+                100_000,
+                100_000,
+                5,
+                vec![0xde, 0xad],
+                CallResult::Error(b"out of gas".to_vec()),
+            ),
+        );
+
+        let actual = format(listener_with(entry), false);
+
+        assert_eq!(
+            actual,
+            json!([
+                {
+                    "from": "0x0000000000000000000000000000000000001111",
+                    "gas": "0x186a0",
+                    "gasUsed": "0x186a0",
+                    "type": "CALL",
+                    "to": "0x0000000000000000000000000000000000002222",
+                    "input": "0xdead",
+                    "error": "out of gas",
+                    "value": "0x5"
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn call_tracer_zeroes_gas_used_for_system_transactions() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            0,
+            call(
+                vec![],
+                address(0x2222),
+                100_000,
+                21_000,
+                5,
+                vec![0xde, 0xad],
+                CallResult::Output(vec![0xbe, 0xef]),
+            ),
+        );
+
+        let actual = format(listener_with(entry), true);
+
+        assert_eq!(actual[0]["gasUsed"], json!("0x0"));
+        assert_eq!(actual[0]["gas"], json!("0x186a0"));
+    }
+
+    #[test]
+    fn call_tracer_returns_none_without_entries() {
+        let listener = Rc::new(RefCell::new(Listener::default()));
+        assert!(Formatter::format(listener, false).is_none());
+    }
+
+    #[test]
+    fn call_tracer_formats_a_create() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            0,
+            BlockscoutCall {
+                from: address(0x1111),
+                trace_address: vec![],
+                subtraces: 0,
+                value: U256::from(5),
+                gas: U256::from(100_000),
+                gas_used: U256::from(21_000),
+                inner: BlockscoutCallInner::Create {
+                    init: vec![0x60, 0x60],
+                    res: CreateResult::Success {
+                        created_contract_address_hash: address(0x3333),
+                        created_contract_code: vec![0x00],
+                    },
+                },
+            },
+        );
+
+        let actual = format(listener_with(entry), false);
+
+        assert_eq!(
+            actual,
+            json!([
+                {
+                    "from": "0x0000000000000000000000000000000000001111",
+                    "gas": "0x186a0",
+                    "gasUsed": "0x5208",
+                    "type": "CREATE",
+                    "input": "0x6060",
+                    "to": "0x0000000000000000000000000000000000003333",
+                    "output": "0x00",
+                    "value": "0x5"
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn call_tracer_formats_a_selfdestruct() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            0,
+            BlockscoutCall {
+                from: address(0x1111),
+                trace_address: vec![],
+                subtraces: 0,
+                value: U256::zero(),
+                gas: U256::zero(),
+                gas_used: U256::zero(),
+                inner: BlockscoutCallInner::SelfDestruct {
+                    balance: U256::from(9),
+                    to: address(0x4444),
+                },
+            },
+        );
+
+        let actual = format(listener_with(entry), false);
+
+        assert_eq!(
+            actual,
+            json!([
+                {
+                    "from": "0x0000000000000000000000000000000000001111",
+                    "gas": "0x0",
+                    "gasUsed": "0x0",
+                    "type": "SELFDESTRUCT",
+                    "to": "0x0000000000000000000000000000000000004444",
+                    "value": "0x9"
+                }
+            ])
+        );
+    }
+}
