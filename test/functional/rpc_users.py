@@ -5,6 +5,7 @@
 """Test multiple RPC users."""
 
 from test_framework.test_framework import DefiTestFramework
+from test_framework.test_node import ErrorMatch
 from test_framework.util import (
     assert_equal,
     get_datadir_path,
@@ -124,6 +125,26 @@ class HTTPBasicsTest(DefiTestFramework):
         url = urllib.parse.urlparse(self.nodes[1].url)
 
         self.test_auth(self.nodes[1], self.rpcuser, self.rpcpassword)
+
+        ###############################################################
+        # Check that a malformed -rpcauth aborts the node startup    #
+        ###############################################################
+        self.log.info("Check that an invalid -rpcauth aborts the startup")
+        self.stop_node(1)
+        self.nodes[1].assert_start_raises_init_error(
+            extra_args=["-rpcauth=foo"],
+            expected_msg="Unable to start HTTP server",
+            match=ErrorMatch.PARTIAL_REGEX,
+        )
+        self.nodes[1].assert_start_raises_init_error(
+            extra_args=["-rpcauth=foo:bar"],
+            expected_msg="Unable to start HTTP server",
+            match=ErrorMatch.PARTIAL_REGEX,
+        )
+
+        self.log.info("Check that an empty -rpcauth is still accepted")
+        self.start_node(1, extra_args=["-rpcauth="])
+        self.stop_node(1)
 
 
 if __name__ == "__main__":

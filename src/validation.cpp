@@ -172,8 +172,11 @@ arith_uint256 nMinimumChainWork;
 
 CFeeRate minRelayTxFee = CFeeRate(DEFAULT_MIN_RELAY_TX_FEE);
 
-CBlockPolicyEstimator feeEstimator;
-CTxMemPool mempool(&feeEstimator);
+// The fee estimator is only created when transaction relay is enabled, see
+// SetupNetwork() and AppInitMain() in init.cpp. It stays null otherwise, in
+// which case fee estimation is disabled.
+std::unique_ptr<CBlockPolicyEstimator> feeEstimator;
+CTxMemPool mempool(nullptr);
 
 /** Constant stuff for coinbase transactions we create: */
 CScript COINBASE_FLAGS;

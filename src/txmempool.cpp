@@ -610,6 +610,12 @@ void CTxMemPool::removeConflicts(const CTransaction &tx) {
     }
 }
 
+void CTxMemPool::SetFeeEstimator(CBlockPolicyEstimator *estimator)
+{
+    LOCK(cs);
+    minerPolicyEstimator = estimator;
+}
+
 CTxMemPool::~CTxMemPool() {}
 
 CCustomCSView &CTxMemPool::accountsView() {

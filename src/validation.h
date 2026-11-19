@@ -16,6 +16,7 @@
 #include <dfi/res.h>
 #include <fs.h>
 #include <policy/feerate.h>
+#include <policy/fees.h>
 #include <pos.h>
 #include <protocol.h>  // For CMessageHeader::MessageStartChars
 #include <script/script_error.h>
@@ -166,7 +167,7 @@ struct BlockHasher {
 
 extern CScript COINBASE_FLAGS;
 extern CCriticalSection cs_main;
-extern CBlockPolicyEstimator feeEstimator;
+extern std::unique_ptr<CBlockPolicyEstimator> feeEstimator;
 extern CTxMemPool mempool;
 typedef std::unordered_map<uint256, CBlockIndex *, BlockHasher> BlockMap;
 extern Mutex g_best_block_mutex;

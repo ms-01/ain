@@ -272,13 +272,13 @@ void Shutdown(InitInterfaces& interfaces)
         DumpMempool(::mempool);
     }
 
-    if (fFeeEstimatesInitialized)
+    if (fFeeEstimatesInitialized && ::feeEstimator)
     {
-        ::feeEstimator.FlushUnconfirmed();
+        ::feeEstimator->FlushUnconfirmed();
         fs::path est_path = GetDataDir() / FEE_ESTIMATES_FILENAME;
         CAutoFile est_fileout(fsbridge::fopen(est_path, "wb"), SER_DISK, CLIENT_VERSION);
         if (!est_fileout.IsNull())
-            ::feeEstimator.Write(est_fileout);
+            ::feeEstimator->Write(est_fileout);
         else
             LogPrintf("%s: Failed to write fee estimates to %s\n", __func__, fs::PathToString(est_path));
         fFeeEstimatesInitialized = false;
@@ -1919,6 +1919,16 @@ bool AppInitMain(InitInterfaces& interfaces)
         return false;
     }
 
+    // Fee estimation is only useful when the node relays transactions. Without
+    // relay (-blocksonly) the estimator would never be updated, so it is not
+    // created at all and stale estimates are neither loaded nor stored.
+    // This must happen before the mempool is populated (ThreadImport) and
+    // before fee_estimates.dat is read.
+    if (g_relay_txes) {
+        ::feeEstimator = std::make_unique<CBlockPolicyEstimator>();
+        ::mempool.SetFeeEstimator(::feeEstimator.get());
+    }
+
 #if ENABLE_ZMQ
     g_zmq_notification_interface = CZMQNotificationInterface::Create();
 
@@ -2242,12 +2252,14 @@ bool AppInitMain(InitInterfaces& interfaces)
         return false;
     }
 
-    fs::path est_path = GetDataDir() / FEE_ESTIMATES_FILENAME;
-    CAutoFile est_filein(fsbridge::fopen(est_path, "rb"), SER_DISK, CLIENT_VERSION);
-    // Allowed to fail as this file IS missing on first startup.
-    if (!est_filein.IsNull())
-        ::feeEstimator.Read(est_filein);
-    fFeeEstimatesInitialized = true;
+    if (::feeEstimator) {
+        fs::path est_path = GetDataDir() / FEE_ESTIMATES_FILENAME;
+        CAutoFile est_filein(fsbridge::fopen(est_path, "rb"), SER_DISK, CLIENT_VERSION);
+        // Allowed to fail as this file IS missing on first startup.
+        if (!est_filein.IsNull())
+            ::feeEstimator->Read(est_filein);
+        fFeeEstimatesInitialized = true;
+    }
 
     // ********************************************************* Step 9: start indexers
     if (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {

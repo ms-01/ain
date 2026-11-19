@@ -2419,6 +2419,11 @@ std::vector<CAddress> CConnman::GetAddresses(std::optional<Network> network)
     return addrman.GetAddr(network);
 }
 
+std::map<enum Network, int64_t> CConnman::GetAddressCountsByNetwork() const
+{
+    return addrman.CountByNetwork();
+}
+
 bool CConnman::AddNode(const std::string& strNode)
 {
     LOCK(cs_vAddedNodes);
