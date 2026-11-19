@@ -32,6 +32,11 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
+    - name: Setup LLVM 15
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends clang-15 clang-format-15
+
     - name: Lint
       run: ./ci/lint/main.sh
 

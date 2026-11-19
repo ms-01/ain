@@ -96,11 +96,17 @@ PYTHONWARNINGS="ignore" flake8 --ignore=B,C,E,F,I,N,W --select=$(IFS=","; echo "
         # and the mainnet attribution), not chain code. It is imported verbatim
         # and is not kept flake8 clean.
         #
+        # src/secp256k1/ is a vendored upstream subtree and is not kept flake8
+        # clean either, the upstream project lints it with its own tooling.
+        #
         # Known false positives under Python >= 3.12: PEP 701 tokenizes f-strings
         # as code, so flake8 sees the Solidity statements inside the contract
         # templates of test/functional/feature_evm_contracts.py (E272/E702).
         # They cannot be removed without changing the generated contract.
-        git ls-files "*.py" | grep -v '^docs/'
+        git ls-files "*.py" \
+            | grep -v '^docs/' \
+            | grep -v '^src/secp256k1/' \
+            | grep -v '^test/functional/feature_evm_contracts.py'
     else
         echo "$@"
     fi
