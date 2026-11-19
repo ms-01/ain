@@ -614,7 +614,8 @@ bool MemPoolAccept::EvmChecks(ATMPArgs &args, Workspace &ws) {
         ws.entry->SetEVMRbfMinTipFee(minRbfFee);
 
         auto senderLimitFlag{false};
-        if (!m_pool.checkAddressNonceAndFee(*ws.entry, entryTipFee, txResult.address, senderLimitFlag)) {
+        CTxMemPool::setEntries evmConflicts;
+        if (!m_pool.checkAddressNonceAndFee(*ws.entry, entryTipFee, txResult.address, senderLimitFlag, evmConflicts)) {
             if (senderLimitFlag) {
                 LogPrint(BCLog::MEMPOOL,
                          "Too many replace-by-fee EVM tx from the same sender in mempool. Limit %d.\n",
@@ -627,15 +628,49 @@ bool MemPoolAccept::EvmChecks(ATMPArgs &args, Workspace &ws) {
             }
         }
 
-        const auto sender = m_pool.evmTxsBySender.find(txResult.address);
-        if (sender != m_pool.evmTxsBySender.end() && sender->second.size() >= MEMPOOL_MAX_ETH_TXS) {
-            LogPrint(BCLog::MEMPOOL,
-                     "Too many EVM tx from the same sender in mempool. Limit %d.\n",
-                     MEMPOOL_MAX_ETH_TXS);
-            return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "too-many-evm-txs-by-sender");
-        } else {
-            ethSender = txResult.address;
+        if (!evmConflicts.empty()) {
+            std::set<uint256> evmConflictTxids;
+            for (const auto &it : evmConflicts) {
+                evmConflictTxids.insert(it->GetTx().GetHash());
+            }
+            if (const auto err{EntriesAndTxidsDisjoint(ws.setAncestors, evmConflictTxids, ws.hash)}) {
+                return state.Invalid(
+                    ValidationInvalidReason::CONSENSUS,
+                    false,
+                    "bad-txns-spends-conflicting-tx",
+                    *err);
+            }
+
+            CTxMemPool::setEntries evmAllConflicting;
+            for (const auto &it : evmConflicts) {
+                m_pool.CalculateDescendants(it, evmAllConflicting);
+            }
+            for (const auto &it : evmAllConflicting) {
+                if (ws.allConflicting.insert(it).second) {
+                    ws.nConflictingFees += it->GetModifiedFee();
+                    ws.nConflictingSize += it->GetTxSize();
+                }
+            }
+            ws.fReplacementTransaction = true;
+            ws.fEvmReplacement = true;
         }
+
+        const auto sender = m_pool.evmTxsBySender.find(txResult.address);
+        if (sender != m_pool.evmTxsBySender.end()) {
+            size_t stagedForSender{0};
+            for (const auto &it : ws.allConflicting) {
+                if (sender->second.count(it->GetTx().GetHash())) {
+                    ++stagedForSender;
+                }
+            }
+            if (sender->second.size() - stagedForSender >= MEMPOOL_MAX_ETH_TXS) {
+                LogPrint(BCLog::MEMPOOL,
+                         "Too many EVM tx from the same sender in mempool. Limit %d.\n",
+                         MEMPOOL_MAX_ETH_TXS);
+                return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "too-many-evm-txs-by-sender");
+            }
+        }
+        ethSender = txResult.address;
 
         evm_try_dispatch_pending_transactions_event(result, rawEVMTx);
         if (!result.ok) {
@@ -670,6 +705,9 @@ bool MemPoolAccept::Finalize(ATMPArgs &args, Workspace &ws) {
         }
     }
     m_pool.RemoveStaged(ws.allConflicting, false, MemPoolRemovalReason::REPLACED);
+    if (ws.fEvmReplacement && ws.ethSender) {
+        m_pool.IncrementEvmRbfCount(*ws.ethSender);
+    }
 
     // This transaction should only count for fee estimation if:
     // - it isn't a BIP 125 replacement transaction (may not be widely supported)

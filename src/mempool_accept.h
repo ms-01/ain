@@ -97,6 +97,7 @@ private:
         std::unique_ptr<CTxMemPoolEntry> entry;
 
         bool fReplacementTransaction{false};
+        bool fEvmReplacement{false};
         // True if the transaction is an EVM transaction (checked by the
         // transaction structure itself, without parsing the metadata).
         bool isEVMTx{false};

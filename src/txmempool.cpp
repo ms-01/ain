@@ -1281,7 +1281,9 @@ bool CTxMemPool::getAccountViewDirty() const {
 bool CTxMemPool::checkAddressNonceAndFee(const CTxMemPoolEntry &pendingEntry,
                                          const uint64_t &entryFee,
                                          const EvmAddressData &txSender,
-                                         bool &senderLimitFlag) {
+                                         bool &senderLimitFlag,
+                                         setEntries &evmConflicts) {
+    evmConflicts.clear();
     if (pendingEntry.GetCustomTxType() != CustomTxType::EvmTx &&
         pendingEntry.GetCustomTxType() != CustomTxType::TransferDomain) {
         return true;
@@ -1299,7 +1301,6 @@ bool CTxMemPool::checkAddressNonceAndFee(const CTxMemPoolEntry &pendingEntry,
         return true;
     }
 
-    auto result{true};
     CTxMemPool::setEntries itersToRemove;
     for (auto it = range.first; it != range.second; ++it) {
         const auto &entry = *it;
@@ -1308,18 +1309,16 @@ bool CTxMemPool::checkAddressNonceAndFee(const CTxMemPoolEntry &pendingEntry,
             auto txIter = mapTx.project<0>(it);
             itersToRemove.insert(txIter);
         } else {
-            result = false;
+            return false;
         }
     }
 
-    for (const auto &txIter : itersToRemove) {
-        removeUnchecked(txIter, MemPoolRemovalReason::REPLACED);
-    }
+    evmConflicts.insert(itersToRemove.begin(), itersToRemove.end());
+    return true;
+}
 
-    if (result) {
-        ++evmReplaceByFeeBySender[txSender];
-    }
-    return result;
+void CTxMemPool::IncrementEvmRbfCount(const EvmAddressData &txSender) {
+    ++evmReplaceByFeeBySender[txSender];
 }
 
 void CTxMemPool::rebuildAccountsView(int height, const CCoinsViewCache &coinsCache) {
