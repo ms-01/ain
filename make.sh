@@ -829,13 +829,45 @@ pkg_local_install_py_deps() {
 
     python3 -m pip install wheel
     # lints, fmt, checks deps
-    python3 -m pip install -r "${root_dir}/test/requirements.txt"
+    pip_install_requirements "${root_dir}/test/requirements.txt"
 
     # post dep for test
-    python3 -c 'from solcx import install_solc;install_solc("0.8.20")'
+    # The Solidity compiler is downloaded from the official Solidity binaries host, the
+    # legacy `solc-bin.ethereum.org` endpoint does not resolve anymore.
+    python3 -c '
+import solcx.install
+
+solcx.install.BINARY_DOWNLOAD_BASE = "https://binaries.soliditylang.org/{}-amd64/{}"
+
+from solcx import install_solc
+
+install_solc("0.8.20")
+'
 
     py_env_deactivate
     _fold_end
+}
+
+# Installs the given pip requirements file.
+#
+# The compiler exported by `make.sh` (e.g. `clang-15`) is not necessarily present on every
+# runner. Python sdists with a C extension (e.g. `lru-dict`) are compiled by pip with that
+# compiler and the installation fails with `No such file or directory: 'clang-15'` when it is
+# missing. The fallback to the system compiler is strictly scoped to the pip call, the C++
+# build toolchain stays untouched.
+pip_install_requirements() {
+    local requirements_file="${1}"
+    local cc="${CC:-}"
+    local cc_bin="${cc%% *}"
+
+    (
+        if [[ -n "$cc" ]] && ! command -v "$cc_bin" > /dev/null 2>&1; then
+            echo "compiler '${cc}' is not available, using the system compiler for the pip build"
+            unset CC
+            unset CXX
+        fi
+        python3 -m pip install -r "${requirements_file}"
+    )
 }
 
 clean_pkg_local_py_deps() {
@@ -1304,7 +1336,7 @@ _exec_black() {
         black_args="${black_args} --check"
     fi
     # shellcheck disable=SC2086,SC2090
-    python3 -m black --extend-exclude 'src/crc32c' ${black_args} .
+    python3 -m black --extend-exclude '(src/crc32c|src/secp256k1|docs)/' ${black_args} .
 }
 
 _safe_rm_rf() {

@@ -120,12 +120,18 @@ UniValue createtoken(const JSONRPCRequest &request) {
     }
 
     if (!metaObj["tradeable"].isNull()) {
-        token.flags = metaObj["tradeable"].isTrue() ? token.flags | uint8_t(CToken::TokenFlags::Tradeable)
-                                                     : token.flags & ~uint8_t(CToken::TokenFlags::Tradeable);
+        if (metaObj["tradeable"].isTrue()) {
+            token.flags |= uint8_t(CToken::TokenFlags::Tradeable);
+        } else {
+            token.flags &= ~uint8_t(CToken::TokenFlags::Tradeable);
+        }
     }
     if (!metaObj["mintable"].isNull()) {
-        token.flags = metaObj["mintable"].isTrue() ? token.flags | uint8_t(CToken::TokenFlags::Mintable)
-                                                    : token.flags & ~uint8_t(CToken::TokenFlags::Mintable);
+        if (metaObj["mintable"].isTrue()) {
+            token.flags |= uint8_t(CToken::TokenFlags::Mintable);
+        } else {
+            token.flags &= ~uint8_t(CToken::TokenFlags::Mintable);
+        }
     }
 
     CDataStream metadata(DfTxMarker, SER_NETWORK, PROTOCOL_VERSION);
@@ -304,16 +310,25 @@ UniValue updatetoken(const JSONRPCRequest &request) {
         tokenImpl.name = trim_ws(metaObj["name"].getValStr()).substr(0, CToken::MAX_TOKEN_NAME_LENGTH);
     }
     if (!metaObj["isDAT"].isNull()) {
-        tokenImpl.flags = metaObj["isDAT"].isTrue() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::DAT
-                                                     : tokenImpl.flags & ~(uint8_t)CToken::TokenFlags::DAT;
+        if (metaObj["isDAT"].isTrue()) {
+            tokenImpl.flags |= (uint8_t)CToken::TokenFlags::DAT;
+        } else {
+            tokenImpl.flags &= ~(uint8_t)CToken::TokenFlags::DAT;
+        }
     }
     if (!metaObj["tradeable"].isNull()) {
-        tokenImpl.flags = metaObj["tradeable"].isTrue() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Tradeable
-                                                         : tokenImpl.flags & ~(uint8_t)CToken::TokenFlags::Tradeable;
+        if (metaObj["tradeable"].isTrue()) {
+            tokenImpl.flags |= (uint8_t)CToken::TokenFlags::Tradeable;
+        } else {
+            tokenImpl.flags &= ~(uint8_t)CToken::TokenFlags::Tradeable;
+        }
     }
     if (!metaObj["mintable"].isNull()) {
-        tokenImpl.flags = metaObj["mintable"].isTrue() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Mintable
-                                                        : tokenImpl.flags & ~(uint8_t)CToken::TokenFlags::Mintable;
+        if (metaObj["mintable"].isTrue()) {
+            tokenImpl.flags |= (uint8_t)CToken::TokenFlags::Mintable;
+        } else {
+            tokenImpl.flags &= ~(uint8_t)CToken::TokenFlags::Mintable;
+        }
     }
     if (!metaObj["finalize"].isNull()) {
         tokenImpl.flags =
@@ -321,8 +336,11 @@ UniValue updatetoken(const JSONRPCRequest &request) {
     }
     const auto isDeprecated = tokenImpl.IsDeprecated();
     if (!metaObj["deprecate"].isNull()) {
-        tokenImpl.flags = metaObj["deprecate"].isTrue() ? tokenImpl.flags | (uint8_t)CToken::TokenFlags::Deprecated
-                                                         : tokenImpl.flags & ~(uint8_t)CToken::TokenFlags::Deprecated;
+        if (metaObj["deprecate"].isTrue()) {
+            tokenImpl.flags |= (uint8_t)CToken::TokenFlags::Deprecated;
+        } else {
+            tokenImpl.flags &= ~(uint8_t)CToken::TokenFlags::Deprecated;
+        }
     }
 
     bool newCollateralAddress{};

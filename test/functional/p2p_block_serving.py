@@ -74,8 +74,7 @@ class BlockServingTest(DefiTestFramework):
         #    is recent enough to be served as a compact block).
         peer.send_message(msg_getdata([CInv(MSG_CMPCT_BLOCK, block_hash)]))
         wait_until(
-            lambda: "cmpctblock" in peer.last_message
-            or "block" in peer.last_message,
+            lambda: "cmpctblock" in peer.last_message or "block" in peer.last_message,
             lock=mininode_lock,
         )
         self.log.info("Compact block request answered")

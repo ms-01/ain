@@ -76,9 +76,7 @@ class BalanceOverflowRpcTest(DefiTestFramework):
         # S1: the sum of the recipients exceeds the maximum amount
         oversized_total = {address: BIG for address in recipients}
         before = self.snapshot(addresses)
-        assert_raises_rpc_error(
-            -8, "overflow", node.utxostoaccount, oversized_total
-        )
+        assert_raises_rpc_error(-8, "overflow", node.utxostoaccount, oversized_total)
         assert_equal(self.snapshot(addresses), before)
 
         # S2: the same over accounttoaccount

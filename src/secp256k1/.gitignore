@@ -46,7 +46,13 @@ coverage.*.html
 *.gcno
 *.gcov
 
-/autotools-aux/
+# The generated autotools helpers are ignored, but the macro directory and the
+# hand-written macro definitions have to stay tracked: a `!` negation alone is
+# inert while the parent directory itself is excluded, which previously dropped
+# `autotools-aux/m4/bitcoin_secp.m4` from the repository.
+/autotools-aux/*
+!/autotools-aux/m4/
+/autotools-aux/m4/*
 !/autotools-aux/m4/bitcoin_secp.m4
 
 libsecp256k1.pc

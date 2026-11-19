@@ -472,7 +472,8 @@ std::vector<CTxIn> GetAuthInputsSmart(CWalletCoinsUnlocker &pwallet,
         try {
             optAuthTx = CreateAuthTx(pwallet, notFoundYet, txVersion, coinSelectOpts);  // success or throw
         } catch (const UniValue &objError) {
-            throw JSONRPCError(objError["code"].getInt<int>(), "Add-on auth TX failed: " + objError["message"].getValStr());
+            const auto errMsg = "Add-on auth TX failed: " + objError["message"].getValStr();
+            throw JSONRPCError(objError["code"].getInt<int>(), errMsg);
         }
         // if we are here - we've got signed optional auth tx - add all of the outputs into inputs (to do not miss any
         // coins for sure)

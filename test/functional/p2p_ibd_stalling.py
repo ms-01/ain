@@ -93,7 +93,7 @@ class P2PStallingTest(DefiTestFramework):
         node = self.nodes[0]
         tip = int(node.getbestblockhash(), 16)
         height = node.getblockcount() + 1
-        block_time = node.getblock(node.getbestblockhash())['time'] + 1
+        block_time = node.getblock(node.getbestblockhash())["time"] + 1
         blocks = []
         block_dict = {}
         for _ in range(count):
@@ -132,14 +132,16 @@ class P2PStallingTest(DefiTestFramework):
 
     def paused_peer_id(self):
         """Return the id of the peer that was paused for stalling, if any."""
-        match = re.search(r'Pausing block downloads from stalling manual peer=(\d+)', self.debug_log())
+        match = re.search(
+            r"Pausing block downloads from stalling manual peer=(\d+)", self.debug_log()
+        )
         return int(match.group(1)) if match else None
 
     def peer_inflight(self, node, peer_id):
         """Return the heights of the blocks that are in flight for the given peer."""
         for peer_info in node.getpeerinfo():
-            if peer_info['id'] == peer_id:
-                return peer_info['inflight']
+            if peer_info["id"] == peer_id:
+                return peer_info["inflight"]
         return None
 
     def connect_stalling_peers(self, node, blocks, block_dict, num_peers):
@@ -156,7 +158,9 @@ class P2PStallingTest(DefiTestFramework):
         return peers
 
     def test_stalling(self):
-        self.log.info("Test that a stalling peer is disconnected and the timeout is increased")
+        self.log.info(
+            "Test that a stalling peer is disconnected and the timeout is increased"
+        )
         node = self.nodes[0]
         self.restart_node(0)
 
@@ -169,36 +173,53 @@ class P2PStallingTest(DefiTestFramework):
         # The peers hold the blocks of the download window in flight, but never deliver
         # them. The last peers do not hold any block in flight and report the peer that
         # holds the block at the end of the download window as the stalling peer.
-        with node.assert_debug_log(expected_msgs=['Stall started'], timeout=120):
+        with node.assert_debug_log(expected_msgs=["Stall started"], timeout=120):
             peers = self.connect_stalling_peers(
-                node, blocks, block_dict, NUM_BLOCK_HOLDERS + NUM_REPORTERS)
+                node, blocks, block_dict, NUM_BLOCK_HOLDERS + NUM_REPORTERS
+            )
             wait_until(lambda: len(node.getpeerinfo()) == len(peers), timeout=60)
             self.sync_peers(peers)
 
-        self.log.info("Check that the stalling peer is disconnected after the stalling timeout")
-        with node.assert_debug_log(expected_msgs=[
-                'is stalling block download, disconnecting',
-                'Increased stalling timeout temporarily to 4 seconds'], timeout=60):
+        self.log.info(
+            "Check that the stalling peer is disconnected after the stalling timeout"
+        )
+        with node.assert_debug_log(
+            expected_msgs=[
+                "is stalling block download, disconnecting",
+                "Increased stalling timeout temporarily to 4 seconds",
+            ],
+            timeout=60,
+        ):
             self.advance_mocktime(node, DEFAULT_STALLING_TIMEOUT + 1, peers)
         peers[0].wait_for_disconnect()
         assert_equal(len(node.getpeerinfo()), len(peers) - 1)
 
-        self.log.info("Check that the next stalling peer is disconnected with the doubled timeout")
-        with node.assert_debug_log(expected_msgs=[
-                'is stalling block download, disconnecting',
-                'Increased stalling timeout temporarily to 8 seconds'], timeout=120):
+        self.log.info(
+            "Check that the next stalling peer is disconnected with the doubled timeout"
+        )
+        with node.assert_debug_log(
+            expected_msgs=[
+                "is stalling block download, disconnecting",
+                "Increased stalling timeout temporarily to 8 seconds",
+            ],
+            timeout=120,
+        ):
             self.advance_mocktime(node, 5, peers)
         self.sync_peers(peers[1:])
         assert_equal(len(node.getpeerinfo()), len(peers) - 2)
 
-        self.log.info("Check that the stalling timeout is reduced again when blocks are connected")
+        self.log.info(
+            "Check that the stalling timeout is reduced again when blocks are connected"
+        )
         # Disconnect the stalling peers, so that the blocks are requested from a peer that
         # serves them.
         for peer in peers:
             peer.peer_disconnect()
         wait_until(lambda: len(node.getpeerinfo()) == 0, timeout=60)
 
-        with node.assert_debug_log(expected_msgs=['Decreased stalling timeout to 2 seconds'], timeout=120):
+        with node.assert_debug_log(
+            expected_msgs=["Decreased stalling timeout to 2 seconds"], timeout=120
+        ):
             serving_peer = node.add_p2p_connection(P2PDataStore())
             serving_peer.block_store = block_dict
             serving_peer.send_message(self.headers_message(blocks))
@@ -208,7 +229,9 @@ class P2PStallingTest(DefiTestFramework):
             self.sync_peers([serving_peer])
 
     def test_manual_peer_stalling(self):
-        self.log.info("Test that a manual peer is paused, but not disconnected, for stalling")
+        self.log.info(
+            "Test that a manual peer is paused, but not disconnected, for stalling"
+        )
         node = self.nodes[0]
 
         blocks, block_dict = self.build_blocks(BLOCK_DOWNLOAD_WINDOW + 1)
@@ -217,11 +240,16 @@ class P2PStallingTest(DefiTestFramework):
         def connection_factory():
             return P2PStaller(list(block_dict.keys()))
 
-        listeners = [P2PListener(connection_factory) for _ in range(NUM_BLOCK_HOLDERS + NUM_REPORTERS)]
+        listeners = [
+            P2PListener(connection_factory)
+            for _ in range(NUM_BLOCK_HOLDERS + NUM_REPORTERS)
+        ]
         ports = [listener.start() for listener in listeners]
 
         node.set_mocktime(self.mocktime)
-        self.restart_node(0, extra_args=['-connect=127.0.0.1:{}'.format(port) for port in ports])
+        self.restart_node(
+            0, extra_args=["-connect=127.0.0.1:{}".format(port) for port in ports]
+        )
 
         peers = []
         for listener in listeners:
@@ -232,20 +260,24 @@ class P2PStallingTest(DefiTestFramework):
         # The peers are manual peers. The deprecated `addnode` field was removed
         # from `getpeerinfo` (upstream #20755), manual peers are outbound.
         for peer_info in node.getpeerinfo():
-            assert_equal(peer_info['inbound'], False)
+            assert_equal(peer_info["inbound"], False)
 
         headers = self.headers_message(blocks)
 
-        with node.assert_debug_log(expected_msgs=['Stall started'], timeout=120):
+        with node.assert_debug_log(expected_msgs=["Stall started"], timeout=120):
             for peer in peers:
                 peer.send_message(headers)
             wait_until(lambda: len(node.getpeerinfo()) == len(peers), timeout=60)
             self.sync_peers(peers)
 
         self.log.info("Check that the manual peer is paused instead of disconnected")
-        with node.assert_debug_log(expected_msgs=[
-                'Pausing block downloads from stalling manual peer',
-                'Increased stalling timeout temporarily to 4 seconds'], timeout=60):
+        with node.assert_debug_log(
+            expected_msgs=[
+                "Pausing block downloads from stalling manual peer",
+                "Increased stalling timeout temporarily to 4 seconds",
+            ],
+            timeout=60,
+        ):
             self.advance_mocktime(node, DEFAULT_STALLING_TIMEOUT + 1, peers)
 
         # The manual peers are still connected.
@@ -253,7 +285,9 @@ class P2PStallingTest(DefiTestFramework):
         for peer in peers:
             assert_equal(peer.is_connected, True)
 
-        self.log.info("Check that the outstanding block requests of the manual peer are released")
+        self.log.info(
+            "Check that the outstanding block requests of the manual peer are released"
+        )
         paused_peer_id = self.paused_peer_id()
         assert paused_peer_id is not None
         assert_equal(self.peer_inflight(node, paused_peer_id), [])
@@ -262,5 +296,5 @@ class P2PStallingTest(DefiTestFramework):
             listener.stop()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     P2PStallingTest().main()

@@ -91,31 +91,33 @@ class AccountOverflowTest(DefiTestFramework):
         self.num_nodes = 1
         # Activate all softforks at height 1, otherwise utxostoaccount and
         # accounttoaccount are rejected with "called before AMK height".
-        self.extra_args = [[
-            "-amkheight=1",
-            "-bayfrontheight=1",
-            "-bayfrontmarinaheight=1",
-            "-bayfrontgardensheight=1",
-            "-clarkequayheight=1",
-            "-dakotaheight=1",
-            "-dakotacrescentheight=1",
-            "-eunosheight=1",
-            "-eunospayaheight=1",
-            "-fortcanningheight=1",
-            "-fortcanningmuseumheight=1",
-            "-fortcanningparkheight=1",
-            "-fortcanninghillheight=1",
-            "-fortcanningroadheight=1",
-            "-fortcanningcrunchheight=1",
-            "-fortcanningspringheight=1",
-            "-fortcanninggreatworldheight=1",
-            "-fortcanningepilogueheight=1",
-            "-grandcentralheight=1",
-            "-grandcentralepilogueheight=1",
-            "-metachainheight=1",
-            "-df23height=1",
-            "-df24height=1",
-        ]]
+        self.extra_args = [
+            [
+                "-amkheight=1",
+                "-bayfrontheight=1",
+                "-bayfrontmarinaheight=1",
+                "-bayfrontgardensheight=1",
+                "-clarkequayheight=1",
+                "-dakotaheight=1",
+                "-dakotacrescentheight=1",
+                "-eunosheight=1",
+                "-eunospayaheight=1",
+                "-fortcanningheight=1",
+                "-fortcanningmuseumheight=1",
+                "-fortcanningparkheight=1",
+                "-fortcanninghillheight=1",
+                "-fortcanningroadheight=1",
+                "-fortcanningcrunchheight=1",
+                "-fortcanningspringheight=1",
+                "-fortcanninggreatworldheight=1",
+                "-fortcanningepilogueheight=1",
+                "-grandcentralheight=1",
+                "-grandcentralepilogueheight=1",
+                "-metachainheight=1",
+                "-df23height=1",
+                "-df24height=1",
+            ]
+        ]
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
@@ -201,9 +203,7 @@ class AccountOverflowTest(DefiTestFramework):
 
         # The transaction must be rejected because the sum of the transfers
         # overflows.
-        assert_raises_rpc_error(
-            -26, "overflow", node.sendrawtransaction, signed["hex"]
-        )
+        assert_raises_rpc_error(-26, "overflow", node.sendrawtransaction, signed["hex"])
 
         # No DFI may have been created.
         assert_equal(self.account_balance(node, big_addr), 0)
