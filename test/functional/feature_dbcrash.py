@@ -333,9 +333,7 @@ class ChainstateWriteCrashTest(DefiTestFramework):
 
         Returns the utxo hash of the recovered node.
         """
-        self.log.info(
-            "Recovering node %d (expected tip %s)", node_index, expected_tip
-        )
+        self.log.info("Recovering node %d (expected tip %s)", node_index, expected_tip)
 
         for attempt in range(RECOVERY_ATTEMPTS):
             if self.try_plain_restart(node_index):

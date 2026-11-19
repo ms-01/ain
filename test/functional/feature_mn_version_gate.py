@@ -38,7 +38,10 @@ class MasternodeVersionGateTest(DefiTestFramework):
         # Node 1: outdated node simulation with fixed legacy blockversion
         self.extra_args = [
             [f"-mnversiongateheight={GATE_HEIGHT}"],
-            [f"-mnversiongateheight={GATE_HEIGHT}", f"-blockversion={LEGACY_BLOCK_VERSION}"],
+            [
+                f"-mnversiongateheight={GATE_HEIGHT}",
+                f"-blockversion={LEGACY_BLOCK_VERSION}",
+            ],
         ]
 
     def setup_network(self):
@@ -90,8 +93,9 @@ class MasternodeVersionGateTest(DefiTestFramework):
         assert_equal(node0.getblockcount(), GATE_HEIGHT)
 
         # Node 0's block MUST have bit 24 set
-        assert (block205_upgraded["version"] & VERSION_BIT_BALANCE_OVERFLOW) != 0, \
-            f"Expected bit 24 set in version {hex(block205_upgraded['version'])}"
+        assert (
+            block205_upgraded["version"] & VERSION_BIT_BALANCE_OVERFLOW
+        ) != 0, f"Expected bit 24 set in version {hex(block205_upgraded['version'])}"
 
         # --- Phase 4: No false positive version warnings ---
         # The expected block version has to contain bit 24 from GATE_HEIGHT on,

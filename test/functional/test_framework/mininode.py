@@ -340,7 +340,9 @@ class P2PInterface(P2PConnection):
 
         return create_conn
 
-    def peer_accept(self, *args, services=NODE_NETWORK | NODE_WITNESS, send_version=True, **kwargs):
+    def peer_accept(
+        self, *args, services=NODE_NETWORK | NODE_WITNESS, send_version=True, **kwargs
+    ):
         """Prepare this connection for an inbound connection from a node.
 
         The version message is sent as soon as the connection has been made."""
@@ -612,10 +614,13 @@ class P2PListener:
 
     A node can be pointed at the listener with -connect=<host>:<port>, which makes the node
     open an outbound (and therefore manual) connection towards the listener. This is used to
-    test the behaviour towards manual peers, without having to add a new RPC to the node."""
+    test the behaviour towards manual peers, without having to add a new RPC to the node.
+    """
 
     def __init__(self, connection_factory=None):
-        self._connection_factory = connection_factory if connection_factory else P2PInterface
+        self._connection_factory = (
+            connection_factory if connection_factory else P2PInterface
+        )
         self.connections = []
         self._server = None
         self.port = None

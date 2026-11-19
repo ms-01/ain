@@ -39,7 +39,8 @@ class HTTPBasicsTest(DefiTestFramework):
         threads = []
         for _ in range(3):
             t = Thread(
-                target=test_work_queue_getblock, args=(self.nodes[0], got_exceeded_error)
+                target=test_work_queue_getblock,
+                args=(self.nodes[0], got_exceeded_error),
             )
             t.start()
             threads.append(t)

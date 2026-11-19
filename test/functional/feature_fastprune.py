@@ -52,10 +52,14 @@ class FastPruneTest(DefiTestFramework):
         self.log.info("Derive the addresses of the large transaction")
         descriptor = "wpkh({}/0/*)".format(TPUB)
         checksum = node.getdescriptorinfo(descriptor)["checksum"]
-        addresses = node.deriveaddresses("{}#{}".format(descriptor, checksum), [0, NUM_OUTPUTS - 1])
+        addresses = node.deriveaddresses(
+            "{}#{}".format(descriptor, checksum), [0, NUM_OUTPUTS - 1]
+        )
         assert_equal(len(addresses), NUM_OUTPUTS)
 
-        self.log.info("Create a transaction which is larger than the maximum block file size")
+        self.log.info(
+            "Create a transaction which is larger than the maximum block file size"
+        )
         outputs = {address: 0.0001 for address in addresses}
         raw_tx = node.createrawtransaction([], outputs)
         funded = node.fundrawtransaction(raw_tx)
@@ -70,7 +74,9 @@ class FastPruneTest(DefiTestFramework):
         node.generate(1)
         assert_equal(node.getblockcount(), 102)
 
-        self.log.info("Check that the node is still alive and serves the oversized block")
+        self.log.info(
+            "Check that the node is still alive and serves the oversized block"
+        )
         tip = node.getbestblockhash()
         assert_equal(node.getblockcount(), 102)
         block = node.getblock(tip)

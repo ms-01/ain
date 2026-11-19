@@ -718,17 +718,29 @@ class RawTransactionsTest(DefiTestFramework):
 
         # 6. invalid parameters - supply txid and string "Flase"
         assert_raises_rpc_error(
-            -1, "is not of expected type bool", self.nodes[0].getrawtransaction, txId, "Flase"
+            -1,
+            "is not of expected type bool",
+            self.nodes[0].getrawtransaction,
+            txId,
+            "Flase",
         )
 
         # 7. invalid parameters - supply txid and empty array
         assert_raises_rpc_error(
-            -1, "is not of expected type bool", self.nodes[0].getrawtransaction, txId, []
+            -1,
+            "is not of expected type bool",
+            self.nodes[0].getrawtransaction,
+            txId,
+            [],
         )
 
         # 8. invalid parameters - supply txid and empty dict
         assert_raises_rpc_error(
-            -1, "is not of expected type bool", self.nodes[0].getrawtransaction, txId, {}
+            -1,
+            "is not of expected type bool",
+            self.nodes[0].getrawtransaction,
+            txId,
+            {},
         )
 
         inputs = [

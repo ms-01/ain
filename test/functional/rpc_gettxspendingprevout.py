@@ -77,8 +77,10 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
         assert_equal(
             result,
             [
-                spent_out(utxo["txid"], utxo["vout"], txid)
-                | {"spendingtx": raw_tx["hex"]}
+                {
+                    **spent_out(utxo["txid"], utxo["vout"], txid),
+                    "spendingtx": raw_tx["hex"],
+                }
             ],
         )
 
@@ -175,7 +177,9 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
         reorg_blockhash = node.getbestblockhash()
 
         # txid_reorg is confirmed and indexed as spending our output
-        result = node.gettxspendingprevout([reorg_prevout], {"return_spending_tx": True})
+        result = node.gettxspendingprevout(
+            [reorg_prevout], {"return_spending_tx": True}
+        )
         assert_equal(
             result,
             [
@@ -193,7 +197,9 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
         # to the mempool and the index has to be rewound
         node.invalidateblock(reorg_blockhash)
         assert txid_reorg in node.getrawmempool()
-        result = node.gettxspendingprevout([reorg_prevout], {"return_spending_tx": True})
+        result = node.gettxspendingprevout(
+            [reorg_prevout], {"return_spending_tx": True}
+        )
         assert_equal(
             result,
             [
@@ -205,7 +211,9 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
         # mine the transaction again, the index has to report the new block
         node.generatetoaddress(1, address)
         reorg_blockhash = node.getbestblockhash()
-        result = node.gettxspendingprevout([reorg_prevout], {"return_spending_tx": True})
+        result = node.gettxspendingprevout(
+            [reorg_prevout], {"return_spending_tx": True}
+        )
         assert_equal(
             result,
             [
@@ -231,7 +239,9 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
         cancel_blockhash = node.getbestblockhash()
 
         # the spending transaction is confirmed and indexed
-        result = node.gettxspendingprevout([cancel_prevout], {"return_spending_tx": True})
+        result = node.gettxspendingprevout(
+            [cancel_prevout], {"return_spending_tx": True}
+        )
         assert_equal(
             result,
             [
@@ -249,7 +259,9 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
         # the index must not report it as confirmed anymore
         node.invalidateblock(cancel_blockhash)
         assert txid_cancel in node.getrawmempool()
-        result = node.gettxspendingprevout([cancel_prevout], {"return_spending_tx": True})
+        result = node.gettxspendingprevout(
+            [cancel_prevout], {"return_spending_tx": True}
+        )
         assert_equal(
             result,
             [

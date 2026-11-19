@@ -27,7 +27,9 @@ class InvalidateTest(DefiTestFramework):
         genesis_hash = self.nodes[0].getblockhash(0)
         tip_before = self.nodes[0].getbestblockhash()
         height_before = self.nodes[0].getblockcount()
-        assert_raises_rpc_error(-20, "genesis-block", self.nodes[0].invalidateblock, genesis_hash)
+        assert_raises_rpc_error(
+            -20, "genesis-block", self.nodes[0].invalidateblock, genesis_hash
+        )
         # The chain must be left untouched by the rejected invalidation.
         assert_equal(self.nodes[0].getbestblockhash(), tip_before)
         assert_equal(self.nodes[0].getblockcount(), height_before)

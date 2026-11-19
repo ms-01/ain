@@ -41,7 +41,9 @@ class BlockFilterIndexPruneTest(DefiTestFramework):
         return os.path.join(self.nodes[0].datadir, self.chain, "blocks")
 
     def has_block_file(self, index):
-        return os.path.isfile(os.path.join(self.blocks_dir(), "blk{:05}.dat".format(index)))
+        return os.path.isfile(
+            os.path.join(self.blocks_dir(), "blk{:05}.dat".format(index))
+        )
 
     def debug_log(self):
         with open(
@@ -55,10 +57,14 @@ class BlockFilterIndexPruneTest(DefiTestFramework):
 
         self.log.info("Check that the node starts with -prune and -blockfilterindex")
         # The startup rejection of the combination must be gone.
-        assert "Prune mode is incompatible with -blockfilterindex" not in self.debug_log()
+        assert (
+            "Prune mode is incompatible with -blockfilterindex" not in self.debug_log()
+        )
         assert_equal(node.getblockchaininfo()["pruneheight"], 0)
 
-        self.log.info("Mine blocks so that the pruning window contains complete block files")
+        self.log.info(
+            "Mine blocks so that the pruning window contains complete block files"
+        )
         # The pruning window (MIN_BLOCKS_TO_KEEP) must be large enough to contain
         # at least one complete block file, otherwise nothing can be pruned.
         node.generate(MIN_BLOCKS_TO_KEEP + 200)
@@ -75,20 +81,28 @@ class BlockFilterIndexPruneTest(DefiTestFramework):
         # Anti-vacuity guard: the pruning must really have removed data.
         assert_greater_than(prune_height, 0)
         assert_greater_than(node.getblockchaininfo()["pruneheight"], 0)
-        assert not self.has_block_file(0), "blk00000.dat is missing when should still be there"
+        assert not self.has_block_file(
+            0
+        ), "blk00000.dat is missing when should still be there"
         self.log.info("Pruned up to height %d" % prune_height)
 
         self.log.info("Check that the filter index still works after the pruning")
         # The filter data is stored in the index database, so it is still
         # available for blocks which have been pruned.
         for block_hash in [tip, node.getblockhash(1), node.getblockhash(prune_height)]:
-            assert_greater_than(len(node.getblockfilter(block_hash, "basic")["filter"]), 0)
+            assert_greater_than(
+                len(node.getblockfilter(block_hash, "basic")["filter"]), 0
+            )
         assert "Failed to read block" not in self.debug_log()
 
         self.log.info("Restart the node and check that the index is still in sync")
-        self.restart_node(0, extra_args=["-fastprune", "-prune=1", "-blockfilterindex=basic"])
+        self.restart_node(
+            0, extra_args=["-fastprune", "-prune=1", "-blockfilterindex=basic"]
+        )
         node = self.nodes[0]
-        assert_greater_than(len(node.getblockfilter(node.getbestblockhash(), "basic")["filter"]), 0)
+        assert_greater_than(
+            len(node.getblockfilter(node.getbestblockhash(), "basic")["filter"]), 0
+        )
         assert "Failed to read block" not in self.debug_log()
 
         self.log.info("Check that the prune lock is moved back on a reorg")
@@ -96,7 +110,9 @@ class BlockFilterIndexPruneTest(DefiTestFramework):
         with node.assert_debug_log(["{} prune lock moved back to".format(INDEX_NAME)]):
             node.invalidateblock(node.getblockhash(fork_height))
         # The index must still work after the reorg.
-        assert_greater_than(len(node.getblockfilter(node.getbestblockhash(), "basic")["filter"]), 0)
+        assert_greater_than(
+            len(node.getblockfilter(node.getbestblockhash(), "basic")["filter"]), 0
+        )
 
         self.log.info("Prune beyond the best block of the index (index disabled)")
         # Restart the node without the index, so that the index does not catch
@@ -116,7 +132,10 @@ class BlockFilterIndexPruneTest(DefiTestFramework):
             if prune_height > index_best:
                 break
         assert_greater_than(prune_height, index_best)
-        self.log.info("Pruned up to height %d (index best block is at %d)" % (prune_height, index_best))
+        self.log.info(
+            "Pruned up to height %d (index best block is at %d)"
+            % (prune_height, index_best)
+        )
         self.stop_node(0)
 
         self.log.info("Check that the node fails fast when the index is enabled again")

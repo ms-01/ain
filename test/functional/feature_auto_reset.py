@@ -31,12 +31,14 @@ class AutoResetTest(DefiTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
         # Start node simulating legacy pre-fix v4.2.5 node (gates disabled, blockversion legacy)
-        self.extra_args = [[
-            "-mnversiongateheight=1000000",
-            "-balanceoverflowheight=1000000",
-            f"-blockversion={LEGACY_BLOCK_VERSION}",
-            "-autoreset=0",
-        ]]
+        self.extra_args = [
+            [
+                "-mnversiongateheight=1000000",
+                "-balanceoverflowheight=1000000",
+                f"-blockversion={LEGACY_BLOCK_VERSION}",
+                "-autoreset=0",
+            ]
+        ]
 
     def run_test(self):
         node = self.nodes[0]
@@ -64,11 +66,14 @@ class AutoResetTest(DefiTestFramework):
         self.stop_node(0)
 
         # 4. Restart node 0 with v4.2.6.1 rules active (-autoreset=1, gate and overflow active at 205)
-        self.start_node(0, extra_args=[
-            f"-mnversiongateheight={ACTIVATION_HEIGHT}",
-            f"-balanceoverflowheight={ACTIVATION_HEIGHT}",
-            "-autoreset=1",
-        ])
+        self.start_node(
+            0,
+            extra_args=[
+                f"-mnversiongateheight={ACTIVATION_HEIGHT}",
+                f"-balanceoverflowheight={ACTIVATION_HEIGHT}",
+                "-autoreset=1",
+            ],
+        )
 
         # 5. Verify that Auto-Reset rewound the active chain to ACTIVATION_HEIGHT - 1 (204)
         current_height = node.getblockcount()
@@ -84,16 +89,20 @@ class AutoResetTest(DefiTestFramework):
 
         # Verify the new block carries bit 24 (VERSION_BIT_BALANCE_OVERFLOW)
         block_new = node.getblock(hash_new)
-        assert (block_new["version"] & VERSION_BIT_BALANCE_OVERFLOW) != 0, \
-            f"Expected bit 24 in new block version {hex(block_new['version'])}"
+        assert (
+            block_new["version"] & VERSION_BIT_BALANCE_OVERFLOW
+        ) != 0, f"Expected bit 24 in new block version {hex(block_new['version'])}"
 
         # 8. Verify restart with clean chain does NOT rewind again
         self.stop_node(0)
-        self.start_node(0, extra_args=[
-            f"-mnversiongateheight={ACTIVATION_HEIGHT}",
-            f"-balanceoverflowheight={ACTIVATION_HEIGHT}",
-            "-autoreset=1",
-        ])
+        self.start_node(
+            0,
+            extra_args=[
+                f"-mnversiongateheight={ACTIVATION_HEIGHT}",
+                f"-balanceoverflowheight={ACTIVATION_HEIGHT}",
+                "-autoreset=1",
+            ],
+        )
         assert_equal(node.getblockcount(), ACTIVATION_HEIGHT)
 
 

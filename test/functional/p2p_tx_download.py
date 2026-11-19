@@ -347,9 +347,7 @@ class TxDownloadTest(DefiTestFramework):
             lock=mininode_lock,
         )
         wait_until(
-            lambda: any(
-                int(t.rehash(), 16) == txid for t in legacy_peer.txs
-            ),
+            lambda: any(int(t.rehash(), 16) == txid for t in legacy_peer.txs),
             lock=mininode_lock,
         )
 
@@ -384,7 +382,9 @@ class TxDownloadTest(DefiTestFramework):
 
         with mininode_lock:
             wtxid_peer.getdatas.clear()
-        node_mocktime = int(time.time()) + GETDATA_TX_INTERVAL + MAX_GETDATA_RANDOM_DELAY + 5
+        node_mocktime = (
+            int(time.time()) + GETDATA_TX_INTERVAL + MAX_GETDATA_RANDOM_DELAY + 5
+        )
         node.setmocktime(node_mocktime)
         wtxid_peer.send_message(msg_inv([CInv(MSG_WTX, fake_wtxid)]))
         wait_until(
@@ -700,7 +700,9 @@ class TxDownloadTest(DefiTestFramework):
         mocktime = int(time.time())
         node.setmocktime(mocktime)
 
-        parent_txid_1 = 0x1111111111111111111111111111111111111111111111111111111111111111
+        parent_txid_1 = (
+            0x1111111111111111111111111111111111111111111111111111111111111111
+        )
         ctx_wtxid = CTransaction()
         ctx_wtxid.vin.append(CTxIn(COutPoint(parent_txid_1, 0), b""))
         ctx_wtxid.vout.append(CTxOut(1000, CScript([0, b"\x00" * 20])))
@@ -708,7 +710,9 @@ class TxDownloadTest(DefiTestFramework):
         ctx_wtxid.wit.vtxinwit[0].scriptWitness.stack = [b"wtxid-orphan"]
         ctx_wtxid.rehash()
 
-        parent_txid_2 = 0x2222222222222222222222222222222222222222222222222222222222222222
+        parent_txid_2 = (
+            0x2222222222222222222222222222222222222222222222222222222222222222
+        )
         ctx_legacy = CTransaction()
         ctx_legacy.vin.append(CTxIn(COutPoint(parent_txid_2, 0), b""))
         ctx_legacy.vout.append(CTxOut(1000, CScript([0, b"\x01" * 20])))
@@ -915,7 +919,9 @@ class TxDownloadTest(DefiTestFramework):
         self.sync_blocks()
 
         utxo = next(
-            u for u in node0.listunspent() if u["address"] == addr_parent and u["amount"] == 1
+            u
+            for u in node0.listunspent()
+            if u["address"] == addr_parent and u["amount"] == 1
         )
         addr_child = node0.getnewaddress("", "bech32")
         parent_raw = node0.createrawtransaction(

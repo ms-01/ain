@@ -112,7 +112,9 @@ class TestDefiCli(DefiTestFramework):
             assert_equal(known[network], rpc_addrinfo[network]["total"])
         # The breakdown must always sum up to the reported total.
         assert_equal(
-            sum(rpc_addrinfo[network]["total"] for network in ("ipv4", "ipv6", "onion")),
+            sum(
+                rpc_addrinfo[network]["total"] for network in ("ipv4", "ipv6", "onion")
+            ),
             rpc_addrinfo["all_networks"]["total"],
         )
 

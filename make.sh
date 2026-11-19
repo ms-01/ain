@@ -1336,7 +1336,7 @@ _exec_black() {
         black_args="${black_args} --check"
     fi
     # shellcheck disable=SC2086,SC2090
-    python3 -m black --extend-exclude 'src/crc32c' ${black_args} .
+    python3 -m black --extend-exclude '(src/crc32c|src/secp256k1|docs)/' ${black_args} .
 }
 
 _safe_rm_rf() {
