@@ -44,6 +44,11 @@ from test_framework.mininode import (
     P2PInterface,
 )
 
+# Height of the masternode version gate that is used to check that the active flag of
+# getblockchaininfo flips at the gate height. The chain of the test has 200 blocks, so
+# the next block (height 201) is subject to the gate.
+GATE_HEIGHT = 201
+
 
 class BlockchainTest(DefiTestFramework):
     def set_test_params(self):
@@ -106,6 +111,8 @@ class BlockchainTest(DefiTestFramework):
             "difficulty",
             "headers",
             "initialblockdownload",
+            "masternode_version_gate_active",
+            "masternode_version_gate_height",
             "mediantime",
             "pruned",
             "size_on_disk",
@@ -246,6 +253,21 @@ class BlockchainTest(DefiTestFramework):
                 },
             },
         )
+
+        # The masternode version gate is not scheduled on regtest by default, so the next
+        # block is not subject to the gate.
+        assert_equal(res["masternode_version_gate_height"], 10000000)
+        assert_equal(res["masternode_version_gate_active"], False)
+
+        # Restart the node with a gate height that applies to the next block. The active
+        # flag has to flip accordingly.
+        self.restart_node(
+            0,
+            ["-stopatheight=207", "-prune=550", f"-mnversiongateheight={GATE_HEIGHT}"],
+        )
+        res = self.nodes[0].getblockchaininfo()
+        assert_equal(res["masternode_version_gate_height"], GATE_HEIGHT)
+        assert_equal(res["masternode_version_gate_active"], True)
 
     def _test_getchaintxstats(self):
         self.log.info("Test getchaintxstats")

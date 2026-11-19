@@ -234,6 +234,7 @@ BASE_SCRIPTS = [
     "p2p_block_serving.py",
     "p2p_ibd_stalling.py",
     "p2p_ibd_getheaders_guardrails.py",
+    "p2p_mn_version_gate_stall.py",
     "mining_prioritisetransaction.py",
     "p2p_invalid_locator.py",
     "p2p_invalid_block.py",

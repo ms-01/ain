@@ -47,6 +47,7 @@
 #include <univalue.h>
 
 #include <condition_variable>
+#include <limits>
 #include <memory>
 #include <mutex>
 
@@ -1474,6 +1475,8 @@ UniValue getblockchaininfo(const JSONRPCRequest& request)
             "  \"pruneheight\": xxxxxx,        (numeric) lowest-height complete block stored (only present if pruning is enabled)\n"
             "  \"automatic_pruning\": xx,      (boolean) whether automatic pruning is enabled (only present if pruning is enabled)\n"
             "  \"prune_target_size\": xxxxxx,  (numeric) the target size used by pruning (only present if automatic pruning is enabled)\n"
+            "  \"masternode_version_gate_height\": xxxxxx, (numeric) the height from which on blocks have to signal the masternode version gate (0x01000000). Equals 2147483647 if the gate is not scheduled on this network\n"
+            "  \"masternode_version_gate_active\": xx, (boolean) true if the next block to be created is subject to the masternode version gate\n"
             "  \"softforks\": {                (object) status of softforks\n"
             "     \"xxxx\" : {                 (string) name of the softfork\n"
             "        \"type\": \"xxxx\",         (string) one of \"buried\", \"bip9\"\n"
@@ -1539,6 +1542,15 @@ UniValue getblockchaininfo(const JSONRPCRequest& request)
     }
 
     const Consensus::Params& consensusParams = Params().GetConsensus();
+
+    // Masternode version gate: from this height on, every block has to signal the
+    // VERSION_BIT_BALANCE_OVERFLOW version bit. This is informational only, it does not
+    // change which blocks are accepted.
+    const int mnVersionGateHeight = consensusParams.nMNVersionGateHeight;
+    const bool mnVersionGateScheduled = mnVersionGateHeight != std::numeric_limits<int>::max();
+    obj.pushKV("masternode_version_gate_height", mnVersionGateHeight);
+    obj.pushKV("masternode_version_gate_active", mnVersionGateScheduled && tip->nHeight + 1 >= mnVersionGateHeight);
+
     UniValue softforks(UniValue::VOBJ);
     BuriedForkDescPushBack(softforks, "amk", consensusParams.DF1AMKHeight);
     BuriedForkDescPushBack(softforks, "bayfront", consensusParams.DF2BayfrontHeight);

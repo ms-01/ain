@@ -103,9 +103,16 @@ public:
     void CheckForStaleTipAndEvictPeers(const Consensus::Params &consensusParams);
     /** If we have extra outbound peers, try to disconnect the one with the oldest block announcement */
     void EvictExtraOutboundPeers(int64_t time_in_seconds) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_state);
+    /**
+     * Operator diagnostic for a stalled chain whose next block is subject to the masternode
+     * version gate. This is a read-only check: it never influences which headers or blocks
+     * are accepted or rejected.
+     */
+    void CheckForMasternodeVersionGateStall(const Consensus::Params &consensusParams);
 
 private:
     int64_t m_stale_tip_check_time; //!< Next time to check for stale tip
+    int64_t m_mn_version_gate_stall_log_time{0}; //!< Next time a version gate stall warning may be logged
 
     /** Stalling timeout for blocks in IBD.
      *  It is doubled whenever a peer is disconnected (or paused) for stalling block download and
