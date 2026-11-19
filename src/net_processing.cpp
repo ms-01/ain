@@ -2165,6 +2165,49 @@ static uint32_t GetFetchFlags(CNode* pfrom) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_s
     return nFetchFlags;
 }
 
+std::optional<std::string> FetchBlock(NodeId peer_id, const uint256& hash)
+{
+    if (g_connman == nullptr) {
+        return "Node is not running";
+    }
+
+    LOCK_PEER();
+    // Ensure this peer exists and has not been disconnected in the meantime.
+    if (State(peer_id) == nullptr) {
+        return "Peer does not exist";
+    }
+    // Mark the block as in-flight for the requested peer. This also forgets
+    // about all prior requests for this block. The block index lookup is done
+    // in a short cs_main scope (g_cs_peer_state is always the outer lock).
+    {
+        LOCK(cs_main);
+        const CBlockIndex *pindex = LookupBlockIndex(hash);
+        if (pindex == nullptr) {
+            return "Block header missing";
+        }
+        if (!MarkBlockAsInFlight(peer_id, hash, pindex)) {
+            return "Already requested from this peer";
+        }
+    }
+
+    // Construct the block request message and send it to the peer.
+    bool success = g_connman->ForNode(peer_id, [&hash](CNode *node) {
+        std::vector<CInv> invs{CInv(MSG_BLOCK | GetFetchFlags(node), hash)};
+        const CNetMsgMaker msgMaker(node->GetSendVersion());
+        g_connman->PushMessage(node, msgMaker.Make(NetMsgType::GETDATA, invs));
+        return true;
+    });
+
+    if (!success) {
+        // The peer disconnected in the meantime, undo the in-flight bookkeeping.
+        MarkBlockAsReceived(hash);
+        return "Peer not fully connected";
+    }
+
+    LogPrint(BCLog::NET, "Requesting block %s from peer=%d\n", hash.GetHex(), peer_id);
+    return std::nullopt;
+}
+
 inline void static SendBlockTransactions(const CBlock& block, const BlockTransactionsRequest& req, CNode* pfrom, CConnman* connman) {
     BlockTransactions resp(req);
     for (size_t i = 0; i < req.indexes.size(); i++) {

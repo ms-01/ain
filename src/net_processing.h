@@ -14,6 +14,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <optional>
+#include <string>
 
 extern CCriticalSection cs_main;
 
@@ -133,5 +135,19 @@ void RelayAnchorAuths(std::vector<CInv> const & vInv, CConnman& connman, CNode* 
 void RelayAnchorConfirm(const uint256&, CConnman& connman, CNode* skipNode = nullptr);
 
 void ResyncHeaders(CConnman& connman);
+
+/**
+ * Request a block from a given peer.
+ *
+ * This is the backend of the `getblockfrompeer` debugging RPC. The block is
+ * requested with a regular `getdata` message, no additional P2P message type
+ * is needed and the protocol is not changed.
+ *
+ * @param peer_id The peer the block should be requested from.
+ * @param hash    The hash of the block to fetch.
+ * @return An error message if the request could not be scheduled, std::nullopt
+ *         if the request was successfully scheduled.
+ */
+std::optional<std::string> FetchBlock(NodeId peer_id, const uint256& hash);
 
 #endif // DEFI_NET_PROCESSING_H

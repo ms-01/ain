@@ -21,6 +21,7 @@
 #include <dfi/masternodes.h>
 #include <dfi/mn_checks.h>
 #include <dfi/vaulthistory.h>
+#include <net_processing.h>
 #include <policy/feerate.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
@@ -2531,6 +2532,63 @@ static UniValue getblockfilter(const JSONRPCRequest& request)
     return ret;
 }
 
+static UniValue getblockfrompeer(const JSONRPCRequest& request)
+{
+    RPCHelpMan{"getblockfrompeer",
+        "Attempt to fetch block from a given peer.\n\n"
+        "This is a debugging only RPC and it is not part of the public API.\n"
+        "We must have the header for this block, e.g. using submitheader.\n"
+        "The block will not have any undo data which can limit the usage of the block data in a context where the undo data is needed.\n"
+        "Subsequent calls for the same block may cause the response from the previous peer to be ignored.\n"
+        "Peers generally ignore requests for a stale block that they never fully verified, or one that is more than a month old.\n"
+        "When a peer does not respond with a block, we will disconnect.\n"
+        "Note: The block could be re-pruned as soon as it is received.\n\n"
+        "Returns an empty JSON object if the request was successfully scheduled.",
+        {
+            {"blockhash", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The block hash to try to fetch"},
+            {"peer_id", RPCArg::Type::NUM, RPCArg::Optional::NO,
+             "The peer to fetch it from (see getpeerinfo for peer IDs)"},
+        },
+        RPCResult{"{}"},
+        RPCExamples{
+            HelpExampleCli("getblockfrompeer", "\"00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09\" 0")
+        }
+    }.Check(request);
+
+    const uint256 block_hash = ParseHashV(request.params[0], "blockhash");
+    const int64_t peer_id = request.params[1].getInt<int64_t>();
+
+    {
+        LOCK(cs_main);
+        const CBlockIndex *index = LookupBlockIndex(block_hash);
+        if (!index) {
+            throw JSONRPCError(RPC_MISC_ERROR, "Block header missing");
+        }
+
+        // Fetching blocks before the node has synced past their height can prevent block files from
+        // being pruned, so we avoid it if the node is in prune mode.
+        if (fPruneMode && index->nHeight > ::ChainActive().Height()) {
+            throw JSONRPCError(RPC_MISC_ERROR,
+                "In prune mode, only blocks that the node has already synced previously can be fetched from a peer");
+        }
+
+        if (index->nStatus & BLOCK_HAVE_DATA) {
+            throw JSONRPCError(RPC_MISC_ERROR, "Block already downloaded");
+        }
+    }
+
+    if (fImporting || fReindex) {
+        throw JSONRPCError(RPC_MISC_ERROR, "Loading blocks ...");
+    }
+
+    const auto error = FetchBlock(peer_id, block_hash);
+    if (error) {
+        throw JSONRPCError(RPC_MISC_ERROR, *error);
+    }
+
+    return UniValue::VOBJ;
+}
+
 // clang-format off
 static const CRPCCommand commands[] =
 { //  category              name                      actor (function)         argNames
@@ -2567,6 +2625,7 @@ static const CRPCCommand commands[] =
     { "hidden",             "waitforblock",           &waitforblock,           {"blockhash","timeout"} },
     { "hidden",             "waitforblockheight",     &waitforblockheight,     {"height","timeout"} },
     { "hidden",             "syncwithvalidationinterfacequeue", &syncwithvalidationinterfacequeue, {} },
+    { "hidden",             "getblockfrompeer",       &getblockfrompeer,       {"blockhash", "peer_id"} },
 };
 // clang-format on
 

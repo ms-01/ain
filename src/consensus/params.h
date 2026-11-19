@@ -193,6 +193,8 @@ struct Params {
     BIP9Deployment vDeployments[MAX_VERSION_BITS_DEPLOYMENTS];
 
     uint256 nMinimumChainWork;
+    //! Block hash whose ancestors are assumed to have valid scripts without
+    //! checking them. Disabled (null) on every network by default.
     uint256 defaultAssumeValid;
 
     struct MnParams {

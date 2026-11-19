@@ -182,7 +182,9 @@ public:
         consensus.nMinimumChainWork = uint256S("0x000000000000000000000000000000000000000000003f2949bfe4efc275390c");
 
         // By default assume that the signatures in ancestors of this block are valid.
-        consensus.defaultAssumeValid = uint256S("0x9b257cb88630e422902ef2b17a3627ae2f786a5923df9c3bda4226f9551b1ea8");
+        // Disabled by default: the previously configured value was a Bitcoin mainnet block
+        // hash which does not exist in the DeFiChain, hence it was dead configuration.
+        consensus.defaultAssumeValid = uint256();
 
         // Masternodes' params
         consensus.mn.activationDelay = 10;

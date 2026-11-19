@@ -193,9 +193,6 @@ extern CFeeRate minRelayTxFee;
 /** If the tip is older than this (in seconds), the node is considered to be in initial block download. */
 extern int64_t nMaxTipAge;
 
-/** Block hash whose ancestors we will assume to have valid scripts without checking them. */
-extern uint256 hashAssumeValid;
-
 /** Minimum work we will assume exists on some valid chain. */
 extern arith_uint256 nMinimumChainWork;
 
@@ -291,6 +288,31 @@ bool ProcessNewBlockHeaders(const std::vector<CBlockHeader> &block,
                             const CChainParams &chainparams,
                             const CBlockIndex **ppindex = nullptr,
                             CBlockHeader *first_invalid = nullptr) LOCKS_EXCLUDED(cs_main);
+
+/**
+ * Determine whether the script verification (the transaction signature checks)
+ * of a block may be skipped because the block is part of the assumed-valid
+ * range.
+ *
+ * Only the script verification is relaxed, all DeFiChain consensus rules stay
+ * active inside the assumed-valid range.
+ *
+ * @param[in]  assumed_valid_index Index of the assumed-valid block, nullptr if
+ *                                  the assumed-valid block is not known.
+ * @param[in]  pindex              Index of the block that is being connected.
+ * @param[in]  pindex_best_header  Index of the best header of the chain.
+ * @param[in]  minimum_chain_work  The minimum chain work.
+ * @param[in]  params              The consensus parameters.
+ * @param[out] out_reason          Set to the reason why the verification is
+ *                                  performed if it cannot be skipped.
+ * @return true if the script verification may be skipped.
+ */
+bool CanSkipScriptChecks(const CBlockIndex* assumed_valid_index,
+                         const CBlockIndex* pindex,
+                         const CBlockIndex* pindex_best_header,
+                         const arith_uint256& minimum_chain_work,
+                         const Consensus::Params& params,
+                         std::string& out_reason);
 
 /** Check if transaction is trying to spend a burnt output */
 bool CheckBurnSpend(const CTransaction &tx, const CCoinsViewCache &inputs);
@@ -820,6 +842,23 @@ private:
     //! Indicates disconneting is in process
     std::atomic_bool m_disconnectTip{false};
 
+    /**
+     * Block hash whose ancestors we will assume to have valid scripts without
+     * checking them.
+     *
+     * This is chainstate scoped (upstream Bitcoin Core v23+ keeps it in the
+     * chainstate manager options) so that different chainstates of the same
+     * process cannot influence each other and so that it can be injected in
+     * unit tests. A null hash disables the relaxation entirely.
+     */
+    uint256 m_assumed_valid;
+
+    /**
+     * Last reason for (not) skipping script verification that was logged.
+     * Used to avoid spamming the log with the same message for every block.
+     */
+    std::string m_last_script_check_reason_logged;
+
 public:
     CChainState(BlockManager &blockman)
         : m_blockman(blockman) {}
@@ -970,6 +1009,19 @@ public:
 
     /** Check whether we are in disconnect process */
     bool IsDisconnectingTip() const;
+
+    /**
+     * Block hash whose ancestors we will assume to have valid scripts without
+     * checking them. A null hash means that every block is fully verified.
+     */
+    const uint256 &AssumedValidBlock() const { return m_assumed_valid; }
+
+    /**
+     * Set the block hash whose ancestors are assumed to have valid scripts.
+     * The chainparams default (Consensus::Params::defaultAssumeValid) is used
+     * as fallback, the `-assumevalid` command line option overrides it.
+     */
+    void SetAssumedValidBlock(const uint256 &hash) { m_assumed_valid = hash; }
 
     /**
      * Make various assertions about the state of the block index.
