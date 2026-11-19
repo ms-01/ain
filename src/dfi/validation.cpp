@@ -31,11 +31,11 @@
 #define MILLI 0.001
 
 namespace {
-inline void CheckOrLog(const char *func, const Res &res) {
-    if (!res) {
-        LogPrintf("%s: %s\n", func, res.msg);
+    inline void CheckOrLog(const char *func, const Res &res) {
+        if (!res) {
+            LogPrintf("%s: %s\n", func, res.msg);
+        }
     }
-}
 }  // namespace
 
 using LoanTokenCollection = std::vector<std::pair<DCT_ID, CLoanSetLoanTokenImplementation>>;
@@ -852,8 +852,8 @@ static void ProcessLoanEvents(const CBlockIndex *pindex, CCustomCSView &cache, c
                         const auto interest =
                             totalInterest.balances.count(tokenId) ? totalInterest.balances[tokenId] : 0;
                         if (totalLoanInBatches.balances[tokenId] > amount - interest) {
-                            CheckOrLog(__func__,
-                                       balances.Add({tokenId, totalLoanInBatches.balances[tokenId] - (amount - interest)}));
+                            const auto diff = totalLoanInBatches.balances[tokenId] - (amount - interest);
+                            CheckOrLog(__func__, balances.Add({tokenId, diff}));
                         }
                     }
                 }

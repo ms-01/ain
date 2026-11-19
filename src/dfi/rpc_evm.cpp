@@ -93,12 +93,15 @@ UniValue evmtx(const JSONRPCRequest &request) {
     // TODO Get chain ID from Params when defined
     const uint64_t chainID{1};
 
-    if (request.params[1].getInt<int64_t>() < 0 || request.params[2].getInt<int64_t>() < 0 || request.params[3].getInt<int64_t>() < 0) {
+    const auto nonceVal = request.params[1].getInt<int64_t>();
+    const auto gasPriceVal = request.params[2].getInt<int64_t>();
+    const auto gasLimitVal = request.params[3].getInt<int64_t>();
+    if (nonceVal < 0 || gasPriceVal < 0 || gasLimitVal < 0) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Input params cannot be negative");
     }
-    const auto nonce = static_cast<uint64_t>(request.params[1].getInt<int64_t>());
-    const auto gasPrice = static_cast<uint64_t>(request.params[2].getInt<int64_t>());  // Price as GWei
-    const auto gasLimit = static_cast<uint64_t>(request.params[3].getInt<int64_t>());
+    const auto nonce = static_cast<uint64_t>(nonceVal);
+    const auto gasPrice = static_cast<uint64_t>(gasPriceVal);  // Price as GWei
+    const auto gasLimit = static_cast<uint64_t>(gasLimitVal);
     const uint64_t value = AmountFromValue(request.params[5]);  // Amount in CAmount
 
     const auto toStr = request.params[4].get_str();

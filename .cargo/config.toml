@@ -4,6 +4,7 @@
 # result in the consistent compilation
 target-dir = "./build/lib/target"
 
+[target.'cfg(target_os = "linux")']
 rustflags = [
   "-C", "link-arg=-z",
   "-C", "link-arg=undefs",
@@ -26,7 +27,3 @@ rustflags = [
   "-C", "link-arg=-undefined",
   "-C", "link-arg=dynamic_lookup",
 ]
-
-# mingw-w64 ld does not support ELF `-z undefs` from [build].rustflags.
-[target.x86_64-pc-windows-gnu]
-rustflags = []
