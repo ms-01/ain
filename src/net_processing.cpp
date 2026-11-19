@@ -34,6 +34,7 @@
 #include <util/validation.h>
 
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <random>
 
@@ -61,6 +62,10 @@ static constexpr int64_t STALE_CHECK_INTERVAL = 10 * 60; // 10 minutes
 static constexpr int64_t BASE_TIMEOUT_INTERVAL = 5 * 60; // 5 minutes
 /** How frequently to check for extra outbound peers and disconnect, in seconds */
 static constexpr int64_t EXTRA_PEER_CHECK_INTERVAL = 45;
+/** How frequently to evaluate the masternode version gate stall diagnostic, in seconds */
+static constexpr int64_t MN_VERSION_GATE_STALL_CHECK_INTERVAL = 60; // 1 minute
+/** Minimum time between two masternode version gate stall warnings, in seconds */
+static constexpr int64_t MN_VERSION_GATE_STALL_LOG_INTERVAL = 10 * 60; // 10 minutes
 /** Minimum time an outbound-peer-eviction candidate must be connected for, in order to evict, in seconds */
 static constexpr int64_t MINIMUM_CONNECT_TIME = 30;
 /** SHA256("main address relay")[0:8] */
@@ -250,6 +255,13 @@ namespace {
 
     /** When our tip was last updated. */
     std::atomic<int64_t> g_last_tip_update(0);
+
+    /**
+     * Number of headers that were rejected because the peer did not signal the masternode
+     * version gate (VERSION_BIT_BALANCE_OVERFLOW). This is a pure counter used for the
+     * operator diagnostic of a version-gated chain stall.
+     */
+    std::atomic<int64_t> g_version_gate_rejected_headers(0);
 
     /** Relay map */
     typedef std::map<uint256, CTransactionRef> MapRelay;
@@ -1217,6 +1229,9 @@ static bool MaybePunishNode(NodeId nodeid, ValidationInvalidReason reason, bool 
             // the peer, so it is not punished here. Punishing it would ban every peer that has
             // not upgraded yet and would isolate the node from the whole network.
             LogPrint(BCLog::NET, "peer=%d: header rejected by the masternode version gate, peer software is too old: %s\n", nodeid, message);
+            // Count the rejected headers for the operator diagnostic of a version-gated
+            // chain stall. This does not change the misbehaviour handling of the peer.
+            g_version_gate_rejected_headers.fetch_add(1, std::memory_order_relaxed);
         }
         return false;
     // Conflicting (but not necessarily invalid) data or different policy:
@@ -1362,6 +1377,8 @@ PeerLogicValidation::PeerLogicValidation(CConnman* connmanIn, BanMan* banman, CS
     // timer.
     static_assert(EXTRA_PEER_CHECK_INTERVAL < STALE_CHECK_INTERVAL, "peer eviction timer should be less than stale tip check timer");
     scheduler.scheduleEvery(std::bind(&PeerLogicValidation::CheckForStaleTipAndEvictPeers, this, consensusParams), EXTRA_PEER_CHECK_INTERVAL * 1000);
+    // Operator diagnostic for a chain that is stalled above the masternode version gate.
+    scheduler.scheduleEvery(std::bind(&PeerLogicValidation::CheckForMasternodeVersionGateStall, this, consensusParams), MN_VERSION_GATE_STALL_CHECK_INTERVAL * 1000);
 }
 
 void static ProcessOrphanTx(CConnman* connman, std::set<uint256>& orphan_work_set, std::list<CTransactionRef>& removed_txn, const CChainParams& chainparams) EXCLUSIVE_LOCKS_REQUIRED(cs_main, g_cs_orphans);
@@ -4435,6 +4452,63 @@ void PeerLogicValidation::CheckForStaleTipAndEvictPeers(const Consensus::Params 
         }
         m_stale_tip_check_time = time_in_seconds + STALE_CHECK_INTERVAL;
     }
+}
+
+void PeerLogicValidation::CheckForMasternodeVersionGateStall(const Consensus::Params& consensusParams)
+{
+    // The gate is not scheduled on networks where it is disabled (INT_MAX). Never report a
+    // stall in that case, even though the integer comparison below would also be false.
+    if (consensusParams.nMNVersionGateHeight == std::numeric_limits<int>::max()) return;
+
+    // While importing or reindexing the chain is expected to make progress, a stall is not
+    // a reason to warn the operator.
+    if (fImporting || fReindex) return;
+
+    const int64_t now = GetTime();
+
+    // g_last_tip_update is refreshed whenever a block is connected (see BlockConnected()),
+    // so it is a reliable "the chain did not progress" signal. It is deliberately not
+    // refreshed by the periodic peer checks, otherwise a stalled chain would look alive.
+    int64_t last_tip_update = g_last_tip_update.load(std::memory_order_relaxed);
+    if (last_tip_update == 0) {
+        // No block has been connected yet, so there is no progress signal to evaluate.
+        g_last_tip_update.store(now, std::memory_order_relaxed);
+        return;
+    }
+
+    // Only report a stall: the chain must not have progressed for longer than the maximum
+    // tip age. A node that is syncing makes progress continuously and never triggers this.
+    if (last_tip_update >= now - nMaxTipAge) return;
+
+    int tip_height{0};
+    int next_height{0};
+    {
+        LOCK(cs_main);
+        const CBlockIndex* tip = ::ChainActive().Tip();
+        if (tip == nullptr) return;
+        tip_height = tip->nHeight;
+        next_height = tip->nHeight + 1;
+    }
+
+    // Only relevant if the next block is subject to the masternode version gate.
+    if (next_height < consensusParams.nMNVersionGateHeight) return;
+
+    // Rate limit the warning, an operator does not need it more than every few minutes.
+    if (now < m_mn_version_gate_stall_log_time) return;
+    m_mn_version_gate_stall_log_time = now + MN_VERSION_GATE_STALL_LOG_INTERVAL;
+
+    LogPrintf("Masternode version gate stall detected: no chain progress for %d seconds "
+              "(tip height %d, next block height %d, masternode version gate height %d, "
+              "required version bit 0x%08x). Producing block %d requires a quorum of "
+              "masternodes running gate-capable software, this node cannot advance the chain "
+              "on its own. Version-gate rejected headers so far: %d\n",
+              (int)(now - last_tip_update),
+              tip_height,
+              next_height,
+              consensusParams.nMNVersionGateHeight,
+              (unsigned int)Consensus::Params::VERSION_BIT_BALANCE_OVERFLOW,
+              next_height,
+              (int64_t)g_version_gate_rejected_headers.load(std::memory_order_relaxed));
 }
 
 namespace {
