@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::fs;
 
 use ethereum_types::{H160, H256};
 use evm::{
-    executor::stack::PrecompileHandle, Context, ExitError, ExitReason, ExitSucceed, Transfer,
+    backend::Basic, executor::stack::PrecompileHandle, Context, ExitError, ExitReason, ExitSucceed,
+    Transfer,
 };
 
 use crate::precompiles::Precompile;
@@ -22,6 +24,12 @@ pub struct MockHandle {
     pub context: Context,
     pub is_static: bool,
     pub gas_used: u64,
+    /// The address of the precompile that is being executed.
+    pub code_address: H160,
+    /// The storage of the mocked accounts, keyed by `(address, storage index)`.
+    pub storage: BTreeMap<(H160, H256), H256>,
+    /// The basic account information returned for every address.
+    pub basic: Basic,
 }
 
 impl MockHandle {
@@ -32,7 +40,28 @@ impl MockHandle {
             context,
             is_static: false,
             gas_used: 0,
+            code_address: H160::zero(),
+            storage: BTreeMap::new(),
+            basic: Basic::default(),
         }
+    }
+
+    /// Sets the address of the precompile that is being executed.
+    pub fn with_code_address(mut self, code_address: H160) -> Self {
+        self.code_address = code_address;
+        self
+    }
+
+    /// Sets the basic account information returned for every address.
+    pub fn with_basic(mut self, basic: Basic) -> Self {
+        self.basic = basic;
+        self
+    }
+
+    /// Sets a single storage entry of the given account.
+    pub fn with_storage_entry(mut self, address: H160, index: H256, value: H256) -> Self {
+        self.storage.insert((address, index), value);
+        self
     }
 }
 
@@ -65,7 +94,7 @@ impl PrecompileHandle for MockHandle {
     }
 
     fn code_address(&self) -> H160 {
-        unimplemented!()
+        self.code_address
     }
 
     fn input(&self) -> &[u8] {
@@ -84,12 +113,15 @@ impl PrecompileHandle for MockHandle {
         self.gas_limit
     }
 
-    fn storage(&self, _: H160, _: H256) -> H256 {
-        unimplemented!()
+    fn storage(&self, address: H160, index: H256) -> H256 {
+        self.storage
+            .get(&(address, index))
+            .copied()
+            .unwrap_or_else(H256::zero)
     }
 
-    fn basic(&self, _: H160) -> evm::backend::Basic {
-        unimplemented!()
+    fn basic(&self, _: H160) -> Basic {
+        self.basic.clone()
     }
 }
 
@@ -145,4 +177,54 @@ pub fn test_precompile_test_vectors<P: Precompile>(filepath: &str) -> Result<(),
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ethereum_types::U256;
+
+    fn context() -> Context {
+        Context {
+            address: Default::default(),
+            caller: Default::default(),
+            apparent_value: From::from(0),
+        }
+    }
+
+    #[test]
+    fn test_mock_handle_code_address() {
+        let address = H160::repeat_byte(0x42);
+        let handle = MockHandle::new(vec![], Some(1), context()).with_code_address(address);
+
+        assert_eq!(handle.code_address(), address);
+    }
+
+    #[test]
+    fn test_mock_handle_storage() {
+        let address = H160::repeat_byte(0x01);
+        let other = H160::repeat_byte(0x02);
+        let index = H256::from_low_u64_be(7);
+        let handle = MockHandle::new(vec![], Some(1), context()).with_storage_entry(
+            address,
+            index,
+            H256::from_low_u64_be(9),
+        );
+
+        assert_eq!(handle.storage(address, index), H256::from_low_u64_be(9));
+        // Unknown entries default to zero.
+        assert_eq!(handle.storage(address, H256::zero()), H256::zero());
+        assert_eq!(handle.storage(other, index), H256::zero());
+    }
+
+    #[test]
+    fn test_mock_handle_basic() {
+        let basic = Basic {
+            balance: U256::from(11u64),
+            nonce: U256::from(22u64),
+        };
+        let handle = MockHandle::new(vec![], Some(1), context()).with_basic(basic.clone());
+
+        assert_eq!(handle.basic(H160::zero()), basic);
+    }
 }

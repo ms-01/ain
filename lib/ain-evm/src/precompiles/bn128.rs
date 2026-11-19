@@ -277,7 +277,31 @@ impl Precompile for Bn128Pairing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::precompiles::test_vector_support::test_precompile_test_vectors;
+    use crate::precompiles::test_vector_support::{test_precompile_test_vectors, MockHandle};
+    use evm::Context;
+
+    fn context() -> Context {
+        Context {
+            address: Default::default(),
+            caller: Default::default(),
+            apparent_value: From::from(0),
+        }
+    }
+
+    fn handle(input: Vec<u8>) -> MockHandle {
+        MockHandle::new(input, Some(10_000_000), context())
+    }
+
+    fn error_message(failure: &PrecompileFailure) -> String {
+        match failure {
+            PrecompileFailure::Error { exit_status } => match exit_status {
+                ExitError::Other(msg) => msg.to_string(),
+                other => format!("{other:?}"),
+            },
+            PrecompileFailure::Revert { exit_status, .. } => format!("revert: {exit_status:?}"),
+            PrecompileFailure::Fatal { exit_status } => format!("fatal: {exit_status:?}"),
+        }
+    }
 
     #[test]
     fn process_consensus_tests_for_add() -> Result<(), String> {
@@ -295,5 +319,146 @@ mod tests {
     fn process_consensus_tests_for_pair() -> Result<(), String> {
         test_precompile_test_vectors::<Bn128Pairing>("./testdata/common_bnpair.json")?;
         Ok(())
+    }
+
+    // --- bn128 add ----------------------------------------------------------------------
+
+    #[test]
+    fn test_bn128_add_gas_cost() {
+        // The point at infinity is encoded as two zero coordinates.
+        let mut handle = handle(vec![0u8; 128]);
+
+        let result = Bn128Add::execute(&mut handle).expect("bn128 add must not fail");
+
+        assert_eq!(result.output, vec![0u8; 64]);
+        // https://eips.ethereum.org/EIPS/eip-1108
+        assert_eq!(handle.gas_used, 150);
+        assert_eq!(handle.gas_used, Bn128Add::GAS_COST);
+    }
+
+    #[test]
+    fn test_bn128_add_invalid_curve_point() {
+        // (1, 1) is not a point on the curve (`y^2 = x^3 + 3`).
+        let mut input = vec![0u8; 128];
+        input[31] = 1;
+        input[63] = 1;
+        let mut handle = handle(input);
+
+        let failure = Bn128Add::execute(&mut handle).expect_err("invalid curve point");
+
+        assert_eq!(error_message(&failure), "Invalid curve point");
+        // The gas is charged before the points are read.
+        assert_eq!(handle.gas_used, 150);
+    }
+
+    #[test]
+    fn test_bn128_add_invalid_point_x_coordinate() {
+        // The x coordinate is not a member of the field.
+        let mut input = vec![0u8; 128];
+        input[..32].iter_mut().for_each(|byte| *byte = 0xff);
+        let mut handle = handle(input);
+
+        let failure = Bn128Add::execute(&mut handle).expect_err("invalid x coordinate");
+
+        assert_eq!(error_message(&failure), "Invalid point x coordinate");
+        assert_eq!(handle.gas_used, 150);
+    }
+
+    // --- bn128 mul ----------------------------------------------------------------------
+
+    #[test]
+    fn test_bn128_mul_gas_cost() {
+        // The point at infinity multiplied by zero.
+        let mut handle = handle(vec![0u8; 96]);
+
+        let result = Bn128Mul::execute(&mut handle).expect("bn128 mul must not fail");
+
+        assert_eq!(result.output, vec![0u8; 64]);
+        // https://eips.ethereum.org/EIPS/eip-1108
+        assert_eq!(handle.gas_used, 6_000);
+        assert_eq!(handle.gas_used, Bn128Mul::GAS_COST);
+    }
+
+    #[test]
+    fn test_bn128_mul_invalid_curve_point() {
+        // (1, 1) is not a point on the curve (`y^2 = x^3 + 3`).
+        let mut input = vec![0u8; 96];
+        input[31] = 1;
+        input[63] = 1;
+        let mut handle = handle(input);
+
+        let failure = Bn128Mul::execute(&mut handle).expect_err("invalid curve point");
+
+        assert_eq!(error_message(&failure), "Invalid curve point");
+        assert_eq!(handle.gas_used, 6_000);
+    }
+
+    #[test]
+    fn test_bn128_mul_scalar_is_reduced_modulo_the_field_order() {
+        // The scalar is reduced modulo the order of the field, hence a scalar that is larger
+        // than the modulus is accepted (the "Invalid field element" error is not reachable,
+        // because the scalar is always read into a 32 byte buffer).
+        let mut input = vec![0u8; 96];
+        input[64..96].iter_mut().for_each(|byte| *byte = 0xff);
+        let mut handle = handle(input);
+
+        let result = Bn128Mul::execute(&mut handle).expect("bn128 mul must not fail");
+
+        assert_eq!(result.output.len(), 64);
+        assert_eq!(handle.gas_used, 6_000);
+    }
+
+    // --- bn128 pairing ------------------------------------------------------------------
+
+    #[test]
+    fn test_bn128_pairing_gas_cost() {
+        // An empty input is the empty pairing and costs the base price.
+        let mut handle = handle(vec![]);
+
+        let result = Bn128Pairing::execute(&mut handle).expect("bn128 pairing must not fail");
+
+        assert_eq!(result.output.len(), 32);
+        assert_eq!(result.output[31], 1);
+        assert_eq!(handle.gas_used, 45_000);
+    }
+
+    #[test]
+    fn test_bn128_pairing_gas_cost_per_pairing() {
+        // One pair of points (the point at infinity) costs the base price plus the price of
+        // a single pairing.
+        let mut handle = handle(vec![0u8; 192]);
+
+        let result = Bn128Pairing::execute(&mut handle).expect("bn128 pairing must not fail");
+
+        assert_eq!(result.output.len(), 32);
+        assert_eq!(result.output[31], 1);
+        assert_eq!(handle.gas_used, 45_000 + 34_000);
+        assert_eq!(handle.gas_used, 79_000);
+    }
+
+    #[test]
+    fn test_bn128_pairing_invalid_input_size() {
+        // The input size must be a multiple of 192 bytes.
+        let mut handle = handle(vec![0u8; 100]);
+
+        let failure = Bn128Pairing::execute(&mut handle).expect_err("invalid input size");
+
+        assert_eq!(error_message(&failure), "bad elliptic curve pairing size");
+        // The gas is charged after the input size has been validated.
+        assert_eq!(handle.gas_used, 0);
+    }
+
+    #[test]
+    fn test_bn128_pairing_invalid_a_argument() {
+        // (1, 1) is not a point on the curve (`y^2 = x^3 + 3`).
+        let mut input = vec![0u8; 192];
+        input[31] = 1;
+        input[63] = 1;
+        let mut handle = handle(input);
+
+        let failure = Bn128Pairing::execute(&mut handle).expect_err("invalid a argument");
+
+        assert_eq!(error_message(&failure), "Invalid a argument - not on curve");
+        assert_eq!(handle.gas_used, 79_000);
     }
 }
