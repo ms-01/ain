@@ -592,6 +592,30 @@ public:
         return addrRet;
     }
 
+    /**
+     * Count the known addresses per network class.
+     *
+     * The counter iterates the map of unique network addresses, so every entry
+     * corresponds to exactly one known address. Only publicly routable
+     * networks are reported (NET_IPV4, NET_IPV6 and NET_ONION); the sum of the
+     * returned counts is therefore the total number of known addresses.
+     */
+    std::map<enum Network, int64_t> CountByNetwork() const
+    {
+        LOCK(cs);
+        std::map<enum Network, int64_t> counts;
+        // Always report every routable network, even when the count is zero.
+        counts[NET_IPV4] = 0;
+        counts[NET_IPV6] = 0;
+        counts[NET_ONION] = 0;
+        for (const auto& entry : mapAddr) {
+            const enum Network net{entry.first.GetNetClass()};
+            if (net == NET_UNROUTABLE || net == NET_INTERNAL) continue;
+            counts[net]++;
+        }
+        return counts;
+    }
+
     //! Return a bunch of addresses, selected at random.
     //! If `network` is set, only addresses of that network are returned.
     std::vector<CAddress> GetAddr(std::optional<Network> network = std::nullopt)

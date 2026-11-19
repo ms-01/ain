@@ -17,10 +17,12 @@
 #include <util/system.h>
 #include <util/translation.h>
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <stdio.h>
 #include <tuple>
+#include <utility>
 
 #include <event2/buffer.h>
 #include <event2/keyvalq_struct.h>
@@ -35,6 +37,10 @@ static const char DEFAULT_RPCCONNECT[] = "127.0.0.1";
 static const int DEFAULT_HTTP_CLIENT_TIMEOUT=900;
 static const bool DEFAULT_NAMED=false;
 static const int CONTINUE_EXECUTION=-1;
+static const int DEFAULT_WAIT_CLIENT_TIMEOUT=0;
+// Upper bound for -rpcwaittimeout, so that the monotonic deadline computation
+// cannot overflow (one year in seconds).
+static const int64_t MAX_WAIT_CLIENT_TIMEOUT=31536000;
 
 static void SetupCliArgs()
 {
@@ -49,6 +55,7 @@ static void SetupCliArgs()
     gArgs.AddArg("-version", "Print version and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-conf=<file>", strprintf("Specify configuration file. Relative paths will be prefixed by datadir location. (default: %s)", DEFI_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-datadir=<dir>", "Specify data directory", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-addrinfo", "Get the number of addresses known to the node, per network and total. Prints an object of the form {\"addresses_known\": {\"ipv4\": n, \"ipv6\": n, \"onion\": n, \"total\": n}}. Requires a node that supports the getaddrmaninfo RPC.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-getinfo", "Get general information from the remote server. Note that unlike server-side RPC calls, the results of -getinfo is the result of multiple non-atomic requests. Some entries in the result may represent results from different states (e.g. wallet balance may be as of a different block from the chain state reported)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     SetupChainParamsBaseOptions();
     gArgs.AddArg("-named", strprintf("Pass named instead of positional arguments (default: %s)", DEFAULT_NAMED), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -59,6 +66,7 @@ static void SetupCliArgs()
     gArgs.AddArg("-rpcport=<port>", strprintf("Connect to JSON-RPC on <port> (default: %u, testnet: %u,  changi: %u, devnet: %u, regtest: %u)", defaultBaseParams->RPCPort(), testnetBaseParams->RPCPort(), changiBaseParams->RPCPort(), devnetBaseParams->RPCPort(), regtestBaseParams->RPCPort()), ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-rpcuser=<user>", "Username for JSON-RPC connections", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-rpcwait", "Wait for RPC server to start", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-rpcwaittimeout=<n>", strprintf("Timeout in seconds to wait for the RPC server to start, or 0 for no timeout. (default: %d)", DEFAULT_WAIT_CLIENT_TIMEOUT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-rpcwallet=<walletname>", "Send RPC for non-default wallet on RPC server (needs to exactly match corresponding -wallet option passed to defid). This changes the RPC endpoint used, e.g. http://127.0.0.1:8554/wallet/<walletname>", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-stdin", "Read extra arguments from standard input, one per line until EOF/Ctrl-D (recommended for sensitive information such as passphrases). When combined with -stdinrpcpass, the first line from standard input is used for the RPC password.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-stdinrpcpass", "Read RPC password from standard input as a single line. When combined with -stdin, the first line from standard input is used for the RPC password.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -226,6 +234,47 @@ public:
     virtual ~BaseRequestHandler() {}
     virtual UniValue PrepareRequest(const std::string& method, const std::vector<std::string>& args) = 0;
     virtual UniValue ProcessReply(const UniValue &batch_in) = 0;
+};
+
+/** Process addrinfo requests */
+class AddrinfoRequestHandler: public BaseRequestHandler
+{
+public:
+    /** Create a simulated `getaddrmaninfo` request. */
+    UniValue PrepareRequest(const std::string& method, const std::vector<std::string>& args) override
+    {
+        if (!args.empty()) {
+            throw std::runtime_error("-addrinfo takes no arguments");
+        }
+        return JSONRPCRequestObj("getaddrmaninfo", NullUniValue, 1);
+    }
+
+    /** Collect the counts from the reply and form a simulated `addrinfo` reply. */
+    UniValue ProcessReply(const UniValue &reply) override
+    {
+        if (!reply["error"].isNull()) {
+            if (reply["error"].isObject() && !reply["error"]["code"].isNull() &&
+                reply["error"]["code"].getInt<int>() == RPC_METHOD_NOT_FOUND) {
+                throw std::runtime_error("-addrinfo requires a node that supports the getaddrmaninfo RPC. Please upgrade your node or use defi-cli from the same version.");
+            }
+            return reply;
+        }
+
+        const std::vector<std::string>& network_types{reply["result"].getKeys()};
+        const std::vector<UniValue>& addrman_counts{reply["result"].getValues()};
+
+        UniValue result(UniValue::VOBJ), addresses(UniValue::VOBJ);
+        for (size_t i = 0; i < network_types.size(); ++i) {
+            const int64_t addr_count = addrman_counts[i]["total"].getInt<int64_t>();
+            if (network_types[i] == "all_networks") {
+                addresses.pushKV("total", addr_count);
+            } else {
+                addresses.pushKV(network_types[i], addr_count);
+            }
+        }
+        result.pushKV("addresses_known", std::move(addresses));
+        return JSONRPCReplyObj(result, NullUniValue, 1);
+    }
 };
 
 /** Process getinfo requests */
@@ -420,6 +469,8 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string& strMethod, co
         } else {
             throw std::runtime_error("Authorization failed: Incorrect rpcuser or rpcpassword");
         }
+    } else if (response.status == HTTP_SERVICE_UNAVAILABLE) {
+        throw std::runtime_error(strprintf("Server response: %s", response.body));
     } else if (response.status >= 400 && response.status != HTTP_BAD_REQUEST && response.status != HTTP_NOT_FOUND && response.status != HTTP_INTERNAL_SERVER_ERROR)
         throw std::runtime_error(strprintf("server returned HTTP error %d", response.status));
     else if (response.body.empty())
@@ -463,7 +514,10 @@ static int CommandLineRPC(int argc, char *argv[])
         }
         std::unique_ptr<BaseRequestHandler> rh;
         std::string method;
-        if (gArgs.GetBoolArg("-getinfo", false)) {
+        if (gArgs.GetBoolArg("-addrinfo", false)) {
+            rh.reset(new AddrinfoRequestHandler());
+            method = "";
+        } else if (gArgs.GetBoolArg("-getinfo", false)) {
             rh.reset(new GetinfoRequestHandler());
             method = "";
         } else {
@@ -477,6 +531,10 @@ static int CommandLineRPC(int argc, char *argv[])
 
         // Execute and handle connection failures with -rpcwait
         const bool fWait = gArgs.GetBoolArg("-rpcwait", false);
+        const int64_t timeout = gArgs.GetArg("-rpcwaittimeout", (int64_t)DEFAULT_WAIT_CLIENT_TIMEOUT);
+        // Use a monotonic clock so that the deadline is not affected by -mocktime.
+        const int64_t bounded_timeout{std::min<int64_t>(std::max<int64_t>(timeout, 0), MAX_WAIT_CLIENT_TIMEOUT)};
+        const auto deadline{std::chrono::steady_clock::now() + std::chrono::seconds(bounded_timeout)};
         do {
             try {
                 const UniValue reply = CallRPC(rh.get(), method, args);
@@ -517,11 +575,14 @@ static int CommandLineRPC(int argc, char *argv[])
                 // Connection succeeded, no need to retry.
                 break;
             }
-            catch (const CConnectionFailed&) {
-                if (fWait)
+            catch (const CConnectionFailed& e) {
+                if (fWait && (timeout <= 0 || std::chrono::steady_clock::now() < deadline)) {
                     UninterruptibleSleep(std::chrono::milliseconds{1000});
-                else
+                } else if (fWait) {
+                    throw CConnectionFailed(strprintf("timeout on transient error: %s", e.what()));
+                } else {
                     throw;
+                }
             }
         } while (fWait);
     }

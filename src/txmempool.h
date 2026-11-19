@@ -603,6 +603,14 @@ public:
      */
     explicit CTxMemPool(CBlockPolicyEstimator *estimator = nullptr);
 
+    /**
+     * Set the fee estimator used by the mempool.
+     *
+     * May be called with nullptr to disable fee estimation entirely. The
+     * estimator must outlive the mempool.
+     */
+    void SetFeeEstimator(CBlockPolicyEstimator *estimator);
+
     ~CTxMemPool();
 
     /**

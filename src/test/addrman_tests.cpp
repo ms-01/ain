@@ -7,6 +7,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <hash.h>
+#include <map>
 #include <netbase.h>
 #include <random.h>
 
@@ -671,5 +672,54 @@ BOOST_AUTO_TEST_CASE(addrman_evictionworks)
     BOOST_CHECK(addrman.SelectTriedCollision().ToString() == "[::]:0");
 }
 
+
+BOOST_AUTO_TEST_CASE(addrman_count_by_network)
+{
+    CAddrManTest addrman;
+
+    CNetAddr source = ResolveIP("252.2.2.2");
+
+    // An empty addrman reports zero for every routable network.
+    std::map<enum Network, int64_t> counts = addrman.CountByNetwork();
+    BOOST_CHECK_EQUAL(counts.size(), 3U);
+    BOOST_CHECK_EQUAL(counts[NET_IPV4], 0);
+    BOOST_CHECK_EQUAL(counts[NET_IPV6], 0);
+    BOOST_CHECK_EQUAL(counts[NET_ONION], 0);
+
+    // Two IPv4 addresses.
+    BOOST_CHECK(addrman.Add(CAddress(ResolveService("250.1.1.1", 8555), NODE_NONE), source));
+    BOOST_CHECK(addrman.Add(CAddress(ResolveService("250.1.1.2", 8555), NODE_NONE), source));
+
+    // One IPv6 address.
+    BOOST_CHECK(addrman.Add(CAddress(ResolveService("2606:4700:4700::1111", 8555), NODE_NONE), source));
+
+    // One onion address.
+    CService onion = ResolveService("6hzph5hv6337r6p2.onion", 8555);
+    BOOST_CHECK(onion.IsValid());
+    BOOST_CHECK(addrman.Add(CAddress(onion, NODE_NONE), source));
+
+    // Non-routable addresses are rejected and therefore never counted.
+    BOOST_CHECK(!addrman.Add(CAddress(ResolveService("127.0.0.1", 8555), NODE_NONE), source));
+
+    counts = addrman.CountByNetwork();
+    BOOST_CHECK_EQUAL(counts.size(), 3U);
+    BOOST_CHECK_EQUAL(counts[NET_IPV4], 2);
+    BOOST_CHECK_EQUAL(counts[NET_IPV6], 1);
+    BOOST_CHECK_EQUAL(counts[NET_ONION], 1);
+
+    // The breakdown always sums up to the total number of known addresses.
+    int64_t total{0};
+    for (const auto& entry : counts) {
+        total += entry.second;
+    }
+    BOOST_CHECK_EQUAL(total, static_cast<int64_t>(addrman.size()));
+
+    // Removing an address updates the counter again.
+    addrman.Clear();
+    counts = addrman.CountByNetwork();
+    BOOST_CHECK_EQUAL(counts[NET_IPV4], 0);
+    BOOST_CHECK_EQUAL(counts[NET_IPV6], 0);
+    BOOST_CHECK_EQUAL(counts[NET_ONION], 0);
+}
 
 BOOST_AUTO_TEST_SUITE_END()

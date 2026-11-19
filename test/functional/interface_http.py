@@ -8,7 +8,21 @@ from test_framework.test_framework import DefiTestFramework
 from test_framework.util import assert_equal, str_to_b64str
 
 import http.client
+import subprocess
 import urllib.parse
+from threading import Thread
+
+
+def test_work_queue_getblock(node, got_exceeded_error):
+    """Issue a blocking RPC until the server rejects a request with a 503."""
+    while not got_exceeded_error:
+        try:
+            # The timeout of waitfornewblock is given in milliseconds, keep the
+            # request busy long enough for the work queue to overflow.
+            node.cli("waitfornewblock", "5000").send_cli()
+        except subprocess.CalledProcessError as e:
+            assert "Server response: Work queue depth exceeded" in e.output
+            got_exceeded_error.append(True)
 
 
 class HTTPBasicsTest(DefiTestFramework):
@@ -17,6 +31,21 @@ class HTTPBasicsTest(DefiTestFramework):
 
     def setup_network(self):
         self.setup_nodes()
+
+    def test_work_queue_exceeded(self):
+        self.log.info("Testing work queue exceeded...")
+        self.restart_node(0, ["-rpcworkqueue=1", "-rpcthreads=1"])
+        got_exceeded_error = []
+        threads = []
+        for _ in range(3):
+            t = Thread(
+                target=test_work_queue_getblock, args=(self.nodes[0], got_exceeded_error)
+            )
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+        assert got_exceeded_error
 
     def run_test(self):
         #################################################
@@ -122,6 +151,9 @@ class HTTPBasicsTest(DefiTestFramework):
         conn.request("GET", "/" + ("x" * 10000), "", headers)
         out1 = conn.getresponse()
         assert_equal(out1.status, http.client.BAD_REQUEST)
+
+        # The RPC work queue overflow must be reported as "503 Service Unavailable".
+        self.test_work_queue_exceeded()
 
 
 if __name__ == "__main__":

@@ -862,6 +862,48 @@ static UniValue getnodeaddresses(const JSONRPCRequest& request)
     return ret;
 }
 
+static UniValue getaddrmaninfo(const JSONRPCRequest& request)
+{
+            RPCHelpMan{"getaddrmaninfo",
+                "\nReturn the number of addresses known to the node, per network and in total.\n"
+                "\nThis is a reduced version of the upstream Bitcoin Core RPC of the same name:\n"
+                "only the 'total' count per network is reported, because the node does not\n"
+                "track the new/tried split of the address manager separately.\n",
+                {},
+                RPCResult{
+            "{\n"
+            "  \"ipv4\": { \"total\": n },\n"
+            "  \"ipv6\": { \"total\": n },\n"
+            "  \"onion\": { \"total\": n },\n"
+            "  \"all_networks\": { \"total\": n }\n"
+            "}\n"
+                },
+                RPCExamples{
+                    HelpExampleCli("getaddrmaninfo", "")
+            + HelpExampleRpc("getaddrmaninfo", "")
+                },
+            }.Check(request);
+    if (!g_connman) {
+        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+    }
+
+    const std::map<enum Network, int64_t> counts = g_connman->GetAddressCountsByNetwork();
+
+    UniValue result(UniValue::VOBJ);
+    int64_t total{0};
+    for (const auto& entry : counts) {
+        UniValue network(UniValue::VOBJ);
+        network.pushKV("total", entry.second);
+        result.pushKV(GetNetworkName(entry.first), std::move(network));
+        total += entry.second;
+    }
+    UniValue allNetworks(UniValue::VOBJ);
+    allNetworks.pushKV("total", total);
+    result.pushKV("all_networks", std::move(allNetworks));
+
+    return result;
+}
+
 // clang-format off
 static const CRPCCommand commands[] =
 { //  category              name                      actor (function)         argNames
@@ -881,6 +923,7 @@ static const CRPCCommand commands[] =
     { "network",            "clearbanned",            &clearbanned,            {} },
     { "network",            "setnetworkactive",       &setnetworkactive,       {"state"} },
     { "network",            "getnodeaddresses",       &getnodeaddresses,       {"count", "network"} },
+    { "network",            "getaddrmaninfo",         &getaddrmaninfo,         {} },
 };
 // clang-format on
 

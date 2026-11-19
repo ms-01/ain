@@ -64,6 +64,80 @@ Transaction output spender index and `gettxspendingprevout` RPC
   `whitelisted` fields were removed (upstream Bitcoin Core #20755); the
   `permissions` field supersedes `whitelisted`.
 
+CLI and RPC operational hardening
+----------------------------------
+
+- The new `getaddrmaninfo` RPC reports how many addresses the node knows, per
+  network and in total (upstream Bitcoin Core #21595, reworked by #26988):
+
+  ```
+  {
+    "ipv4": { "total": 12 },
+    "ipv6": { "total": 3 },
+    "onion": { "total": 0 },
+    "all_networks": { "total": 15 }
+  }
+  ```
+
+  The counts are exact (not a sample) and the total is the sum of the
+  per-network counts.
+
+  **Schema deviation compared to upstream Bitcoin Core:** upstream reports a
+  `new`/`tried`/`total` split per network. DeFiChain only tracks the combined
+  count, so only `total` is reported. The `new`/`tried` split would require
+  the upstream address manager rewrite, which is not part of this change.
+
+- The new `defi-cli -addrinfo` option prints the known address counts in a
+  compact form:
+
+  ```
+  { "addresses_known": { "ipv4": 12, "ipv6": 3, "onion": 0, "total": 15 } }
+  ```
+
+  It requires a node that implements the `getaddrmaninfo` RPC; against an older
+  node the CLI prints a hint to upgrade.
+
+- The new `defi-cli -rpcwaittimeout=<n>` option bounds the wait of
+  `-rpcwait` (upstream Bitcoin Core #21056). The value is a timeout in
+  seconds; `0` (the default) means no timeout, i.e. the previous behaviour of
+  waiting indefinitely. When the timeout expires the CLI prints
+  `timeout on transient error: ...` and exits with a non-zero exit code. The
+  deadline is measured with a monotonic clock, so a mocked clock (`-mocktime`)
+  cannot stall the wait.
+
+- A saturated RPC work queue is now answered with **HTTP 503 Service
+  Unavailable** instead of **HTTP 500 Internal Server Error** (upstream Bitcoin
+  Core #18335). The response body (`Work queue depth exceeded`) is unchanged
+  and `defi-cli` now prints it (`error: Server response: Work queue depth
+  exceeded`) instead of a bare status code. **Clients that specifically check
+  for the status code 500 have to be adapted.**
+
+- A malformed `-rpcauth` value now aborts the node startup instead of being
+  silently ignored (upstream Bitcoin Core #20461). The accepted format is
+  unchanged (`<user>:<salt>$<hash>`, see `share/rpcauth`); an empty value is
+  still ignored. A malformed entry is reported as
+  `Invalid -rpcauth argument. Expected the format <user>:<salt>$<hash>.` and the
+  node stops with `Error: Unable to start HTTP server. See debug log for
+  details.` **Operators with a broken `-rpcauth` configuration have to fix it
+  before upgrading**, as such a node now refuses to start.
+
+- With `-blocksonly` the node no longer maintains fee estimates (upstream
+  Bitcoin Core #18766), because the estimates could never be updated without
+  transaction relay and would only serve stale data. As a consequence:
+  - `estimatesmartfee` and `estimaterawfee` fail with the error
+    `-32603 "Fee estimation disabled"`;
+  - `fee_estimates.dat` is neither loaded nor written;
+  - the wallet falls back to its fallback fee (`-fallbackfee`, default 20000
+    sat/kB). Note that with `-fallbackfee=0` the fallback is disabled and a
+    **zero-fee** transaction becomes possible;
+  - every wallet RPC that takes a confirmation target (`sendtoaddress`,
+    `sendmany`, `fundrawtransaction`, `walletcreatefundedpsbt`) rejects it with
+    `Invalid conf_target, must be between 1 - 0`, as no fee estimation
+    targets are known.
+
+  Fee estimation is policy-level only, so no consensus rule, mempool
+  acceptance rule or transaction validity rule is affected.
+
 *After branching off for a major version release of Bitcoin Core, use this
 template to create the initial release notes draft.*
 

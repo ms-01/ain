@@ -3,6 +3,8 @@
 # Distributed under the MIT software license, see the accompanying
 # file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 """Test defi-cli"""
+import time
+
 from test_framework.test_framework import DefiTestFramework
 from test_framework.util import (
     assert_equal,
@@ -91,6 +93,38 @@ class TestDefiCli(DefiTestFramework):
         assert_raises_process_error(
             1, "-getinfo takes no arguments", self.nodes[0].cli("-getinfo").help
         )
+
+        self.log.info("Make sure that -addrinfo with arguments fails")
+        assert_raises_process_error(
+            1, "-addrinfo takes no arguments", self.nodes[0].cli("-addrinfo").help
+        )
+
+        self.log.info(
+            "Compare the `defi-cli -addrinfo` output with the getaddrmaninfo RPC"
+        )
+        cli_addrinfo = self.nodes[0].cli("-addrinfo").send_cli()
+        rpc_addrinfo = self.nodes[0].getaddrmaninfo()
+        assert "addresses_known" in cli_addrinfo
+        known = cli_addrinfo["addresses_known"]
+        # The CLI reports the total of all networks under the "total" key.
+        assert_equal(known["total"], rpc_addrinfo["all_networks"]["total"])
+        for network in ("ipv4", "ipv6", "onion"):
+            assert_equal(known[network], rpc_addrinfo[network]["total"])
+        # The breakdown must always sum up to the reported total.
+        assert_equal(
+            sum(rpc_addrinfo[network]["total"] for network in ("ipv4", "ipv6", "onion")),
+            rpc_addrinfo["all_networks"]["total"],
+        )
+
+        self.log.info("Test -rpcwaittimeout with a non-existing server")
+        start_time = time.time()
+        assert_raises_process_error(
+            1,
+            "timeout on transient error",
+            self.nodes[0].cli("-rpcport=1", "-rpcwait", "-rpcwaittimeout=2").echo,
+        )
+        # The wait must be bounded by the timeout and must not block forever.
+        assert time.time() - start_time < 15
 
         self.log.info(
             "Compare responses from `defi-cli -getinfo` and the RPCs data is retrieved from."

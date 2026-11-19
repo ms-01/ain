@@ -4,6 +4,7 @@
 # file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 """Test fee estimation code."""
 from decimal import Decimal
+import os
 import random
 
 from test_framework.messages import CTransaction, CTxIn, CTxOut, COutPoint, ToHex, COIN
@@ -22,6 +23,7 @@ from test_framework.util import (
     assert_equal,
     assert_greater_than,
     assert_greater_than_or_equal,
+    assert_raises_rpc_error,
     connect_nodes,
     satoshi_round,
 )
@@ -276,6 +278,28 @@ class EstimateFeeTest(DefiTestFramework):
         self.sync_blocks(self.nodes[0:3], wait=0.1)
         self.log.info("Final estimates after emptying mempools")
         check_estimates(self.nodes[1], self.fees_per_kb)
+
+        self.log.info("Testing that fee estimation is disabled in blocksonly.")
+        fee_estimates_path = os.path.join(
+            self.nodes[0].datadir, self.nodes[0].chain, "fee_estimates.dat"
+        )
+        # The control node stores its fee estimates on shutdown.
+        self.stop_node(0)
+        assert os.path.exists(fee_estimates_path)
+        os.remove(fee_estimates_path)
+
+        # A node which does not relay transactions never updates its fee
+        # estimates, so the estimation must be disabled entirely.
+        self.start_node(0, extra_args=["-blocksonly"])
+        assert_raises_rpc_error(
+            -32603, "Fee estimation disabled", self.nodes[0].estimatesmartfee, 2
+        )
+        assert_raises_rpc_error(
+            -32603, "Fee estimation disabled", self.nodes[0].estimaterawfee, 2
+        )
+        # No stale fee estimates may be written back to disk.
+        self.stop_node(0)
+        assert not os.path.exists(fee_estimates_path)
 
 
 if __name__ == "__main__":

@@ -63,6 +63,8 @@ private:
 
 /* Pre-base64-encoded authentication token */
 static std::string strRPCUserColonPass;
+/* Pre-parsed multi-user credentials from -rpcauth (name, salt, hash) */
+static std::vector<std::vector<std::string>> g_rpcauth;
 /* Stored RPC timer interface (for unregistration) */
 static std::unique_ptr<HTTPRPCTimerInterface> httpRPCTimerInterface;
 /* The host to be used for CORS header */
@@ -95,15 +97,7 @@ static bool multiUserAuthorized(std::string strUserPass)
     std::string strUser = strUserPass.substr(0, strUserPass.find(':'));
     std::string strPass = strUserPass.substr(strUserPass.find(':') + 1);
 
-    for (const std::string& strRPCAuth : gArgs.GetArgs("-rpcauth")) {
-        //Search for multi-user login/pass "rpcauth" from config
-        std::vector<std::string> vFields;
-        boost::split(vFields, strRPCAuth, boost::is_any_of(":$"));
-        if (vFields.size() != 3) {
-            //Incorrect formatting in config file
-            continue;
-        }
-
+    for (const std::vector<std::string>& vFields : g_rpcauth) {
         std::string strName = vFields[0];
         if (!TimingResistantEqual(strName, strUser)) {
             continue;
@@ -262,7 +256,29 @@ static bool InitRPCAuthentication()
         LogPrintf("Config options rpcuser and rpcpassword will soon be deprecated. Locally-run instances may remove rpcuser to use cookie-based auth, or may be replaced with rpcauth. Please see share/rpcauth for rpcauth auth generation.\n");
         strRPCUserColonPass = gArgs.GetArg("-rpcuser", "") + ":" + gArgs.GetArg("-rpcpassword", "");
     }
-    if (gArgs.GetArg("-rpcauth","") != "")
+    // Parse the -rpcauth entries once at startup, so that a malformed entry is
+    // reported as a configuration error instead of silently failing every
+    // multi-user login later on. The accepted grammar is the very same one the
+    // runtime authentication path uses (name, salt and hash separated by ':' or
+    // '$'), therefore no working configuration is rejected here.
+    for (const std::string& strRPCAuth : gArgs.GetArgs("-rpcauth")) {
+        if (strRPCAuth.empty()) {
+            // An empty value is ignored, just like it is at runtime.
+            continue;
+        }
+        std::vector<std::string> vFields;
+        boost::split(vFields, strRPCAuth, boost::is_any_of(":$"));
+        if (vFields.size() != 3) {
+            // Do not log the value itself, it may contain credentials.
+            LogPrintf("Invalid -rpcauth argument.\n");
+            uiInterface.ThreadSafeMessageBox(
+                _("Invalid -rpcauth argument. Expected the format <user>:<salt>$<hash>.").translated,
+                "", CClientUIInterface::MSG_ERROR);
+            return false;
+        }
+        g_rpcauth.push_back(std::move(vFields));
+    }
+    if (!g_rpcauth.empty())
     {
         LogPrintf("Using rpcauth authentication.\n");
     }
