@@ -81,6 +81,7 @@ DEFI_TESTS =\
   test/arith_uint256_tests.cpp \
   test/scriptnum10.h \
   test/addrman_tests.cpp \
+  test/addr_response_cache_tests.cpp \
   test/amount_tests.cpp \
   test/allocator_tests.cpp \
   test/anchor_tests.cpp \

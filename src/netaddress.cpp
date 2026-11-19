@@ -524,6 +524,14 @@ int static GetExtNetwork(const CNetAddr *addr)
     return addr->GetNetwork();
 }
 
+std::vector<unsigned char> CNetAddr::GetAddrBytes() const
+{
+    // The chain only supports the v1 address format (16 bytes), which is
+    // exactly the raw address array. IPv4 addresses are stored as
+    // IPv4-mapped IPv6, so the mapping is faithful.
+    return std::vector<unsigned char>(ip, ip + sizeof(ip));
+}
+
 /** Calculates a metric for how reachable (*this) is from a given partner */
 int CNetAddr::GetReachabilityFrom(const CNetAddr *paddrPartner) const
 {

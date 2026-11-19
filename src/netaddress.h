@@ -88,6 +88,13 @@ class CNetAddr
         uint64_t GetHash() const;
         bool GetInAddr(struct in_addr* pipv4Addr) const;
         std::vector<unsigned char> GetGroup() const;
+        /**
+         * Return the 16-byte v1 serialization of this address.
+         *
+         * The chain only supports the v1 address format, so this is simply the
+         * raw address array (IPv4 addresses are stored as IPv4-mapped IPv6).
+         */
+        std::vector<unsigned char> GetAddrBytes() const;
         int GetReachabilityFrom(const CNetAddr *paddrPartner = nullptr) const;
 
         explicit CNetAddr(const struct in6_addr& pipv6Addr, const uint32_t scope = 0);

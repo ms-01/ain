@@ -114,6 +114,7 @@ endif
 .PHONY: FORCE check-symbols check-security
 # defi core #
 DEFI_CORE_H = \
+  addr_response_cache.h \
   addrdb.h \
   addrman.h \
   attributes.h \
@@ -395,6 +396,7 @@ libdefi_spv_a_SOURCES = \
 libdefi_server_a_CPPFLAGS = $(AM_CPPFLAGS) $(DEFI_INCLUDES) $(MINIUPNPC_CPPFLAGS) $(EVENT_CFLAGS) $(EVENT_PTHREADS_CFLAGS)
 libdefi_server_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 libdefi_server_a_SOURCES = \
+  addr_response_cache.cpp \
   addrdb.cpp \
   addrman.cpp \
   banman.cpp \

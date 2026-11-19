@@ -845,7 +845,7 @@ static UniValue getnodeaddresses(const JSONRPCRequest& request)
     }
 
     // returns a shuffled list of CAddress
-    std::vector<CAddress> vAddr = g_connman->GetAddresses(network);
+    std::vector<CAddress> vAddr = g_connman->GetAddressesUnsafe(network);
     UniValue ret(UniValue::VARR);
 
     int address_return_count = std::min<int>(count, vAddr.size());

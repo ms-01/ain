@@ -6,6 +6,7 @@
 #ifndef DEFI_NET_H
 #define DEFI_NET_H
 
+#include <addr_response_cache.h>
 #include <addrdb.h>
 #include <addrman.h>
 #include <amount.h>
@@ -252,7 +253,23 @@ public:
     void SetServices(const CService &addr, ServiceFlags nServices);
     void MarkAddressGood(const CAddress& addr);
     void AddNewAddresses(const std::vector<CAddress>& vAddr, const CAddress& addrFrom, int64_t nTimePenalty = 0);
-    std::vector<CAddress> GetAddresses(std::optional<Network> network = std::nullopt);
+    /**
+     * Return a fresh (uncached) sample of the known addresses.
+     *
+     * This is the "unsafe" variant: it is not served from the "getaddr"
+     * response cache and therefore leaks the current state of the address
+     * manager to the caller. It is used by the RPC interface, whose output is
+     * unchanged by the introduction of the response cache.
+     */
+    std::vector<CAddress> GetAddressesUnsafe(std::optional<Network> network = std::nullopt, size_t max_addresses = ADDRMAN_GETADDR_MAX, size_t max_pct = ADDRMAN_GETADDR_MAX_PCT);
+    /**
+     * Return the (cached) response to a "getaddr" request of `requestor`.
+     *
+     * The response is cached per (requester netclass, local listening socket)
+     * to prevent an attacker from scraping the address manager by reconnecting
+     * repeatedly.
+     */
+    std::vector<CAddress> GetAddresses(CNode& requestor);
     //! Return the number of known addresses per network class.
     std::map<enum Network, int64_t> GetAddressCountsByNetwork() const;
 
@@ -428,6 +445,16 @@ private:
 
     /** SipHasher seeds for deterministic randomness */
     const uint64_t nSeed0, nSeed1;
+
+    /**
+     * Cache for the responses to "getaddr" messages.
+     *
+     * Addr responses stored in different caches per (network, local socket)
+     * prevent cross-network node identification. The used memory equals to
+     * 1000 CAddress records per distinct network we have/had an inbound peer
+     * from, plus one such amount per additional local socket.
+     */
+    CAddrResponseCache m_addr_response_cache;
 
     /** flag for waking the message processor. */
     bool fMsgProcWake;
@@ -702,6 +729,15 @@ public:
     std::atomic_bool fPauseRecv{false};
     std::atomic_bool fPauseSend{false};
 
+    /**
+     * Network key used to prevent fingerprinting our node across networks.
+     *
+     * Influenced by the network of the remote peer and by our own bind address
+     * (+ the bind port for inbound connections). It identifies the "getaddr"
+     * response cache entry which is served to this peer.
+     */
+    const uint64_t m_network_key;
+
 protected:
     mapMsgCmdSize mapSendBytesPerMsgCmd;
     mapMsgCmdSize mapRecvBytesPerMsgCmd GUARDED_BY(cs_vRecv);
@@ -772,7 +808,7 @@ public:
 
     std::set<uint256> orphan_work_set;
 
-    CNode(NodeId id, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress &addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress &addrBindIn, const std::string &addrNameIn = "", bool fInboundIn = false);
+    CNode(NodeId id, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress &addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress &addrBindIn, uint64_t networkKeyIn, const std::string &addrNameIn = "", bool fInboundIn = false);
     ~CNode();
     CNode(const CNode&) = delete;
     CNode& operator=(const CNode&) = delete;

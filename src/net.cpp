@@ -444,7 +444,10 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
     NodeId id = GetNewNodeId();
     uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE).Write(id).Finalize();
     CAddress addr_bind = GetBindAddress(hSocket);
-    CNode* pnode = new CNode(id, nLocalServices, GetBestHeight(), hSocket, addrConnect, CalculateKeyedNetGroup(addrConnect), nonce, addr_bind, pszDest ? pszDest : "", false);
+    // For outbound connections, the port of the bound address is randomly
+    // assigned by the OS and would therefore not be useful for seeding.
+    const uint64_t network_key = m_addr_response_cache.ComputeKey(addrConnect, addr_bind, false);
+    CNode* pnode = new CNode(id, nLocalServices, GetBestHeight(), hSocket, addrConnect, CalculateKeyedNetGroup(addrConnect), nonce, addr_bind, network_key, pszDest ? pszDest : "", false);
     pnode->AddRef();
 
     return pnode;
@@ -978,12 +981,15 @@ void CConnman::AcceptConnection(const ListenSocket& hListenSocket) {
     NodeId id = GetNewNodeId();
     uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE).Write(id).Finalize();
     CAddress addr_bind = GetBindAddress(hSocket);
+    // Inbound connections use the bind port as part of the network key, so
+    // that responses are cached per local listening socket.
+    const uint64_t network_key = m_addr_response_cache.ComputeKey(addr, addr_bind, true);
 
     ServiceFlags nodeServices = nLocalServices;
     if (NetPermissions::HasFlag(permissionFlags, PF_BLOOMFILTER)) {
         nodeServices = static_cast<ServiceFlags>(nodeServices | NODE_BLOOM);
     }
-    CNode* pnode = new CNode(id, nodeServices, GetBestHeight(), hSocket, addr, CalculateKeyedNetGroup(addr), nonce, addr_bind, "", true);
+    CNode* pnode = new CNode(id, nodeServices, GetBestHeight(), hSocket, addr, CalculateKeyedNetGroup(addr), nonce, addr_bind, network_key, "", true);
     pnode->AddRef();
     pnode->m_permissionFlags = permissionFlags;
     // If this flag is present, the user probably expect that RPC and QT report it as whitelisted (backward compatibility)
@@ -2141,7 +2147,7 @@ void CConnman::SetNetworkActive(bool active)
     uiInterface.NotifyNetworkActiveChanged(fNetworkActive);
 }
 
-CConnman::CConnman(uint64_t nSeed0In, uint64_t nSeed1In) : nSeed0(nSeed0In), nSeed1(nSeed1In)
+CConnman::CConnman(uint64_t nSeed0In, uint64_t nSeed1In) : nSeed0(nSeed0In), nSeed1(nSeed1In), m_addr_response_cache(nSeed0In, nSeed1In)
 {
     SetTryNewOutboundPeer(false);
 
@@ -2414,9 +2420,19 @@ void CConnman::AddNewAddresses(const std::vector<CAddress>& vAddr, const CAddres
     addrman.Add(vAddr, addrFrom, nTimePenalty);
 }
 
-std::vector<CAddress> CConnman::GetAddresses(std::optional<Network> network)
+std::vector<CAddress> CConnman::GetAddressesUnsafe(std::optional<Network> network, size_t max_addresses, size_t max_pct)
 {
-    return addrman.GetAddr(network);
+    return addrman.GetAddr(network, max_addresses, max_pct);
+}
+
+std::vector<CAddress> CConnman::GetAddresses(CNode& requestor)
+{
+    return m_addr_response_cache.Get(requestor.m_network_key, [this]() {
+        // The cached sample is capped at MAX_ADDR_TO_SEND, so that the random
+        // replacement branch of CNode::PushAddress() is never triggered and the
+        // response is identical for every requestor within the cache lifetime.
+        return GetAddressesUnsafe(std::nullopt, MAX_ADDR_TO_SEND, ADDRMAN_GETADDR_MAX_PCT);
+    });
 }
 
 std::map<enum Network, int64_t> CConnman::GetAddressCountsByNetwork() const
@@ -2639,12 +2655,13 @@ int CConnman::GetBestHeight() const
 
 unsigned int CConnman::GetReceiveFloodSize() const { return nReceiveFloodSize; }
 
-CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress& addrBindIn, const std::string& addrNameIn, bool fInboundIn)
+CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress& addrBindIn, uint64_t networkKeyIn, const std::string& addrNameIn, bool fInboundIn)
     : nTimeConnected(GetSystemTimeInSeconds()),
     addr(addrIn),
     addrBind(addrBindIn),
     fInbound(fInboundIn),
     nKeyedNetGroup(nKeyedNetGroupIn),
+    m_network_key(networkKeyIn),
     addrKnown(5000, 0.001),
     filterInventoryKnown(50000, 0.000001),
     id(idIn),
