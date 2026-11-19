@@ -149,6 +149,9 @@ impl BlockService {
 
     /// Finds base fee for block based on parent gas usage. Can be used to find base fee for next block
     /// if latest block data is passed.
+    ///
+    /// Thin wrapper around the free function [`get_base_fee`], which holds the actual
+    /// (consensus-relevant) EIP-1559 base fee calculation.
     pub fn get_base_fee(
         &self,
         parent_gas_used: u64,
@@ -158,58 +161,99 @@ impl BlockService {
         initial_base_fee: U256,
         max_base_fee: U256,
     ) -> Result<U256> {
-        match parent_gas_used.cmp(&parent_gas_target) {
-            Ordering::Equal => Ok(parent_base_fee),
-            Ordering::Greater => {
-                let gas_used_delta = parent_gas_used - parent_gas_target; // sub is safe due to cmp
-                let base_fee_per_gas_delta = self.get_base_fee_per_gas_delta(
-                    gas_used_delta,
-                    parent_gas_target,
-                    parent_base_fee,
-                    base_fee_max_change_denominator,
-                )?;
-                Ok(parent_base_fee
-                    .saturating_add(base_fee_per_gas_delta)
-                    .min(max_base_fee))
-            }
-            Ordering::Less => {
-                let gas_used_delta = parent_gas_target - parent_gas_used; // sub is safe due to cmp
-                let base_fee_per_gas_delta = self.get_base_fee_per_gas_delta(
-                    gas_used_delta,
-                    parent_gas_target,
-                    parent_base_fee,
-                    base_fee_max_change_denominator,
-                )?;
-                Ok(parent_base_fee
-                    .saturating_sub(base_fee_per_gas_delta)
-                    .max(initial_base_fee))
-            }
-        }
-    }
-
-    fn get_base_fee_per_gas_delta(
-        &self,
-        gas_used_delta: u64,
-        parent_gas_target: u64,
-        parent_base_fee: U256,
-        base_fee_max_change_denominator: U256,
-    ) -> Result<U256> {
-        Ok(max(
-            parent_base_fee
-                .checked_mul(gas_used_delta.into())
-                .and_then(|x| x.checked_div(parent_gas_target.into()))
-                .and_then(|x| x.checked_div(base_fee_max_change_denominator))
-                .ok_or_else(|| {
-                    format_err!("Unsatisfied bounds calculating base_fee_per_gas_delta")
-                })?,
-            U256::one(),
-        ))
+        get_base_fee(
+            parent_gas_used,
+            parent_gas_target,
+            parent_base_fee,
+            base_fee_max_change_denominator,
+            initial_base_fee,
+            max_base_fee,
+        )
     }
 
     pub fn clear_last_suggested_fee_tip_cache(&self) {
         let mut last_suggested_fee_tip = self.last_suggested_fee_tip.lock();
         *last_suggested_fee_tip = None;
     }
+}
+
+/// Finds the base fee for the next block based on the parent gas usage (EIP-1559).
+///
+/// This calculation is consensus-relevant: the result determines the minimum gas price
+/// (base fee) of every block. It is implemented as a free function so that it can be
+/// unit-tested without a storage-backed [`BlockService`].
+///
+/// * If the parent gas usage equals the gas target, the base fee stays unchanged.
+/// * If the parent gas usage is above the gas target, the base fee increases by at most
+///   `1 / base_fee_max_change_denominator` of the parent base fee (12.5 % for a denominator
+///   of 8) and is capped at `max_base_fee`.
+/// * If the parent gas usage is below the gas target, the base fee decreases by at most
+///   `1 / base_fee_max_change_denominator` of the parent base fee (12.5 % for a denominator
+///   of 8) and is floored at `initial_base_fee`.
+///
+/// # Arguments
+/// * `parent_gas_used` - Gas used by the parent block.
+/// * `parent_gas_target` - Gas target of the parent block.
+/// * `parent_base_fee` - Base fee of the parent block.
+/// * `base_fee_max_change_denominator` - Denominator limiting the relative base fee change.
+/// * `initial_base_fee` - Lower bound (floor) for the resulting base fee.
+/// * `max_base_fee` - Upper bound (cap) for the resulting base fee.
+pub fn get_base_fee(
+    parent_gas_used: u64,
+    parent_gas_target: u64,
+    parent_base_fee: U256,
+    base_fee_max_change_denominator: U256,
+    initial_base_fee: U256,
+    max_base_fee: U256,
+) -> Result<U256> {
+    match parent_gas_used.cmp(&parent_gas_target) {
+        Ordering::Equal => Ok(parent_base_fee),
+        Ordering::Greater => {
+            let gas_used_delta = parent_gas_used - parent_gas_target; // sub is safe due to cmp
+            let base_fee_per_gas_delta = get_base_fee_per_gas_delta(
+                gas_used_delta,
+                parent_gas_target,
+                parent_base_fee,
+                base_fee_max_change_denominator,
+            )?;
+            Ok(parent_base_fee
+                .saturating_add(base_fee_per_gas_delta)
+                .min(max_base_fee))
+        }
+        Ordering::Less => {
+            let gas_used_delta = parent_gas_target - parent_gas_used; // sub is safe due to cmp
+            let base_fee_per_gas_delta = get_base_fee_per_gas_delta(
+                gas_used_delta,
+                parent_gas_target,
+                parent_base_fee,
+                base_fee_max_change_denominator,
+            )?;
+            Ok(parent_base_fee
+                .saturating_sub(base_fee_per_gas_delta)
+                .max(initial_base_fee))
+        }
+    }
+}
+
+/// Computes the base fee per gas delta for the given gas usage delta.
+///
+/// The delta is `parent_base_fee * gas_used_delta / parent_gas_target /
+/// base_fee_max_change_denominator` and is floored at one wei so that the base fee always
+/// moves in the expected direction, even for tiny amounts of gas.
+fn get_base_fee_per_gas_delta(
+    gas_used_delta: u64,
+    parent_gas_target: u64,
+    parent_base_fee: U256,
+    base_fee_max_change_denominator: U256,
+) -> Result<U256> {
+    Ok(max(
+        parent_base_fee
+            .checked_mul(gas_used_delta.into())
+            .and_then(|x| x.checked_div(parent_gas_target.into()))
+            .and_then(|x| x.checked_div(base_fee_max_change_denominator))
+            .ok_or_else(|| format_err!("Unsatisfied bounds calculating base_fee_per_gas_delta"))?,
+        U256::one(),
+    ))
 }
 
 // Methods for gas prices RPC pipelines
@@ -496,80 +540,164 @@ impl BlockService {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
 
-    // #[test]
-    // fn test_base_fee_equal() {
-    //     let block = BlockService::new(Arc::new(Storage::new()?)).unwrap();
-    //     assert_eq!(
-    //         U256::from(20_000_000_000u64),
-    //         block.base_fee_calculation(
-    //             15_000_000,
-    //             15_000_000,
-    //             U256::from(20_000_000_000u64),
-    //             U256::from(8),
-    //             U256::from(10_000_000_000u64)
-    //         )
-    //     )
-    // }
+    const GAS_TARGET: u64 = 15_000_000;
+    const BASE_FEE_MAX_CHANGE_DENOMINATOR: u64 = 8;
+    const PARENT_BASE_FEE: u64 = 20_000_000_000; // 20 gwei
 
-    // #[test]
-    // fn test_base_fee_max_increase() {
-    //     let block = BlockService::new(Arc::new(Storage::new()?)).unwrap();
-    //     assert_eq!(
-    //         U256::from(22_500_000_000u64), // should increase by 12.5%
-    //         block.base_fee_calculation(
-    //             30_000_000,
-    //             15_000_000,
-    //             U256::from(20_000_000_000u64),
-    //             U256::from(8),
-    //             U256::from(10_000_000_000u64)
-    //         )
-    //     )
-    // }
+    /// Helper: runs the base fee calculation with the default test parameters.
+    fn base_fee(
+        parent_gas_used: u64,
+        parent_gas_target: u64,
+        parent_base_fee: U256,
+        base_fee_max_change_denominator: U256,
+        initial_base_fee: U256,
+        max_base_fee: U256,
+    ) -> Result<U256> {
+        get_base_fee(
+            parent_gas_used,
+            parent_gas_target,
+            parent_base_fee,
+            base_fee_max_change_denominator,
+            initial_base_fee,
+            max_base_fee,
+        )
+    }
 
-    // #[test]
-    // fn test_base_fee_increase() {
-    //     let block = BlockService::new(Arc::new(Storage::new()?)).unwrap();
-    //     assert_eq!(
-    //         U256::from(20_833_333_333u64), // should increase by ~4.15%
-    //         block.base_fee_calculation(
-    //             20_000_000,
-    //             15_000_000,
-    //             U256::from(20_000_000_000u64),
-    //             U256::from(8),
-    //             U256::from(10_000_000_000u64)
-    //         )
-    //     )
-    // }
+    /// Helper: runs the base fee calculation with the default test parameters.
+    fn base_fee_default(parent_gas_used: u64) -> Result<U256> {
+        base_fee(
+            parent_gas_used,
+            GAS_TARGET,
+            U256::from(PARENT_BASE_FEE),
+            U256::from(BASE_FEE_MAX_CHANGE_DENOMINATOR),
+            INITIAL_BASE_FEE,
+            MAX_BASE_FEE,
+        )
+    }
 
-    // #[test]
-    // fn test_base_fee_max_decrease() {
-    //     let block = BlockService::new(Arc::new(Storage::new()?)).unwrap();
-    //     assert_eq!(
-    //         U256::from(17_500_000_000u64), // should decrease by 12.5%
-    //         block.base_fee_calculation(
-    //             0,
-    //             15_000_000,
-    //             U256::from(20_000_000_000u64),
-    //             U256::from(8),
-    //             U256::from(10_000_000_000u64)
-    //         )
-    //     )
-    // }
+    #[test]
+    fn test_base_fee_equal() {
+        // gas usage equal to the target -> base fee unchanged
+        assert_eq!(
+            U256::from(20_000_000_000u64),
+            base_fee_default(GAS_TARGET).unwrap()
+        );
+    }
 
-    // #[test]
-    // fn test_base_fee_decrease() {
-    //     let block = BlockService::new(Arc::new(Storage::new()?)).unwrap();
-    //     assert_eq!(
-    //         U256::from(19_166_666_667u64), // should increase by ~4.15%
-    //         block.base_fee_calculation(
-    //             10_000_000,
-    //             15_000_000,
-    //             U256::from(20_000_000_000u64),
-    //             U256::from(8),
-    //             U256::from(10_000_000_000u64)
-    //         )
-    //     )
-    // }
+    #[test]
+    fn test_base_fee_max_increase() {
+        // should increase by 12.5%
+        let base_fee = base_fee_default(30_000_000).unwrap();
+        assert_eq!(U256::from(22_500_000_000u64), base_fee);
+        // relative change must not exceed 1/8 (12.5 %)
+        assert!(base_fee - U256::from(PARENT_BASE_FEE) <= U256::from(PARENT_BASE_FEE) / 8u64);
+    }
+
+    #[test]
+    fn test_base_fee_increase() {
+        // should increase by ~4.15%
+        let base_fee = base_fee_default(20_000_000).unwrap();
+        assert_eq!(U256::from(20_833_333_333u64), base_fee);
+        // relative change must not exceed 1/8 (12.5 %)
+        assert!(base_fee - U256::from(PARENT_BASE_FEE) <= U256::from(PARENT_BASE_FEE) / 8u64);
+    }
+
+    #[test]
+    fn test_base_fee_max_decrease() {
+        // should decrease by 12.5%
+        let base_fee = base_fee_default(0).unwrap();
+        assert_eq!(U256::from(17_500_000_000u64), base_fee);
+        // relative change must not exceed 1/8 (12.5 %)
+        assert!(U256::from(PARENT_BASE_FEE) - base_fee <= U256::from(PARENT_BASE_FEE) / 8u64);
+    }
+
+    #[test]
+    fn test_base_fee_decrease() {
+        // should decrease by ~4.15%
+        let base_fee = base_fee_default(10_000_000).unwrap();
+        assert_eq!(U256::from(19_166_666_667u64), base_fee);
+        // relative change must not exceed 1/8 (12.5 %)
+        assert!(U256::from(PARENT_BASE_FEE) - base_fee <= U256::from(PARENT_BASE_FEE) / 8u64);
+    }
+
+    #[test]
+    fn test_base_fee_increase_clamped_at_max() {
+        // the base fee must never exceed the maximum base fee
+        assert_eq!(
+            MAX_BASE_FEE,
+            base_fee(
+                30_000_000,
+                GAS_TARGET,
+                MAX_BASE_FEE,
+                U256::from(BASE_FEE_MAX_CHANGE_DENOMINATOR),
+                INITIAL_BASE_FEE,
+                MAX_BASE_FEE,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_base_fee_decrease_clamped_at_initial() {
+        // the base fee must never drop below the initial base fee
+        assert_eq!(
+            INITIAL_BASE_FEE,
+            base_fee(
+                0,
+                GAS_TARGET,
+                INITIAL_BASE_FEE,
+                U256::from(BASE_FEE_MAX_CHANGE_DENOMINATOR),
+                INITIAL_BASE_FEE,
+                MAX_BASE_FEE,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_base_fee_minimum_delta_one_wei() {
+        // the base fee delta is floored at one wei
+        assert_eq!(
+            U256::from(9u64),
+            base_fee(
+                GAS_TARGET + 1,
+                GAS_TARGET,
+                U256::from(8u64),
+                U256::from(BASE_FEE_MAX_CHANGE_DENOMINATOR),
+                INITIAL_BASE_FEE,
+                MAX_BASE_FEE,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_base_fee_zero_gas_target_errors() {
+        // a zero gas target leads to a division by zero
+        assert!(base_fee(
+            1,
+            0,
+            U256::from(PARENT_BASE_FEE),
+            U256::from(BASE_FEE_MAX_CHANGE_DENOMINATOR),
+            INITIAL_BASE_FEE,
+            MAX_BASE_FEE,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_base_fee_zero_denominator_errors() {
+        // a zero change denominator leads to a division by zero
+        assert!(base_fee(
+            30_000_000,
+            GAS_TARGET,
+            U256::from(PARENT_BASE_FEE),
+            U256::zero(),
+            INITIAL_BASE_FEE,
+            MAX_BASE_FEE,
+        )
+        .is_err());
+    }
 }
