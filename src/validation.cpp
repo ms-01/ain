@@ -167,7 +167,6 @@ uint64_t nPruneTarget = 0;
 bool fIsFakeNet = false;
 int64_t nMaxTipAge = DEFAULT_MAX_TIP_AGE;
 
-uint256 hashAssumeValid;
 arith_uint256 nMinimumChainWork;
 
 CFeeRate minRelayTxFee = CFeeRate(DEFAULT_MIN_RELAY_TX_FEE);
@@ -715,7 +714,12 @@ void CoinsViews::InitCache() {
 // NOTE: for now m_blockman is set to a global, but this will be changed
 // in a future commit.
 CChainState::CChainState()
-    : m_blockman(g_blockman) {}
+    : m_blockman(g_blockman) {
+    // The chainparams default is the fallback for the assumed-valid block, it is
+    // disabled (null) on every network by default. The `-assumevalid` command
+    // line option overrides it during start-up.
+    m_assumed_valid = Params().GetConsensus().defaultAssumeValid;
+}
 
 void CChainState::InitCoinsDB(size_t cache_size_bytes, bool in_memory, bool should_wipe, std::string leveldb_name) {
     m_coins_views = std::make_unique<CoinsViews>(leveldb_name, cache_size_bytes, in_memory, should_wipe);
@@ -1991,6 +1995,50 @@ static bool GetTokenMigrationCreationTxs(CCustomCSView &view,
     return true;
 }
 
+bool CanSkipScriptChecks(const CBlockIndex* assumed_valid_index,
+                         const CBlockIndex* pindex,
+                         const CBlockIndex* pindex_best_header,
+                         const arith_uint256& minimum_chain_work,
+                         const Consensus::Params& params,
+                         std::string& out_reason)
+{
+    assert(pindex != nullptr);
+
+    if (assumed_valid_index == nullptr) {
+        out_reason = "assumevalid hash not in headers";
+        return false;
+    }
+    // The block must be an ancestor of the assumed-valid block.
+    if (assumed_valid_index->GetAncestor(pindex->nHeight) != pindex) {
+        out_reason = (pindex->nHeight > assumed_valid_index->nHeight) ? "block height above assumevalid height"
+                                                                      : "block not in assumevalid chain";
+        return false;
+    }
+    // The block must be an ancestor of the best header.
+    if (pindex_best_header == nullptr || pindex_best_header->GetAncestor(pindex->nHeight) != pindex) {
+        out_reason = "block not in best header chain";
+        return false;
+    }
+    // The test against the minimum chain work prevents the skipping when denied
+    // access to any chain at least as good as the expected chain.
+    if (pindex_best_header->nChainWork < minimum_chain_work) {
+        out_reason = "best header chainwork below minimumchainwork";
+        return false;
+    }
+    // The equivalent time check discourages hash power from extorting the network via DOS attack
+    //  into accepting an invalid block through telling users they must manually set assumevalid.
+    //  Requiring a software change or burying the invalid block, regardless of the setting, makes
+    //  it hard to hide the implication of the demand.  This also avoids having release candidates
+    //  that are hardly doing any signature verification at all in testing without having to
+    //  artificially set the default assumed verified block further back.
+    if (GetBlockProofEquivalentTime(*pindex_best_header, *pindex, *pindex_best_header, params) <=
+        60 * 60 * 24 * 7 * 2) {
+        out_reason = "block too recent relative to best header";
+        return false;
+    }
+    return true;
+}
+
 /** Apply the effects of this block (with given index) on the UTXO set represented by coins.
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock ()
  *  can fail if those validity checks fail (among other reasons). */
@@ -2147,31 +2195,40 @@ bool CChainState::ConnectBlock(const CBlock &block,
     nBlocksTotal++;
 
     bool fScriptChecks = true;
-    if (!hashAssumeValid.IsNull()) {
+    // Reason why script verification is (not) skipped for this block. It is
+    // empty when the verification is skipped because the block is part of the
+    // assumed-valid range.
+    std::string script_check_reason = "assumevalid=0 (always verify)";
+    if (!m_assumed_valid.IsNull()) {
         // We've been configured with the hash of a block which has been externally verified to have a valid history.
         // A suitable default value is included with the software and updated from time to time.  Because validity
         //  relative to a piece of software is an objective fact these defaults can be easily reviewed.
         // This setting doesn't force the selection of any particular chain but makes validating some faster by
         //  effectively caching the result of part of the verification.
-        BlockMap::const_iterator it = m_blockman.m_block_index.find(hashAssumeValid);
-        if (it != m_blockman.m_block_index.end()) {
-            if (it->second->GetAncestor(pindex->nHeight) == pindex &&
-                pindexBestHeader->GetAncestor(pindex->nHeight) == pindex &&
-                pindexBestHeader->nChainWork >= nMinimumChainWork) {
+        BlockMap::const_iterator it = m_blockman.m_block_index.find(m_assumed_valid);
+        if (it == m_blockman.m_block_index.end()) {
+            script_check_reason = "assumevalid hash not in headers";
+        } else {
+            std::string reason;
+            if (CanSkipScriptChecks(it->second, pindex, pindexBestHeader, nMinimumChainWork,
+                                    chainparams.GetConsensus(), reason)) {
                 // This block is a member of the assumed verified chain and an ancestor of the best header.
-                // The equivalent time check discourages hash power from extorting the network via DOS attack
-                //  into accepting an invalid block through telling users they must manually set assumevalid.
-                //  Requiring a software change or burying the invalid block, regardless of the setting, makes
-                //  it hard to hide the implication of the demand.  This also avoids having release candidates
-                //  that are hardly doing any signature verification at all in testing without having to
-                //  artificially set the default assumed verified block further back.
-                // The test against nMinimumChainWork prevents the skipping when denied access to any chain at
-                //  least as good as the expected chain.
-                fScriptChecks = (GetBlockProofEquivalentTime(
-                                     *pindexBestHeader, *pindex, *pindexBestHeader, chainparams.GetConsensus()) <=
-                                 60 * 60 * 24 * 7 * 2);
+                // Only the script verification (transaction signature checks) is skipped, all DeFiChain
+                // consensus rules (stake modifier, minted blocks, custom transactions, ...) stay active.
+                script_check_reason.clear();
+            } else {
+                script_check_reason = reason;
             }
         }
+    }
+    fScriptChecks = !script_check_reason.empty();
+    if (script_check_reason != m_last_script_check_reason_logged) {
+        LogPrintf("Script verification %s for block %s at height %d: %s\n",
+                  fScriptChecks ? "enabled" : "skipped",
+                  pindex->GetBlockHash().GetHex(),
+                  pindex->nHeight,
+                  script_check_reason.empty() ? "assumevalid range" : script_check_reason);
+        m_last_script_check_reason_logged = script_check_reason;
     }
 
     int64_t nTime1 = GetTimeMicros();

@@ -104,6 +104,14 @@ std::unique_ptr<CConnman> g_connman;
 std::unique_ptr<PeerLogicValidation> peerLogic;
 std::unique_ptr<BanMan> g_banman;
 
+/**
+ * Block hash whose ancestors we will assume to have valid scripts without
+ * checking them. It is resolved during parameter interaction (chainparams
+ * default, overridable with `-assumevalid`) and applied to the chainstate
+ * once the chainstate is created.
+ */
+static uint256 g_assumed_valid_block;
+
 #ifdef WIN32
 // Win32 LevelDB doesn't use filedescriptors, and the ones used for
 // accessing block files don't count towards the fd_set size limit
@@ -1301,9 +1309,12 @@ bool AppInitParameterInteraction()
         LogPrintf("conf: checkpoints enabled.\n");
     }
 
-    hashAssumeValid = uint256S(gArgs.GetArg("-assumevalid", chainparams.GetConsensus().defaultAssumeValid.GetHex()));
-    if (!hashAssumeValid.IsNull())
-        LogPrintf("Assuming ancestors of block %s have valid signatures.\n", hashAssumeValid.GetHex());
+    // The assumed-valid block is resolved during parameter interaction and applied
+    // to the chainstate once it is created (see AppInitMain).
+    g_assumed_valid_block =
+        uint256S(gArgs.GetArg("-assumevalid", chainparams.GetConsensus().defaultAssumeValid.GetHex()));
+    if (!g_assumed_valid_block.IsNull())
+        LogPrintf("Assuming ancestors of block %s have valid signatures.\n", g_assumed_valid_block.GetHex());
     else
         LogPrintf("Validating signatures for all blocks.\n");
 
@@ -1967,6 +1978,9 @@ bool AppInitMain(InitInterfaces& interfaces)
                 LOCK(cs_main);
                 // This statement makes ::ChainstateActive() usable.
                 g_chainstate = std::make_unique<CChainState>();
+                // Apply the assumed-valid block (chainparams default or -assumevalid override)
+                // to the freshly created chainstate.
+                g_chainstate->SetAssumedValidBlock(g_assumed_valid_block);
                 UnloadBlockIndex();
 
                 // new CBlockTreeDB tries to delete the existing file, which
