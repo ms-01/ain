@@ -1,6 +1,9 @@
 pub mod cache;
 pub mod system;
 
+#[cfg(test)]
+pub(crate) mod test_helpers;
+
 use anyhow::format_err;
 use ethereum::{
     AccessList, EnvelopedDecoderError, EnvelopedEncodable, LegacyTransaction, TransactionAction,
@@ -420,11 +423,19 @@ impl<T> From<EnvelopedDecoderError<T>> for TransactionError {
 mod tests {
     use std::{error::Error, fs, path::Path};
 
-    use ethereum::{AccessListItem, EnvelopedEncodable};
+    use ethereum::{AccessListItem, EnvelopedEncodable, TransactionAction};
     use ethereum_types::{H160, H256, U256, U64};
     use serde::Deserialize;
 
-    use crate::{bytes::Bytes, transaction::SignedTx};
+    use crate::{
+        bytes::Bytes,
+        transaction::{
+            test_helpers::{
+                eip1559_tx, eip2930_tx, legacy_tx, legacy_tx_with, TxFields, TEST_CHAIN_ID,
+            },
+            SignedTx, TransactionError,
+        },
+    };
 
     #[test]
     fn test_signed_tx_from_raw_tx() {
@@ -563,5 +574,618 @@ mod tests {
         let signed_tx: SignedTx = (raw_eip1559_tx[2..]).try_into().unwrap();
         assert_eq!(signed_tx.get_tx_type(), U256::from(2));
         Ok(())
+    }
+
+    /// Builds an access list with a single address and a single storage key.
+    fn test_access_list() -> Vec<AccessListItem> {
+        vec![AccessListItem {
+            address: H160::from_low_u64_be(1),
+            storage_keys: vec![H256::from_low_u64_be(2)],
+        }]
+    }
+
+    #[test]
+    fn access_list_is_empty_for_legacy_transactions() {
+        let tx = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+        );
+        assert!(tx.access_list().is_empty());
+    }
+
+    #[test]
+    fn access_list_is_preserved_for_eip2930_transactions() {
+        let access_list = test_access_list();
+        let tx = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            access_list.clone(),
+        );
+        assert_eq!(tx.access_list(), access_list);
+
+        // An empty access list is allowed as well.
+        let tx = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(tx.access_list().is_empty());
+    }
+
+    #[test]
+    fn access_list_is_preserved_for_eip1559_transactions() {
+        let access_list = test_access_list();
+        let tx = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            access_list.clone(),
+        );
+        assert_eq!(tx.access_list(), access_list);
+
+        // An empty access list is allowed as well.
+        let tx = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(tx.access_list().is_empty());
+    }
+
+    #[test]
+    fn action_and_to_are_derived_from_the_transaction_type() {
+        let to = H160::from_low_u64_be(0xdead);
+
+        let legacy = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(to),
+            Vec::new(),
+        );
+        assert_eq!(legacy.action(), TransactionAction::Call(to));
+        assert_eq!(legacy.to(), Some(to));
+
+        let legacy_create = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Create,
+            Vec::new(),
+        );
+        assert_eq!(legacy_create.action(), TransactionAction::Create);
+        assert_eq!(legacy_create.to(), None);
+
+        let eip2930 = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(to),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip2930.action(), TransactionAction::Call(to));
+        assert_eq!(eip2930.to(), Some(to));
+
+        let eip2930_create = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Create,
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip2930_create.action(), TransactionAction::Create);
+        assert_eq!(eip2930_create.to(), None);
+
+        let eip1559 = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(to),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip1559.action(), TransactionAction::Call(to));
+        assert_eq!(eip1559.to(), Some(to));
+
+        let eip1559_create = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Create,
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip1559_create.action(), TransactionAction::Create);
+        assert_eq!(eip1559_create.to(), None);
+    }
+
+    #[test]
+    fn gas_limit_is_passed_through_for_all_transaction_types() {
+        let legacy = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+        );
+        assert_eq!(legacy.gas_limit(), U256::from(21_000));
+
+        let eip2930 = eip2930_tx(
+            U256::from(123_456),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip2930.gas_limit(), U256::from(123_456));
+
+        let eip1559 = eip1559_tx(
+            U256::from(654_321),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip1559.gas_limit(), U256::from(654_321));
+    }
+
+    #[test]
+    fn effective_gas_price_ignores_the_base_fee_for_legacy_and_eip2930() {
+        let legacy = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+        );
+        assert_eq!(
+            legacy.effective_gas_price(U256::zero()).unwrap(),
+            U256::from(100)
+        );
+        assert_eq!(
+            legacy.effective_gas_price(U256::from(30)).unwrap(),
+            U256::from(100)
+        );
+        assert_eq!(
+            legacy.effective_gas_price(U256::MAX).unwrap(),
+            U256::from(100)
+        );
+
+        let eip2930 = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(
+            eip2930.effective_gas_price(U256::zero()).unwrap(),
+            U256::from(100)
+        );
+        assert_eq!(
+            eip2930.effective_gas_price(U256::from(30)).unwrap(),
+            U256::from(100)
+        );
+        assert_eq!(
+            eip2930.effective_gas_price(U256::MAX).unwrap(),
+            U256::from(100)
+        );
+    }
+
+    #[test]
+    fn effective_gas_price_uses_min_of_max_fee_and_base_fee_plus_priority_fee() {
+        let tx = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        // base fee + priority fee below the max fee
+        assert_eq!(
+            tx.effective_gas_price(U256::from(20)).unwrap(),
+            U256::from(30)
+        );
+        // base fee + priority fee exactly at the max fee
+        assert_eq!(
+            tx.effective_gas_price(U256::from(90)).unwrap(),
+            U256::from(100)
+        );
+        // base fee + priority fee above the max fee
+        assert_eq!(
+            tx.effective_gas_price(U256::from(95)).unwrap(),
+            U256::from(100)
+        );
+        assert_eq!(
+            tx.effective_gas_price(U256::from(200)).unwrap(),
+            U256::from(100)
+        );
+    }
+
+    #[test]
+    fn effective_gas_price_overflow_is_reported() {
+        let tx = eip1559_tx(
+            U256::from(21_000),
+            U256::MAX,
+            U256::MAX,
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        let error = tx.effective_gas_price(U256::MAX).unwrap_err();
+        assert_eq!(error.to_string(), "effective_gas_price overflow");
+    }
+
+    #[test]
+    fn effective_priority_fee_per_gas_uses_gas_price_minus_base_fee() {
+        let legacy = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+        );
+        assert_eq!(
+            legacy
+                .effective_priority_fee_per_gas(U256::from(30))
+                .unwrap(),
+            U256::from(70)
+        );
+        // base fee equal to the gas price
+        assert_eq!(
+            legacy
+                .effective_priority_fee_per_gas(U256::from(100))
+                .unwrap(),
+            U256::zero()
+        );
+
+        let eip2930 = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(
+            eip2930
+                .effective_priority_fee_per_gas(U256::from(30))
+                .unwrap(),
+            U256::from(70)
+        );
+        assert_eq!(
+            eip2930
+                .effective_priority_fee_per_gas(U256::from(100))
+                .unwrap(),
+            U256::zero()
+        );
+    }
+
+    #[test]
+    fn effective_priority_fee_per_gas_saturates_to_zero() {
+        let legacy = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+        );
+        // base fee above the gas price
+        assert_eq!(
+            legacy
+                .effective_priority_fee_per_gas(U256::from(200))
+                .unwrap(),
+            U256::zero()
+        );
+
+        let eip2930 = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(
+            eip2930
+                .effective_priority_fee_per_gas(U256::from(200))
+                .unwrap(),
+            U256::zero()
+        );
+    }
+
+    #[test]
+    fn effective_priority_fee_per_gas_uses_min_of_priority_fee_and_max_fee_minus_base_fee() {
+        let tx = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        // the priority fee is the limiting factor
+        assert_eq!(
+            tx.effective_priority_fee_per_gas(U256::from(20)).unwrap(),
+            U256::from(10)
+        );
+        // the max fee minus the base fee is the limiting factor
+        assert_eq!(
+            tx.effective_priority_fee_per_gas(U256::from(95)).unwrap(),
+            U256::from(5)
+        );
+        // base fee equal to the max fee
+        assert_eq!(
+            tx.effective_priority_fee_per_gas(U256::from(100)).unwrap(),
+            U256::zero()
+        );
+        // base fee above the max fee saturates to zero
+        assert_eq!(
+            tx.effective_priority_fee_per_gas(U256::from(150)).unwrap(),
+            U256::zero()
+        );
+    }
+
+    #[test]
+    fn gas_price_and_fee_accessors_match_the_transaction_type() {
+        let legacy = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+        );
+        assert_eq!(legacy.gas_price(), U256::from(100));
+        assert_eq!(legacy.max_fee_per_gas(), None);
+        assert_eq!(legacy.max_priority_fee_per_gas(), None);
+
+        let eip2930 = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip2930.gas_price(), U256::from(100));
+        assert_eq!(eip2930.max_fee_per_gas(), None);
+        assert_eq!(eip2930.max_priority_fee_per_gas(), None);
+
+        let eip1559 = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        // for EIP-1559 the gas price is the max fee per gas
+        assert_eq!(eip1559.gas_price(), U256::from(100));
+        assert_eq!(eip1559.max_fee_per_gas(), Some(U256::from(100)));
+        assert_eq!(eip1559.max_priority_fee_per_gas(), Some(U256::from(10)));
+    }
+
+    #[test]
+    fn value_data_and_nonce_are_passed_through() {
+        let input = vec![1u8, 2, 3];
+        let legacy = legacy_tx_with(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            input.clone(),
+            TxFields::new(U256::from(1_234), U256::from(7)),
+        );
+        assert_eq!(legacy.value(), U256::from(1_234));
+        assert_eq!(legacy.data(), input.as_slice());
+        assert_eq!(legacy.nonce(), U256::from(7));
+
+        let eip2930 = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            input.clone(),
+            Vec::new(),
+        );
+        assert_eq!(eip2930.value(), U256::zero());
+        assert_eq!(eip2930.data(), input.as_slice());
+        assert_eq!(eip2930.nonce(), U256::zero());
+
+        let eip1559 = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(H160::zero()),
+            input.clone(),
+            Vec::new(),
+        );
+        assert_eq!(eip1559.value(), U256::zero());
+        assert_eq!(eip1559.data(), input.as_slice());
+        assert_eq!(eip1559.nonce(), U256::zero());
+    }
+
+    #[test]
+    fn signature_fields_are_passed_through() {
+        let legacy = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+        );
+        // the legacy `v` is derived from the chain id and the parity of the signature
+        assert!(legacy.v() == TEST_CHAIN_ID * 2 + 35 || legacy.v() == TEST_CHAIN_ID * 2 + 36);
+        assert_ne!(legacy.r(), H256::zero());
+        assert_ne!(legacy.s(), H256::zero());
+
+        let eip2930 = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(eip2930.v() == 0 || eip2930.v() == 1);
+        assert_ne!(eip2930.r(), H256::zero());
+        assert_ne!(eip2930.s(), H256::zero());
+
+        let eip1559 = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(eip1559.v() == 0 || eip1559.v() == 1);
+        assert_ne!(eip1559.r(), H256::zero());
+        assert_ne!(eip1559.s(), H256::zero());
+    }
+
+    #[test]
+    fn chain_id_is_recovered_from_the_signature() {
+        let legacy = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+        );
+        assert_eq!(legacy.chain_id(), TEST_CHAIN_ID);
+
+        let eip2930 = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip2930.chain_id(), TEST_CHAIN_ID);
+
+        let eip1559 = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip1559.chain_id(), TEST_CHAIN_ID);
+    }
+
+    #[test]
+    fn hash_is_deterministic_and_transaction_specific() {
+        let tx = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+        );
+        // the hash is cached, but always returns the same value
+        assert_eq!(tx.hash(), tx.hash());
+        assert_eq!(tx.hash(), tx.transaction.hash());
+
+        // a different transaction has a different hash
+        let other = legacy_tx_with(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            TxFields::new(U256::zero(), U256::from(1)),
+        );
+        assert_ne!(tx.hash(), other.hash());
+    }
+
+    #[test]
+    fn get_tx_type_returns_the_envelope_type() {
+        let legacy = legacy_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+        );
+        assert_eq!(legacy.get_tx_type(), U256::zero());
+
+        let eip2930 = eip2930_tx(
+            U256::from(21_000),
+            U256::from(100),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip2930.get_tx_type(), U256::from(1));
+
+        let eip1559 = eip1559_tx(
+            U256::from(21_000),
+            U256::from(100),
+            U256::from(10),
+            TransactionAction::Call(H160::zero()),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(eip1559.get_tx_type(), U256::from(2));
+    }
+
+    #[test]
+    fn transaction_error_display_messages_are_stable() {
+        assert_eq!(
+            TransactionError::Secp256k1Error(libsecp256k1::Error::InvalidMessage).to_string(),
+            "Secp256k1 error: Invalid message"
+        );
+        assert_eq!(
+            TransactionError::DecodingError.to_string(),
+            "Error decoding raw transaction"
+        );
+        assert_eq!(
+            TransactionError::SignatureError.to_string(),
+            "Error creating new signature"
+        );
+        assert_eq!(
+            TransactionError::FromHexError(hex::FromHexError::OddLength).to_string(),
+            "Error parsing hex: Odd number of digits"
+        );
+        assert_eq!(
+            TransactionError::ConstructionError.to_string(),
+            "Error constructing Transaction"
+        );
+    }
+
+    #[test]
+    fn transaction_error_conversions_are_available() {
+        let error: TransactionError = libsecp256k1::Error::InvalidSecretKey.into();
+        assert!(matches!(error, TransactionError::Secp256k1Error(_)));
+
+        let error: TransactionError = hex::FromHexError::OddLength.into();
+        assert!(matches!(error, TransactionError::FromHexError(_)));
+
+        let error: TransactionError = ethereum::EnvelopedDecoderError::<()>::UnknownTypeId.into();
+        assert!(matches!(error, TransactionError::DecodingError));
+    }
+
+    #[test]
+    fn signed_tx_from_invalid_hex_reports_a_hex_error() {
+        let error = SignedTx::try_from("zz").unwrap_err();
+        assert!(matches!(error, TransactionError::FromHexError(_)));
+        assert_eq!(
+            error.to_string(),
+            "Error parsing hex: Invalid character 'z' at position 0"
+        );
+    }
+
+    #[test]
+    fn signed_tx_from_invalid_payload_reports_a_decoding_error() {
+        let error = SignedTx::try_from("deadbeef").unwrap_err();
+        assert!(matches!(error, TransactionError::DecodingError));
+        assert_eq!(error.to_string(), "Error decoding raw transaction");
+    }
+
+    #[test]
+    fn signed_tx_with_unrecoverable_signature_reports_a_secp256k1_error() {
+        // EIP-2930 transaction with an `r` value that is not a valid secp256k1
+        // signature component, the sender cannot be recovered from it
+        let raw_tx = "01f86382046780648252089400000000000000000000000000000000000000008080c080a0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa00100000000000000000000000000000000000000000000000000000000000000";
+        let error = SignedTx::try_from(raw_tx).unwrap_err();
+        assert!(matches!(error, TransactionError::Secp256k1Error(_)));
+        assert_eq!(error.to_string(), "Secp256k1 error: Invalid signature");
     }
 }
