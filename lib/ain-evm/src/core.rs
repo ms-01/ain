@@ -801,3 +801,80 @@ impl EVMCoreService {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ethereum::Log;
+    use ethereum_types::{Bloom, H160, H256};
+
+    use crate::core::EVMCoreService;
+
+    /// The exact bloom of a single ERC-20 `Transfer(address,address,uint256)` log
+    /// emitted by the contract `0x1111...1111`, i.e. the address and the topic0
+    /// `0xddf252ad...3b3ef` accrued into an empty bloom.
+    ///
+    /// Recomputed with `ethbloom` 0.13.0 (the crate backing the in-tree
+    /// `ethereum_types::Bloom`).
+    const BLOOM_TRANSFER: &str = "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000";
+
+    /// The exact bloom of two logs emitted by the same contract: the
+    /// `Transfer(address,address,uint256)` log and a second log carrying the
+    /// additional topic `0x...02`.
+    const BLOOM_TRANSFER_AND_SECOND_LOG: &str = "0x04000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000000000000000000000000000000000000000000000000000000000000000000000100000100000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000008000000000000000000000";
+
+    fn transfer_log() -> Log {
+        Log {
+            address: H160::from_slice(
+                &hex::decode("1111111111111111111111111111111111111111").unwrap(),
+            ),
+            topics: vec![H256::from_slice(
+                &hex::decode("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
+                    .unwrap(),
+            )],
+            data: vec![],
+        }
+    }
+
+    fn second_log() -> Log {
+        Log {
+            address: H160::from_slice(
+                &hex::decode("1111111111111111111111111111111111111111").unwrap(),
+            ),
+            topics: vec![H256::from_slice(
+                &hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
+                    .unwrap(),
+            )],
+            data: vec![],
+        }
+    }
+
+    #[test]
+    fn logs_bloom_of_an_empty_log_set_is_zero() {
+        let mut bloom = Bloom::default();
+        EVMCoreService::logs_bloom(vec![], &mut bloom);
+        assert_eq!(bloom, Bloom::default());
+        assert_eq!(format!("{:#x}", bloom), format!("0x{}", "0".repeat(512)));
+    }
+
+    #[test]
+    fn logs_bloom_accrues_the_address_and_every_topic() {
+        let mut bloom = Bloom::default();
+        EVMCoreService::logs_bloom(vec![transfer_log()], &mut bloom);
+        assert_eq!(format!("{:#x}", bloom), BLOOM_TRANSFER);
+        assert_eq!(
+            hex::encode(bloom.data()),
+            BLOOM_TRANSFER.trim_start_matches("0x")
+        );
+    }
+
+    #[test]
+    fn logs_bloom_accumulates_over_multiple_logs() {
+        let mut bloom = Bloom::default();
+        EVMCoreService::logs_bloom(vec![transfer_log(), second_log()], &mut bloom);
+        assert_eq!(format!("{:#x}", bloom), BLOOM_TRANSFER_AND_SECOND_LOG);
+        assert_eq!(
+            hex::encode(bloom.data()),
+            BLOOM_TRANSFER_AND_SECOND_LOG.trim_start_matches("0x")
+        );
+    }
+}

@@ -48,3 +48,80 @@ impl ListenerT for Listener {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ethereum_types::{H160, H256};
+
+    use crate::trace::tracing::RuntimeEvent;
+
+    use super::Listener;
+
+    fn address(value: u64) -> H160 {
+        H160::from_low_u64_be(value)
+    }
+
+    fn sload(address: H160, index: H256) -> RuntimeEvent {
+        RuntimeEvent::SLoad {
+            address,
+            index,
+            value: H256::zero(),
+        }
+    }
+
+    fn sstore(address: H160, index: H256) -> RuntimeEvent {
+        RuntimeEvent::SStore {
+            address,
+            index,
+            value: H256::zero(),
+        }
+    }
+
+    #[test]
+    fn access_list_records_storage_keys_per_address() {
+        let mut listener = Listener::default();
+        listener.runtime_event(sload(address(0x1111), H256::from_low_u64_be(1)));
+        listener.runtime_event(sstore(address(0x2222), H256::from_low_u64_be(2)));
+
+        let access_list = listener.finish_transaction();
+
+        assert_eq!(access_list.len(), 2);
+        let mut items: Vec<_> = access_list.iter().collect();
+        items.sort_by_key(|item| item.address);
+        assert_eq!(items[0].address, address(0x1111));
+        assert_eq!(items[0].storage_keys, vec![H256::from_low_u64_be(1)]);
+        assert_eq!(items[1].address, address(0x2222));
+        assert_eq!(items[1].storage_keys, vec![H256::from_low_u64_be(2)]);
+    }
+
+    #[test]
+    fn access_list_deduplicates_repeated_keys() {
+        let mut listener = Listener::default();
+        listener.runtime_event(sload(address(0x1111), H256::from_low_u64_be(1)));
+        listener.runtime_event(sload(address(0x1111), H256::from_low_u64_be(1)));
+        listener.runtime_event(sstore(address(0x1111), H256::from_low_u64_be(1)));
+
+        let access_list = listener.finish_transaction();
+
+        assert_eq!(access_list.len(), 1);
+        assert_eq!(access_list[0].storage_keys, vec![H256::from_low_u64_be(1)]);
+    }
+
+    #[test]
+    fn access_list_ignores_non_storage_events() {
+        let mut listener = Listener::default();
+        listener.runtime_event(RuntimeEvent::Step {
+            context: crate::trace::tracing::Context {
+                address: address(0x1111),
+                caller: address(0x2222),
+                apparent_value: 0u64.into(),
+            },
+            opcode: vec![0x60],
+            position: Ok(0),
+            stack: None,
+            memory: None,
+        });
+
+        assert!(listener.finish_transaction().is_empty());
+    }
+}

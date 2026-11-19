@@ -147,3 +147,119 @@ impl super::ResponseFormatter for Formatter {
         Some(traces)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+
+    use ethereum_types::{H160, U256};
+    use serde_json::json;
+
+    use crate::trace::{
+        formatters::{
+            blockscout::{BlockscoutCall, BlockscoutCallInner},
+            trace_filter::Formatter,
+            ResponseFormatter,
+        },
+        listeners::call_list::Listener,
+        types::{CallResult, CallType},
+    };
+
+    fn address(value: u64) -> H160 {
+        H160::from_low_u64_be(value)
+    }
+
+    fn listener_with(entry: BTreeMap<u32, BlockscoutCall>) -> Rc<RefCell<Listener>> {
+        let mut listener = Listener::default();
+        listener.entries = vec![entry];
+        Rc::new(RefCell::new(listener))
+    }
+
+    #[test]
+    fn trace_filter_formats_a_flat_call_list() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            0,
+            BlockscoutCall {
+                from: address(0x1111),
+                trace_address: vec![],
+                subtraces: 0,
+                value: U256::from(5),
+                gas: U256::from(100_000),
+                gas_used: U256::from(21_000),
+                inner: BlockscoutCallInner::Call {
+                    call_type: CallType::Call,
+                    to: address(0x2222),
+                    input: vec![0xde, 0xad],
+                    res: CallResult::Output(vec![0xbe, 0xef]),
+                },
+            },
+        );
+
+        let traces = Formatter::format(listener_with(entry), false).expect("expected a trace");
+        let actual = serde_json::to_value(traces).unwrap();
+
+        assert_eq!(
+            actual,
+            json!([
+                {
+                    "type": "call",
+                    "action": {
+                        "callType": "call",
+                        "from": "0x0000000000000000000000000000000000001111",
+                        "gas": "0x186a0",
+                        "input": "0xdead",
+                        "to": "0x0000000000000000000000000000000000002222",
+                        "value": "0x5"
+                    },
+                    "blockHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "blockNumber": 0,
+                    "result": {
+                        "gasUsed": "0x5208",
+                        "output": "0xbeef"
+                    },
+                    "subtraces": 0,
+                    "traceAddress": [],
+                    "transactionHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "transactionPosition": 0
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn trace_filter_returns_an_empty_list_for_an_empty_listener() {
+        let listener = Rc::new(RefCell::new(Listener::default()));
+        let traces = Formatter::format(listener, false).expect("expected a trace");
+        assert!(traces.is_empty());
+        assert_eq!(serde_json::to_value(traces).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn trace_filter_reports_a_revert() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            0,
+            BlockscoutCall {
+                from: address(0x1111),
+                trace_address: vec![],
+                subtraces: 0,
+                value: U256::from(5),
+                gas: U256::from(100_000),
+                gas_used: U256::from(21_000),
+                inner: BlockscoutCallInner::Call {
+                    call_type: CallType::Call,
+                    to: address(0x2222),
+                    input: vec![0xde, 0xad],
+                    res: CallResult::Error(b"execution reverted".to_vec()),
+                },
+            },
+        );
+
+        let traces = Formatter::format(listener_with(entry), false).expect("expected a trace");
+        let actual = serde_json::to_value(traces).unwrap();
+
+        assert_eq!(actual[0]["error"], json!("execution reverted"));
+        assert!(actual[0].get("result").is_none());
+    }
+}

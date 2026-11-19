@@ -554,10 +554,14 @@ mod tests {
     use crate::log::LogIndex;
 
     fn make_log(address: H160, topic: H256, removed: bool) -> LogIndex {
+        make_log_with_topics(address, vec![topic], removed)
+    }
+
+    fn make_log_with_topics(address: H160, topics: Vec<H256>, removed: bool) -> LogIndex {
         LogIndex {
             block_hash: H256::zero(),
             block_number: U256::from(1),
-            topics: vec![topic],
+            topics,
             data: vec![],
             log_index: U256::zero(),
             address,
@@ -595,5 +599,202 @@ mod tests {
         assert_eq!(filtered[0].address, addr_a);
         assert_eq!(filtered[0].topics, vec![topic_1]);
         assert!(filtered[0].removed);
+    }
+
+    #[test]
+    fn verify_criteria_defaults_from_and_to_block() {
+        let mut criteria = FilterCriteria::default();
+        criteria.verify_criteria(U256::from(100)).unwrap();
+        assert_eq!(criteria.from_block, Some(U256::zero()));
+        assert_eq!(criteria.to_block, Some(U256::from(100)));
+    }
+
+    #[test]
+    fn verify_criteria_rejects_from_block_after_to_block() {
+        let mut criteria = FilterCriteria {
+            from_block: Some(U256::from(10)),
+            to_block: Some(U256::from(9)),
+            ..Default::default()
+        };
+        let err = criteria.verify_criteria(U256::from(100)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("fromBlock is greater than toBlock"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_criteria_accepts_a_range_of_exactly_the_limit() {
+        let mut criteria = FilterCriteria {
+            from_block: Some(U256::zero()),
+            to_block: Some(U256::from(2000)),
+            ..Default::default()
+        };
+        criteria.verify_criteria(U256::from(10_000)).unwrap();
+        assert_eq!(criteria.from_block, Some(U256::zero()));
+        assert_eq!(criteria.to_block, Some(U256::from(2000)));
+    }
+
+    #[test]
+    fn verify_criteria_rejects_a_range_above_the_limit() {
+        let mut criteria = FilterCriteria {
+            from_block: Some(U256::zero()),
+            to_block: Some(U256::from(2001)),
+            ..Default::default()
+        };
+        let err = criteria.verify_criteria(U256::from(10_000)).unwrap_err();
+        assert!(
+            err.to_string().contains("block range exceed max limit"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_criteria_accepts_four_topic_positions() {
+        let mut criteria = FilterCriteria {
+            topics: Some(vec![
+                vec![H256::from_low_u64_be(1)],
+                vec![H256::from_low_u64_be(2)],
+                vec![H256::from_low_u64_be(3)],
+                vec![H256::from_low_u64_be(4)],
+            ]),
+            ..Default::default()
+        };
+        criteria.verify_criteria(U256::from(100)).unwrap();
+        assert_eq!(criteria.topics.as_ref().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn verify_criteria_rejects_more_than_four_topic_positions() {
+        let mut criteria = FilterCriteria {
+            topics: Some(vec![
+                vec![H256::from_low_u64_be(1)],
+                vec![H256::from_low_u64_be(2)],
+                vec![H256::from_low_u64_be(3)],
+                vec![H256::from_low_u64_be(4)],
+                vec![H256::from_low_u64_be(5)],
+            ]),
+            ..Default::default()
+        };
+        let err = criteria.verify_criteria(U256::from(100)).unwrap_err();
+        assert!(
+            err.to_string().contains("exceed max topics"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_criteria_rejects_block_hash_together_with_a_block_range() {
+        let mut criteria = FilterCriteria {
+            block_hash: Some(H256::from_low_u64_be(1)),
+            from_block: Some(U256::from(1)),
+            ..Default::default()
+        };
+        let err = criteria.verify_criteria(U256::from(100)).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid filter"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_criteria_keeps_a_block_hash_only_criteria_untouched() {
+        let mut criteria = FilterCriteria {
+            block_hash: Some(H256::from_low_u64_be(1)),
+            ..Default::default()
+        };
+        criteria.verify_criteria(U256::from(100)).unwrap();
+        assert_eq!(criteria.from_block, None);
+        assert_eq!(criteria.to_block, None);
+        assert_eq!(criteria.block_hash, Some(H256::from_low_u64_be(1)));
+    }
+
+    #[test]
+    fn filter_logs_matches_a_topic_prefix() {
+        let address = H160::from_low_u64_be(1);
+        let topic_a = H256::from_low_u64_be(10);
+        let topic_b = H256::from_low_u64_be(20);
+
+        let mut logs = HashMap::new();
+        logs.insert(
+            address,
+            vec![make_log_with_topics(address, vec![topic_a, topic_b], false)],
+        );
+
+        // A filter with a single position matches the first topic of the log.
+        let criteria = FilterCriteria {
+            topics: Some(vec![vec![topic_a]]),
+            ..Default::default()
+        };
+        let filtered = FilterService::filter_logs(&criteria, logs.clone());
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].topics, vec![topic_a, topic_b]);
+
+        // A filter with two positions matches both topics of the log.
+        let criteria = FilterCriteria {
+            topics: Some(vec![vec![topic_a], vec![topic_b]]),
+            ..Default::default()
+        };
+        let filtered = FilterService::filter_logs(&criteria, logs.clone());
+        assert_eq!(filtered.len(), 1);
+
+        // A filter with a non-matching topic in the first position rejects the log.
+        let criteria = FilterCriteria {
+            topics: Some(vec![vec![topic_b], vec![topic_a]]),
+            ..Default::default()
+        };
+        let filtered = FilterService::filter_logs(&criteria, logs);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn filter_logs_treats_an_empty_topic_list_as_a_wildcard() {
+        let address = H160::from_low_u64_be(1);
+        let topic_x = H256::from_low_u64_be(30);
+        let topic_b = H256::from_low_u64_be(20);
+
+        let mut logs = HashMap::new();
+        logs.insert(
+            address,
+            vec![make_log_with_topics(address, vec![topic_x, topic_b], false)],
+        );
+
+        // An empty topic list in the first position matches any topic.
+        let criteria = FilterCriteria {
+            topics: Some(vec![vec![], vec![topic_b]]),
+            ..Default::default()
+        };
+        let filtered = FilterService::filter_logs(&criteria, logs.clone());
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].topics, vec![topic_x, topic_b]);
+
+        // The wildcard does not extend to the remaining positions: a log whose
+        // second topic does not match the filter is rejected.
+        let criteria = FilterCriteria {
+            topics: Some(vec![vec![], vec![H256::from_low_u64_be(99)]]),
+            ..Default::default()
+        };
+        let filtered = FilterService::filter_logs(&criteria, logs);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn filter_logs_filters_by_address() {
+        let addr_a = H160::from_low_u64_be(1);
+        let addr_b = H160::from_low_u64_be(2);
+        let topic = H256::from_low_u64_be(10);
+
+        let mut logs = HashMap::new();
+        logs.insert(addr_a, vec![make_log(addr_a, topic, false)]);
+        logs.insert(addr_b, vec![make_log(addr_b, topic, false)]);
+
+        let criteria = FilterCriteria {
+            addresses: Some(vec![addr_b]),
+            ..Default::default()
+        };
+        let filtered = FilterService::filter_logs(&criteria, logs);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].address, addr_b);
     }
 }

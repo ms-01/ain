@@ -43,3 +43,93 @@ impl super::ResponseFormatter for Formatter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use ethereum_types::U256;
+    use serde_json::json;
+
+    use crate::trace::{
+        formatters::{raw::Formatter, ResponseFormatter},
+        listeners::raw::Listener,
+        types::single::RawStepLog,
+    };
+
+    fn listener() -> Rc<RefCell<Listener>> {
+        let mut listener = Listener::new(false, false, false, 1024);
+        listener.struct_logs = vec![RawStepLog {
+            depth: U256::from(1),
+            gas: U256::from(100),
+            gas_cost: U256::from(3),
+            memory: None,
+            op: b"PUSH1".to_vec(),
+            pc: U256::zero(),
+            stack: None,
+            storage: None,
+        }];
+        listener.return_value = vec![0x0a, 0x0b];
+        listener.finish_transaction(false, 50_000);
+        Rc::new(RefCell::new(listener))
+    }
+
+    fn format(listener: Rc<RefCell<Listener>>, system_tx: bool) -> serde_json::Value {
+        let trace = Formatter::format(listener, system_tx).expect("expected a trace");
+        serde_json::to_value(trace).unwrap()
+    }
+
+    #[test]
+    fn raw_formatter_returns_none_without_memory_usage() {
+        let mut listener = Listener::new(false, false, false, 1024);
+        listener.remaining_memory_usage = None;
+        let listener = Rc::new(RefCell::new(listener));
+        assert!(Formatter::format(listener, false).is_none());
+    }
+
+    #[test]
+    fn raw_formatter_serializes_the_struct_logs() {
+        let actual = format(listener(), false);
+
+        // Note: `returnValue` is serialized as a hex string *without* the `0x`
+        // prefix (see `trace::types::serialization::bytes_serialize`), which
+        // differs from the go-ethereum output.
+        assert_eq!(
+            actual,
+            json!({
+                "gas": "0xc350",
+                "failed": false,
+                "returnValue": "0a0b",
+                "structLogs": [
+                    {
+                        "depth": 1,
+                        "gas": 100,
+                        "gasCost": 3,
+                        "op": "PUSH1",
+                        "pc": 0
+                    }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn raw_formatter_zeroes_gas_for_system_transactions() {
+        let actual = format(listener(), true);
+
+        assert_eq!(actual["gas"], json!("0x0"));
+    }
+    #[test]
+    fn raw_formatter_reports_a_failed_execution() {
+        let mut listener = Listener::new(false, false, false, 1024);
+        listener.return_value = vec![];
+        listener.finish_transaction(true, 50_000);
+        let listener = Rc::new(RefCell::new(listener));
+
+        let actual = format(listener, false);
+
+        assert_eq!(actual["failed"], json!(true));
+        assert_eq!(actual["returnValue"], json!(""));
+        assert_eq!(actual["structLogs"], json!([]));
+    }
+}
