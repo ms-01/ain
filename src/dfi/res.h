@@ -7,6 +7,21 @@
 #include <optional>
 #include <string>
 
+enum CustomTxErrCodes : uint32_t {
+    NotSpecified = 0,
+    //    NotCustomTx  = 1,
+    NotEnoughBalance = 1024,
+    // The sum of the transfer amounts overflows. This error is raised in the
+    // consensus check of the transfer sum (SumTransfers) and marks the error
+    // as caused by the height dependent overflow rule. It is used by the
+    // mempool to drop transactions that were accepted below the activation
+    // height and are not valid anymore above it.
+    TransferSumOverflow = 2048,
+    // A DFI account balance would exceed MAX_MONEY (height >= nAccountMaxMoneyHeight).
+    AccountBalanceOutOfRange = 4096,
+    Fatal = uint32_t(1) << 31  // not allowed to fail
+};
+
 struct Res {
     bool ok;
     std::string msg;

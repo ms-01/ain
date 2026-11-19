@@ -3,7 +3,6 @@
 // file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <dfi/accounts.h>
-#include <dfi/customtx.h>
 #include <dfi/errors.h>
 
 void CAccountsView::ForEachBalance(std::function<bool(const CScript &, const CTokenAmount &)> callback,
@@ -42,9 +41,8 @@ Res CAccountsView::AddBalance(const CScript &owner, CTokenAmount amount) {
         return res;
     }
     if (enforceAccountMaxMoney && amount.nTokenId == DCT_ID{0} && !MoneyRange(balance.nValue)) {
-        return Res::ErrCode(CustomTxErrCodes::AccountBalanceOutOfRange,
-                            "account balance out of range: %s",
-                            balance.ToString());
+        return Res::ErrCode(
+            CustomTxErrCodes::AccountBalanceOutOfRange, "account balance out of range: %s", balance.ToString());
     }
     return SetBalance(owner, balance);
 }
