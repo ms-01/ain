@@ -260,7 +260,7 @@ protected:
 #endif
 
     //! Select several addresses at once.
-    void GetAddr_(std::vector<CAddress> &vAddr, std::optional<Network> network) EXCLUSIVE_LOCKS_REQUIRED(cs);
+    void GetAddr_(std::vector<CAddress> &vAddr, std::optional<Network> network, size_t max_addresses, size_t max_pct) EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     //! Mark an entry as currently-connected-to.
     void Connected_(const CService &addr, int64_t nTime) EXCLUSIVE_LOCKS_REQUIRED(cs);
@@ -618,13 +618,15 @@ public:
 
     //! Return a bunch of addresses, selected at random.
     //! If `network` is set, only addresses of that network are returned.
-    std::vector<CAddress> GetAddr(std::optional<Network> network = std::nullopt)
+    //! At most `max_addresses` addresses are returned and at most `max_pct`
+    //! percent of the known addresses.
+    std::vector<CAddress> GetAddr(std::optional<Network> network = std::nullopt, size_t max_addresses = ADDRMAN_GETADDR_MAX, size_t max_pct = ADDRMAN_GETADDR_MAX_PCT)
     {
         Check();
         std::vector<CAddress> vAddr;
         {
             LOCK(cs);
-            GetAddr_(vAddr, network);
+            GetAddr_(vAddr, network, max_addresses, max_pct);
         }
         Check();
         return vAddr;

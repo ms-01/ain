@@ -3931,7 +3931,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         pfrom->fSentAddr = true;
 
         pfrom->vAddrToSend.clear();
-        std::vector<CAddress> vAddr = connman->GetAddresses();
+        // The response is served from the "getaddr" response cache, so that a
+        // peer cannot scrape the address manager by reconnecting repeatedly.
+        std::vector<CAddress> vAddr = connman->GetAddresses(*pfrom);
         FastRandomContext insecure_rand;
         for (const CAddress &addr : vAddr) {
             if (!g_banman->IsBanned(addr)) {
