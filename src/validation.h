@@ -1108,12 +1108,6 @@ int32_t ComputeBlockVersion(const CBlockIndex *pindexPrev, const Consensus::Para
 /** Get block file info entry for one block file */
 CBlockFileInfo *GetBlockFileInfo(size_t n);
 
-/** Dump the mempool to disk. */
-bool DumpMempool(const CTxMemPool &pool);
-
-/** Load the mempool from disk. */
-bool LoadMempool(CTxMemPool &pool);
-
 //! Check whether the block associated with this index entry is pruned or not.
 inline bool IsBlockPruned(const CBlockIndex *pblockindex) {
     return (fHavePruned && !(pblockindex->nStatus & BLOCK_HAVE_DATA) && pblockindex->nTx > 0);

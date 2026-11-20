@@ -33,6 +33,7 @@
 #include <dfi/threadpool.h>
 #include <miner.h>
 #include <net.h>
+#include <node/mempool_persist.h>
 #include <net_permissions.h>
 #include <net_processing.h>
 #include <netbase.h>
