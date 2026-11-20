@@ -17,7 +17,7 @@ use crate::{
 };
 
 // The maximum number of topic criteria allowed, vm.LOG4 - vm.LOG0
-const MAX_TOPICS: usize = 4;
+pub const MAX_TOPICS: usize = 4;
 
 // The default LRU cache size
 const FILTER_LRU_CACHE_DEFAULT_SIZE: usize = 5000;
@@ -74,6 +74,19 @@ pub struct FilterCriteria {
 }
 
 impl FilterCriteria {
+    /// Validates the number of topic positions of the criteria (at most `MAX_TOPICS`).
+    ///
+    /// This check is independent of the block range, so it can be used by the RPC
+    /// surfaces that do not carry a block range (e.g. `eth_subscribe`).
+    pub fn verify_topics(&self) -> Result<()> {
+        if let Some(topics) = &self.topics {
+            if topics.len() > MAX_TOPICS {
+                return Err(FilterError::ExceedMaxTopics.into());
+            }
+        }
+        Ok(())
+    }
+
     pub fn verify_criteria(&mut self, latest: U256) -> Result<()> {
         if self.block_hash.is_some() && (self.from_block.is_some() || self.to_block.is_some()) {
             return Err(FilterError::InvalidFilter.into());
@@ -97,11 +110,7 @@ impl FilterCriteria {
             if to_block - from_block > BLOCK_RANGE_LIMIT {
                 return Err(FilterError::ExceedBlockRange.into());
             }
-            if let Some(t) = &self.topics {
-                if t.len() > MAX_TOPICS {
-                    return Err(FilterError::ExceedMaxTopics.into());
-                }
-            }
+            self.verify_topics()?;
             self.from_block = Some(from_block);
             self.to_block = Some(to_block);
         }
@@ -547,7 +556,7 @@ mod tests {
 
     use ethereum_types::{H160, H256, U256};
 
-    use super::{FilterCriteria, FilterService};
+    use super::{FilterCriteria, FilterService, MAX_TOPICS};
     use crate::log::LogIndex;
 
     fn make_log(address: H160, topic: H256, removed: bool) -> LogIndex {
@@ -679,6 +688,43 @@ mod tests {
             err.to_string().contains("exceed max topics"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn verify_topics_accepts_up_to_four_topic_positions() {
+        for positions in 0..=MAX_TOPICS {
+            let topics = (0..positions)
+                .map(|i| vec![H256::from_low_u64_be(i as u64 + 1)])
+                .collect();
+            let criteria = FilterCriteria {
+                topics: Some(topics),
+                ..Default::default()
+            };
+            criteria.verify_topics().unwrap();
+        }
+    }
+
+    #[test]
+    fn verify_topics_rejects_more_than_four_topic_positions() {
+        let criteria = FilterCriteria {
+            topics: Some(
+                (0..=MAX_TOPICS)
+                    .map(|i| vec![H256::from_low_u64_be(i as u64 + 1)])
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        let err = criteria.verify_topics().unwrap_err();
+        assert!(
+            err.to_string().contains("exceed max topics"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_topics_accepts_criteria_without_topics() {
+        let criteria = FilterCriteria::default();
+        criteria.verify_topics().unwrap();
     }
 
     #[test]

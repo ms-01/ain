@@ -9,6 +9,7 @@ import asyncio
 import json
 import websockets
 
+from test_framework.authproxy import JSONRPCException
 from test_framework.util import (
     assert_equal,
     int_to_eth_u256,
@@ -316,6 +317,87 @@ class EVMTestLogs(DefiTestFramework):
         log = self.subscribe_logs([self.log_topics[0], None, wrong_topic])
         assert log is None, "log was delivered although a topic position does not match"
 
+    def subscribe_logs_response(self, topics=None, req_id=1):
+        """Send an `eth_subscribe` request for the logs of the contract.
+
+        Returns the JSON-RPC response of the subscription request, i.e. either the
+        subscription id (`result`) or the error object (`error`).
+        """
+        node = self.nodes[0]
+        ws_url = f"ws://127.0.0.1:{rpc_port(node.index, 4)}"
+
+        async def run_ws_request():
+            async with websockets.connect(ws_url) as ws:
+                params = {"address": self.contract.address}
+                if topics is not None:
+                    params["topics"] = topics
+                await ws.send(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "method": "eth_subscribe",
+                            "params": ["logs", params],
+                        }
+                    )
+                )
+                return json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+
+        return asyncio.run(run_ws_request())
+
+    def should_reject_log_subscription_with_too_many_topics(self):
+        node = self.nodes[0]
+        five_topics = [
+            self.log_topics[0],
+            self.log_topics[1],
+            self.log_topics[2],
+            "0x" + "ff" * 32,
+            "0x" + "ee" * 32,
+        ]
+
+        # The reference error of the `eth_newFilter` surface for the same payload.
+        # An explicit block range keeps the comparison independent of the block
+        # range limit of the filter service.
+        try:
+            node.evm_rpc.eth_newFilter(
+                {"topics": five_topics, "fromBlock": "0x0", "toBlock": "0x1"}
+            )
+            raise AssertionError(
+                "eth_newFilter accepted more than four topic positions"
+            )
+        except JSONRPCException as e:
+            new_filter_error = e.error
+
+        assert_equal(new_filter_error["code"], -32001)
+        assert_equal(
+            new_filter_error["message"],
+            'Custom error: error calling EVM : "exceed max topics"',
+        )
+
+        # The flat form with five positions is rejected with the very same error.
+        response = self.subscribe_logs_response(five_topics)
+        assert "error" in response, f"subscription was accepted: {response}"
+        assert "result" not in response, f"subscription id was handed out: {response}"
+        assert_equal(response["error"]["code"], new_filter_error["code"])
+        assert_equal(response["error"]["message"], new_filter_error["message"])
+
+        # The nested form with five positions is rejected as well.
+        response = self.subscribe_logs_response([[t] for t in five_topics])
+        assert "error" in response, f"subscription was accepted: {response}"
+        assert "result" not in response, f"subscription id was handed out: {response}"
+        assert_equal(response["error"]["code"], new_filter_error["code"])
+        assert_equal(response["error"]["message"], new_filter_error["message"])
+
+        # Exactly four positions are still accepted.
+        response = self.subscribe_logs_response(five_topics[:4])
+        assert "error" not in response, f"subscription was rejected: {response}"
+        assert "result" in response, f"no subscription id was returned: {response}"
+
+        # A subscription without any topic filter is still accepted.
+        response = self.subscribe_logs_response()
+        assert "error" not in response, f"subscription was rejected: {response}"
+        assert "result" in response, f"no subscription id was returned: {response}"
+
     def run_test(self):
         self.setup()
 
@@ -326,6 +408,8 @@ class EVMTestLogs(DefiTestFramework):
         self.transferdomain_receipt_gas_used()
 
         self.should_subscribe_logs_with_null_topic_placeholder()
+
+        self.should_reject_log_subscription_with_too_many_topics()
 
         self.should_emit_removed_logs_on_reorg()
 
