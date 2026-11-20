@@ -588,6 +588,10 @@ public:
     int nVersion;
     std::string cleanSubVer;
     bool fInbound;
+    // Whether we selected the peer as (compact blocks) high-bandwidth peer
+    bool m_bip152_highbandwidth_to{false};
+    // Whether the peer selected us as (compact blocks) high-bandwidth peer
+    bool m_bip152_highbandwidth_from{false};
     bool m_manual_connection;
     int nStartingHeight;
     uint64_t nSendBytes;
@@ -800,6 +804,10 @@ public:
     std::atomic<bool> fPingQueued{false};
     // Whether this peer supports BIP 339 wtxid transaction relay.
     std::atomic<bool> m_wtxid_relay{false};
+    // We selected peer as (compact blocks) high-bandwidth peer (BIP152)
+    std::atomic<bool> m_bip152_highbandwidth_to{false};
+    // Peer selected us as (compact blocks) high-bandwidth peer (BIP152)
+    std::atomic<bool> m_bip152_highbandwidth_from{false};
     // Minimum fee rate with which to filter inv's to this node
     CAmount minFeeFilter GUARDED_BY(cs_feeFilter){0};
     CCriticalSection cs_feeFilter;
