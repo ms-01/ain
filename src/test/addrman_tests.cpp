@@ -6,10 +6,12 @@
 #include <string>
 #include <boost/test/unit_test.hpp>
 
+#include <clientversion.h>
 #include <hash.h>
 #include <map>
 #include <netbase.h>
 #include <random.h>
+#include <streams.h>
 
 class CAddrManTest : public CAddrMan
 {
@@ -135,34 +137,241 @@ BOOST_AUTO_TEST_CASE(addrman_simple)
     BOOST_CHECK(addrman.size() >= 1);
 }
 
-BOOST_AUTO_TEST_CASE(addrman_onion_v3_not_stored)
+BOOST_AUTO_TEST_CASE(addrman_privacy_addresses_stored)
 {
     CAddrManTest addrman;
 
     CNetAddr source = ResolveIP("252.2.2.2");
 
-    // A Tor v3 onion address has no legacy (pre-BIP155) representation and
-    // must therefore never be stored in the addrman (it could not be
-    // serialized into addr.dat).
+    // A Tor v3 onion address has no legacy (pre-BIP155) representation. It is
+    // stored in the BIP155-capable format of the addrman and it is never
+    // serialized into the legacy wire format.
     const std::string onion = "aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion";
     CService onion_service = ResolveService(onion, 8555);
     BOOST_CHECK(onion_service.IsTorV3());
-    BOOST_CHECK(!addrman.Add(CAddress(onion_service, NODE_NONE), source));
-    BOOST_CHECK_EQUAL(addrman.size(), 0U);
+    CAddress onion_addr(onion_service, NODE_NONE);
+    onion_addr.nTime = GetAdjustedTime();
+    BOOST_CHECK(addrman.Add(onion_addr, source));
+    BOOST_CHECK_EQUAL(addrman.size(), 1U);
 
     // The same holds for I2P addresses.
     const std::string i2p = "aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq.b32.i2p";
     CService i2p_service = ResolveService(i2p, 8555);
     BOOST_CHECK(i2p_service.IsI2P());
-    BOOST_CHECK(!addrman.Add(CAddress(i2p_service, NODE_NONE), source));
-    BOOST_CHECK_EQUAL(addrman.size(), 0U);
+    CAddress i2p_addr(i2p_service, NODE_NONE);
+    i2p_addr.nTime = GetAdjustedTime();
+    BOOST_CHECK(addrman.Add(i2p_addr, source));
+    BOOST_CHECK_EQUAL(addrman.size(), 2U);
 
     // A legacy Tor v2 address still has a v1 representation and is stored.
     CService onion_v2 = ResolveService("6hzph5hv6337r6p2.onion", 8555);
     BOOST_CHECK(onion_v2.IsTor());
     BOOST_CHECK(!onion_v2.IsTorV3());
-    BOOST_CHECK(addrman.Add(CAddress(onion_v2, NODE_NONE), source));
-    BOOST_CHECK_EQUAL(addrman.size(), 1U);
+    CAddress onion_v2_addr(onion_v2, NODE_NONE);
+    onion_v2_addr.nTime = GetAdjustedTime();
+    BOOST_CHECK(addrman.Add(onion_v2_addr, source));
+    BOOST_CHECK_EQUAL(addrman.size(), 3U);
+
+    // The addresses are reported by the address manager.
+    const std::vector<CAddress> vAddr = addrman.GetAddr(std::nullopt, 1000, 100);
+    BOOST_CHECK_EQUAL(vAddr.size(), 3U);
+    bool found_onion{false};
+    bool found_i2p{false};
+    for (const CAddress& addr : vAddr) {
+        found_onion |= addr.ToStringIP() == onion;
+        found_i2p |= addr.ToStringIP() == i2p;
+    }
+    BOOST_CHECK(found_onion);
+    BOOST_CHECK(found_i2p);
+}
+
+BOOST_AUTO_TEST_CASE(addrman_serialization_privacy_roundtrip)
+{
+    CAddrManTest addrman;
+
+    CNetAddr source = ResolveIP("252.2.2.2");
+    CNetAddr onion_source = ResolveIP("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion");
+
+    CService addr1 = ResolveService("250.1.1.1", 8555);
+    BOOST_CHECK(addrman.Add(CAddress(addr1, NODE_NONE), source));
+    CService onion = ResolveService("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion", 8555);
+    BOOST_CHECK(addrman.Add(CAddress(onion, NODE_NONE), source));
+    CService i2p = ResolveService("aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq.b32.i2p", 8555);
+    // The source of an entry determines its bucket, so a privacy address can
+    // be the source of an entry as well.
+    BOOST_CHECK(addrman.Add(CAddress(i2p, NODE_NONE), onion_source));
+
+    // The addrman contains addresses that need the BIP155 format.
+    BOOST_CHECK_EQUAL(addrman.GetFileFormat(), ADDRMAN_FILE_FORMAT_ADDRV2);
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << addrman;
+    const std::vector<unsigned char> vBytes(std::begin(ss), std::end(ss));
+    // The format byte of the file.
+    BOOST_CHECK_EQUAL(vBytes[0], ADDRMAN_FILE_FORMAT_ADDRV2);
+
+    // The addresses survive a round trip. The re-serialization is byte
+    // identical, so the entries, their sources and their bucket positions are
+    // preserved.
+    CDataStream ssIn(vBytes, SER_DISK, CLIENT_VERSION);
+    CAddrMan addrman2;
+    ssIn >> addrman2;
+    BOOST_CHECK_EQUAL(addrman2.size(), addrman.size());
+    BOOST_CHECK_EQUAL(addrman2.GetFileFormat(), ADDRMAN_FILE_FORMAT_ADDRV2);
+
+    CDataStream ssOut(SER_DISK, CLIENT_VERSION);
+    ssOut << addrman2;
+    BOOST_CHECK_EQUAL(HexStr(std::vector<unsigned char>(std::begin(ss), std::end(ss))),
+                      HexStr(std::vector<unsigned char>(std::begin(ssOut), std::end(ssOut))));
+}
+
+BOOST_AUTO_TEST_CASE(addrman_legacy_entry_format)
+{
+    // The entries of the legacy format must stay byte-identical: the disk
+    // version word (the client version), the timestamp, the service flags,
+    // the 16 byte address, the port, the 16 byte source, the timestamp of the
+    // last success and the number of attempts.
+    CService addr = ResolveService("1.2.3.4", 1234);
+    CNetAddr source = ResolveIP("5.6.7.8");
+    CAddrInfo info{CAddress(addr, NODE_NETWORK), source};
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << info;
+
+    std::vector<unsigned char> expected;
+    const auto append_int = [&expected](int64_t n, size_t nBytes) {
+        for (size_t i = 0; i < nBytes; ++i) {
+            expected.push_back(static_cast<uint8_t>((n >> (8 * i)) & 0xff));
+        }
+    };
+    append_int(CLIENT_VERSION, 4);
+    append_int(100000000, 4); // the timestamp of a new address
+    append_int(static_cast<int64_t>(NODE_NETWORK), 8);
+    // the IPv4-mapped IPv6 form of 1.2.3.4
+    const std::vector<unsigned char> vAddr{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4};
+    expected.insert(expected.end(), vAddr.begin(), vAddr.end());
+    // the port, in big endian
+    expected.push_back(0x04);
+    expected.push_back(0xd2);
+    // the source, in the IPv4-mapped IPv6 form
+    const std::vector<unsigned char> vSource{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 5, 6, 7, 8};
+    expected.insert(expected.end(), vSource.begin(), vSource.end());
+    append_int(0, 8); // the timestamp of the last success
+    append_int(0, 4); // the number of attempts
+
+    BOOST_CHECK_EQUAL(HexStr(std::vector<unsigned char>(std::begin(ss), std::end(ss))), HexStr(expected));
+}
+
+BOOST_AUTO_TEST_CASE(addrman_file_format_switch)
+{
+    CAddrManTest addrman;
+
+    CNetAddr source = ResolveIP("252.2.2.2");
+
+    // An addrman without privacy addresses is written in the legacy format,
+    // so that the file stays readable by the nodes that do not support the
+    // BIP155 format.
+    CService addr1 = ResolveService("250.1.1.1", 8555);
+    BOOST_CHECK(addrman.Add(CAddress(addr1, NODE_NONE), source));
+    BOOST_CHECK_EQUAL(addrman.GetFileFormat(), ADDRMAN_FILE_FORMAT_LEGACY);
+
+    CDataStream ssLegacy(SER_DISK, CLIENT_VERSION);
+    ssLegacy << addrman;
+    const std::vector<unsigned char> vLegacy(std::begin(ssLegacy), std::end(ssLegacy));
+    BOOST_CHECK_EQUAL(vLegacy[0], ADDRMAN_FILE_FORMAT_LEGACY);
+
+    // Load the legacy file and learn a privacy address: the file is written in
+    // the BIP155-capable format from now on and the entries round trip.
+    CDataStream ssIn(vLegacy, SER_DISK, CLIENT_VERSION);
+    CAddrMan addrman2;
+    ssIn >> addrman2;
+    BOOST_CHECK_EQUAL(addrman2.size(), 1U);
+    BOOST_CHECK_EQUAL(addrman2.GetFileFormat(), ADDRMAN_FILE_FORMAT_LEGACY);
+
+    const std::string onion = "aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion";
+    CService onion_service = ResolveService(onion, 8555);
+    CAddress onion_addr(onion_service, NODE_NONE);
+    onion_addr.nTime = GetAdjustedTime();
+    BOOST_CHECK(addrman2.Add(onion_addr, source));
+    BOOST_CHECK_EQUAL(addrman2.GetFileFormat(), ADDRMAN_FILE_FORMAT_ADDRV2);
+
+    CDataStream ssV2(SER_DISK, CLIENT_VERSION);
+    ssV2 << addrman2;
+    const std::vector<unsigned char> vV2(std::begin(ssV2), std::end(ssV2));
+    BOOST_CHECK_EQUAL(vV2[0], ADDRMAN_FILE_FORMAT_ADDRV2);
+
+    CDataStream ssV2In(vV2, SER_DISK, CLIENT_VERSION);
+    CAddrMan addrman3;
+    ssV2In >> addrman3;
+    BOOST_CHECK_EQUAL(addrman3.size(), 2U);
+    const std::vector<CAddress> vAddr = addrman3.GetAddr(std::nullopt, 1000, 100);
+    bool found{false};
+    for (const CAddress& addr : vAddr) {
+        found |= addr.ToStringIP() == onion;
+    }
+    BOOST_CHECK(found);
+}
+
+BOOST_AUTO_TEST_CASE(addrman_invalid_files)
+{
+    CAddrManTest addrman;
+
+    CNetAddr source = ResolveIP("252.2.2.2");
+    CService addr1 = ResolveService("250.1.1.1", 8555);
+    BOOST_CHECK(addrman.Add(CAddress(addr1, NODE_NONE), source));
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << addrman;
+    const std::vector<unsigned char> vBytes(std::begin(ss), std::end(ss));
+
+    // A file with an unknown format byte is rejected.
+    {
+        std::vector<unsigned char> vInvalid = vBytes;
+        vInvalid[0] = 3;
+        CDataStream ssIn(vInvalid, SER_DISK, CLIENT_VERSION);
+        CAddrMan addrman2;
+        BOOST_CHECK_THROW(ssIn >> addrman2, InvalidAddrManVersionError);
+    }
+
+    // A truncated file is rejected.
+    {
+        const std::vector<unsigned char> vInvalid(vBytes.begin(), vBytes.begin() + vBytes.size() / 2);
+        CDataStream ssIn(vInvalid, SER_DISK, CLIENT_VERSION);
+        CAddrMan addrman2;
+        BOOST_CHECK_THROW(ssIn >> addrman2, std::ios_base::failure);
+    }
+
+    // An entry with an unknown network id is rejected.
+    {
+        CService onion = ResolveService("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion", 8555);
+        CAddrInfo info{CAddress(onion, NODE_NONE), source};
+        CDataStream ssEntry(SER_DISK, CLIENT_VERSION);
+        info.SerializeAddrV2(ssEntry);
+        std::vector<unsigned char> vEntry(std::begin(ssEntry), std::end(ssEntry));
+        // The network id follows the disk version word, the timestamp and the
+        // service flags.
+        vEntry[9] = 42;
+        CDataStream ssIn(vEntry, SER_DISK, CLIENT_VERSION);
+        CAddrInfo info2;
+        BOOST_CHECK_THROW(info2.UnserializeAddrV2(ssIn), std::ios_base::failure);
+    }
+
+    // An entry with an oversized address is rejected before the address is
+    // read, so that a corrupt file cannot cause an unbounded allocation.
+    {
+        CDataStream ssEntry(SER_DISK, CLIENT_VERSION);
+        const uint32_t nMarker = static_cast<uint32_t>(CLIENT_VERSION) | DISK_VERSION_ADDRV2;
+        ssEntry << nMarker;
+        const uint32_t nTime = 100000000;
+        ssEntry << nTime;
+        ssEntry << uint64_t{0};
+        ssEntry << uint8_t{BIP155_TORV3};
+        ::WriteCompactSize(ssEntry, MAX_ADDRV2_SIZE + 1);
+        const std::vector<unsigned char> vEntry(std::begin(ssEntry), std::end(ssEntry));
+        CDataStream ssIn(vEntry, SER_DISK, CLIENT_VERSION);
+        CAddrInfo info2;
+        BOOST_CHECK_THROW(info2.UnserializeAddrV2(ssIn), std::ios_base::failure);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(addrman_ports)

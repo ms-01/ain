@@ -228,6 +228,12 @@ bool DeserializeDB(Stream& stream, Data& data, bool fCheckSum = true)
             }
         }
     }
+    catch (const InvalidAddrManVersionError&) {
+        // The file has a format that this version of the node does not
+        // understand. The caller decides how to proceed: the file is backed
+        // up and the address manager is recreated.
+        throw;
+    }
     catch (const std::exception& e) {
         return error("%s: Deserialize or I/O error - %s", __func__, e.what());
     }
@@ -317,12 +323,50 @@ CAddrDB::CAddrDB()
 
 bool CAddrDB::Write(const CAddrMan& addr)
 {
+    // Log the switch of the format of the file: a file in the BIP155-capable
+    // format is not readable by the nodes that do not support it.
+    const uint8_t nNewFormat = addr.GetFileFormat();
+    FILE* file = fsbridge::fopen(pathAddr, "rb");
+    if (file != nullptr) {
+        // The file starts with the network magic, the format byte follows.
+        unsigned char buf[5] = {0};
+        const size_t nRead = fread(buf, 1, sizeof(buf), file);
+        fclose(file);
+        // A file that is too short to carry the format byte has no format that
+        // could be reported; the switch is only logged when both formats are
+        // known.
+        if (nRead == sizeof(buf)) {
+            const uint8_t nOldFormat = buf[4];
+            if (nOldFormat != nNewFormat) {
+                LogPrintf("The format of peers.dat changed from %u to %u%s\n", nOldFormat, nNewFormat,
+                          nNewFormat == ADDRMAN_FILE_FORMAT_ADDRV2
+                              ? " (the address manager contains addresses that need the BIP155 format; the file is not readable by the versions of the node that do not support it)"
+                              : "");
+            }
+        }
+    }
     return SerializeFileDB("peers", pathAddr, addr);
 }
 
 bool CAddrDB::Read(CAddrMan& addr)
 {
-    return DeserializeFileDB(pathAddr, addr);
+    try {
+        return DeserializeFileDB(pathAddr, addr);
+    } catch (const InvalidAddrManVersionError& e) {
+        // The file was written by a version of the node that uses an
+        // unsupported format: back it up and continue with an empty address
+        // manager (like upstream Bitcoin Core does).
+        LogPrintf("Unsupported version of peers.dat (%s); the file is backed up to peers.dat.bak\n", e.what());
+        fs::path pathBak = pathAddr;
+        pathBak += ".bak";
+        std::error_code ec;
+        fs::rename(pathAddr, pathBak, ec);
+        if (ec) {
+            LogPrintf("Failed to back up peers.dat: %s\n", ec.message());
+        }
+        addr.Clear();
+        return false;
+    }
 }
 
 bool CAddrDB::Read(CAddrMan& addr, CDataStream& ssPeers)

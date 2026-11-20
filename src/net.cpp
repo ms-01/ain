@@ -204,6 +204,42 @@ void AdvertiseLocal(CNode *pnode)
             pnode->PushAddress(addrLocal, rng);
         }
     }
+    // The local privacy network services are announced as well. They have no
+    // representation in the legacy (pre-BIP155) wire format, so they only
+    // reach the peers that announced the support for the BIP155 address
+    // relay.
+    AdvertiseLocalPrivacy(pnode);
+}
+
+/**
+ * The local privacy network services, i.e. the Tor v3 onion services and the
+ * I2P destinations that the node knows about.
+ */
+static std::vector<CService> GetLocalPrivacyServices()
+{
+    std::vector<CService> vServices;
+    LOCK(cs_mapLocalHost);
+    for (const auto& entry : mapLocalHost) {
+        const CNetAddr& addr = entry.first;
+        if (addr.IsTorV3() || addr.IsI2P()) {
+            vServices.emplace_back(addr, entry.second.nPort);
+        }
+    }
+    return vServices;
+}
+
+// pushes our own privacy network services to a peer
+void AdvertiseLocalPrivacy(CNode* pnode)
+{
+    FastRandomContext rng;
+    for (const CService& service : GetLocalPrivacyServices()) {
+        CAddress addr(service, pnode->GetLocalServices());
+        addr.nTime = GetAdjustedTime();
+        LogPrint(BCLog::NET, "AdvertiseLocal: advertising address %s\n", addr.ToString());
+        // The address is only queued for the peers that can decode it, i.e.
+        // the peers that announced the support for the BIP155 address relay.
+        pnode->PushAddress(addr, rng);
+    }
 }
 
 // learn a new local address

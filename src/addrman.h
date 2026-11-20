@@ -13,11 +13,52 @@
 #include <timedata.h>
 #include <util/system.h>
 
+#include <ios>
 #include <map>
 #include <optional>
 #include <set>
 #include <stdint.h>
+#include <string>
 #include <vector>
+
+/**
+ * The format of the on-disk addrman (the file is named `peers.dat`).
+ *
+ * The first byte of the file is the format byte:
+ *
+ *  - 1: the legacy format. Every address is encoded in the legacy
+ *    (pre-BIP155) format, i.e. every address has a 16 byte representation.
+ *  - 2: the BIP155-capable format. The addresses that have no legacy
+ *    representation (Tor v3 onion addresses and I2P destinations) are encoded
+ *    in the BIP155 (ADDRv2) format.
+ *
+ * The layout of the file is identical in both formats; only the encoding of
+ * the entries differs.
+ */
+static constexpr uint8_t ADDRMAN_FILE_FORMAT_LEGACY{1};
+static constexpr uint8_t ADDRMAN_FILE_FORMAT_ADDRV2{2};
+
+/**
+ * The bit in the per-address disk version word that marks an address that is
+ * encoded in the BIP155 (ADDRv2) format.
+ *
+ * The word itself is the client version, exactly as the previous
+ * implementation wrote it; only this bit is interpreted, the remaining bits
+ * are ignored. This mirrors the way upstream Bitcoin Core repurposes the
+ * stored version word of an address.
+ */
+static constexpr uint32_t DISK_VERSION_ADDRV2{1 << 29};
+
+/**
+ * Thrown when the addrman file has a format that this version of the node does
+ * not understand. The caller is expected to back the file up and to continue
+ * with an empty address manager.
+ */
+class InvalidAddrManVersionError : public std::ios_base::failure
+{
+public:
+    explicit InvalidAddrManVersionError(const std::string& msg) : std::ios_base::failure(msg) {}
+};
 
 /**
  * Extended statistics about a CAddress
@@ -52,6 +93,85 @@ private:
 
     friend class CAddrMan;
 
+    /**
+     * The address in the BIP155 (ADDRv2) body format: the timestamp, the
+     * service flags, the network id, the address and the port.
+     */
+    template <typename Stream>
+    void SerializeAddrV2Body(Stream& s) const
+    {
+        ::Serialize(s, nTime);
+        uint64_t nServicesInt = nServices;
+        ::WriteCompactSize(s, nServicesInt);
+        ::Serialize(s, GetBIP155Network());
+        const std::vector<unsigned char> vBytes = GetAddrV2Bytes();
+        ::WriteCompactSize(s, vBytes.size());
+        if (!vBytes.empty()) {
+            s.write(reinterpret_cast<const char*>(vBytes.data()), vBytes.size());
+        }
+        ::Serialize(s, WrapBigEndian(port));
+    }
+
+    //! The counterpart of SerializeAddrV2Body().
+    template <typename Stream>
+    void UnserializeAddrV2Body(Stream& s)
+    {
+        ::Unserialize(s, nTime);
+        uint64_t nServicesInt{0};
+        nServicesInt = ::ReadCompactSize(s);
+        nServices = static_cast<ServiceFlags>(nServicesInt);
+        uint8_t nNetwork{0};
+        ::Unserialize(s, nNetwork);
+        std::vector<unsigned char> vBytes = ReadAddrV2Bytes(s);
+        if (!SetFromBIP155(nNetwork, vBytes.data(), vBytes.size())) {
+            throw std::ios_base::failure("Corrupt CAddrMan serialization: invalid address.");
+        }
+        ::Unserialize(s, WrapBigEndian(port));
+    }
+
+    //! A network address in the BIP155 (ADDRv2) format: the network id and the address.
+    template <typename Stream>
+    static void SerializeNetAddrV2(Stream& s, const CNetAddr& addr)
+    {
+        ::Serialize(s, addr.GetBIP155Network());
+        const std::vector<unsigned char> vBytes = addr.GetAddrV2Bytes();
+        ::WriteCompactSize(s, vBytes.size());
+        if (!vBytes.empty()) {
+            s.write(reinterpret_cast<const char*>(vBytes.data()), vBytes.size());
+        }
+    }
+
+    //! The counterpart of SerializeNetAddrV2().
+    template <typename Stream>
+    static void UnserializeNetAddrV2(Stream& s, CNetAddr& addr)
+    {
+        uint8_t nNetwork{0};
+        ::Unserialize(s, nNetwork);
+        const std::vector<unsigned char> vBytes = ReadAddrV2Bytes(s);
+        if (!addr.SetFromBIP155(nNetwork, vBytes.data(), vBytes.size())) {
+            throw std::ios_base::failure("Corrupt CAddrMan serialization: invalid source address.");
+        }
+    }
+
+    /**
+     * Read the address bytes of a BIP155 (ADDRv2) entry. The length is
+     * validated, so that a corrupt file cannot cause an unbounded allocation.
+     */
+    template <typename Stream>
+    static std::vector<unsigned char> ReadAddrV2Bytes(Stream& s)
+    {
+        uint64_t nSize{0};
+        nSize = ::ReadCompactSize(s);
+        if (nSize > MAX_ADDRV2_SIZE) {
+            throw std::ios_base::failure("Corrupt CAddrMan serialization: address too large.");
+        }
+        std::vector<unsigned char> vBytes(nSize);
+        if (nSize > 0) {
+            s.read(reinterpret_cast<char*>(vBytes.data()), nSize);
+        }
+        return vBytes;
+    }
+
 public:
 
     ADD_SERIALIZE_METHODS;
@@ -62,6 +182,74 @@ public:
         READWRITE(source);
         READWRITE(nLastSuccess);
         READWRITE(nAttempts);
+    }
+
+    /**
+     * Serialize the entry in the BIP155-capable disk format.
+     *
+     * The entry starts with the per-address disk version word (the client
+     * version, with the DISK_VERSION_ADDRV2 bit set if the address is encoded
+     * in the BIP155 format), followed by the address itself, the source of the
+     * entry and its statistics.
+     *
+     * The source of the entry is encoded in the BIP155 format as well if it
+     * has no legacy representation: the "new" bucket of an entry is derived
+     * from the group of its source, so the source must survive a restart
+     * unchanged.
+     */
+    template <typename Stream>
+    void SerializeAddrV2(Stream& s) const
+    {
+        const bool addr_v2 = !IsAddrV1Compatible();
+        uint32_t nMarker = static_cast<uint32_t>(s.GetVersion());
+        if (addr_v2) {
+            nMarker |= DISK_VERSION_ADDRV2;
+        }
+        ::Serialize(s, nMarker);
+        if (addr_v2) {
+            SerializeAddrV2Body(s);
+        } else {
+            SerializeBody(s, CSerActionSerialize(), static_cast<int>(nMarker));
+        }
+        const bool source_v2 = !source.IsAddrV1Compatible();
+        ::Serialize(s, static_cast<uint8_t>(source_v2 ? 1 : 0));
+        if (source_v2) {
+            SerializeNetAddrV2(s, source);
+        } else {
+            ::Serialize(s, source);
+        }
+        ::Serialize(s, nLastSuccess);
+        ::Serialize(s, nAttempts);
+    }
+
+    /**
+     * Deserialize an entry that was written in the BIP155-capable disk format.
+     */
+    template <typename Stream>
+    void UnserializeAddrV2(Stream& s)
+    {
+        Init();
+        uint32_t nMarker{0};
+        ::Unserialize(s, nMarker);
+        if (nMarker & DISK_VERSION_ADDRV2) {
+            UnserializeAddrV2Body(s);
+        } else {
+            SerializeBody(s, CSerActionUnserialize(), static_cast<int>(nMarker));
+        }
+        uint8_t nSourceFormat{0};
+        ::Unserialize(s, nSourceFormat);
+        switch (nSourceFormat) {
+        case 0:
+            ::Unserialize(s, source);
+            break;
+        case 1:
+            UnserializeNetAddrV2(s, source);
+            break;
+        default:
+            throw std::ios_base::failure("Corrupt CAddrMan serialization: unknown source format.");
+        }
+        ::Unserialize(s, nLastSuccess);
+        ::Unserialize(s, nAttempts);
     }
 
     CAddrInfo(const CAddress &addrIn, const CNetAddr &addrSource) : CAddress(addrIn), source(addrSource)
@@ -268,10 +456,58 @@ protected:
     //! Update an entry's service bits.
     void SetServices_(const CService &addr, ServiceFlags nServices) EXCLUSIVE_LOCKS_REQUIRED(cs);
 
+    /**
+     * Whether the addrman contains an address or a source that has no legacy
+     * (pre-BIP155) representation and therefore needs the BIP155 encoding.
+     */
+    bool HasAddrV2Entries_() const EXCLUSIVE_LOCKS_REQUIRED(cs)
+    {
+        for (const auto& entry : mapInfo) {
+            const CAddrInfo& info = entry.second;
+            if (!info.IsAddrV1Compatible() || !info.source.IsAddrV1Compatible()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    //! Serialize a single entry of the addrman in the given file format.
+    template<typename Stream>
+    static void SerializeEntry(Stream& s, const CAddrInfo& info, uint8_t nFormat)
+    {
+        if (nFormat == ADDRMAN_FILE_FORMAT_ADDRV2) {
+            info.SerializeAddrV2(s);
+        } else {
+            s << info;
+        }
+    }
+
+    //! Deserialize a single entry of the addrman from the given file format.
+    template<typename Stream>
+    static void UnserializeEntry(Stream& s, CAddrInfo& info, uint8_t nFormat)
+    {
+        if (nFormat == ADDRMAN_FILE_FORMAT_ADDRV2) {
+            info.UnserializeAddrV2(s);
+        } else {
+            s >> info;
+        }
+    }
+
 public:
     /**
+     * The format the addrman is written in: the legacy format as long as it
+     * contains no address (and no source) that needs the BIP155 encoding, the
+     * BIP155-capable format as soon as it does.
+     */
+    uint8_t GetFileFormat() const
+    {
+        LOCK(cs);
+        return HasAddrV2Entries_() ? ADDRMAN_FILE_FORMAT_ADDRV2 : ADDRMAN_FILE_FORMAT_LEGACY;
+    }
+
+    /**
      * serialized format:
-     * * version byte (currently 1)
+     * * format byte (1: legacy, 2: BIP155-capable)
      * * 0x20 + nKey (serialized as if it were a vector, for backward compatibility)
      * * nNew
      * * nTried
@@ -285,6 +521,13 @@ public:
      * 2**30 is xorred with the number of buckets to make addrman deserializer v0 detect it
      * as incompatible. This is necessary because it did not check the version number on
      * deserialization.
+     *
+     * The format byte selects the encoding of the entries: in the legacy
+     * format (1) every address is encoded in the legacy (pre-BIP155) format,
+     * in the BIP155-capable format (2) the addresses that have no legacy
+     * representation (Tor v3 onion addresses and I2P destinations) are encoded
+     * in the BIP155 (ADDRv2) format. The layout of the file is the same in
+     * both formats.
      *
      * Notice that vvTried, mapAddr and vVector are never encoded explicitly;
      * they are instead reconstructed from the other information.
@@ -303,8 +546,11 @@ public:
     {
         LOCK(cs);
 
-        unsigned char nVersion = 1;
-        s << nVersion;
+        // The legacy format is used as long as the addrman contains no
+        // address that needs the BIP155 encoding, so that the file stays
+        // readable by the nodes that do not support it.
+        const uint8_t nFormat = HasAddrV2Entries_() ? ADDRMAN_FILE_FORMAT_ADDRV2 : ADDRMAN_FILE_FORMAT_LEGACY;
+        s << nFormat;
         s << ((unsigned char)32);
         s << nKey;
         s << nNew;
@@ -319,7 +565,7 @@ public:
             const CAddrInfo &info = entry.second;
             if (info.nRefCount) {
                 assert(nIds != nNew); // this means nNew was wrong, oh ow
-                s << info;
+                SerializeEntry(s, info, nFormat);
                 nIds++;
             }
         }
@@ -328,7 +574,7 @@ public:
             const CAddrInfo &info = entry.second;
             if (info.fInTried) {
                 assert(nIds != nTried); // this means nTried was wrong, oh ow
-                s << info;
+                SerializeEntry(s, info, nFormat);
                 nIds++;
             }
         }
@@ -357,6 +603,9 @@ public:
 
         unsigned char nVersion;
         s >> nVersion;
+        if (nVersion != ADDRMAN_FILE_FORMAT_LEGACY && nVersion != ADDRMAN_FILE_FORMAT_ADDRV2) {
+            throw InvalidAddrManVersionError("Unsupported format of the addrman database: " + std::to_string(nVersion));
+        }
         unsigned char nKeySize;
         s >> nKeySize;
         if (nKeySize != 32) throw std::ios_base::failure("Incorrect keysize in addrman deserialization");
@@ -380,12 +629,12 @@ public:
         // Deserialize entries from the new table.
         for (int n = 0; n < nNew; n++) {
             CAddrInfo &info = mapInfo[n];
-            s >> info;
+            UnserializeEntry(s, info, nVersion);
             mapAddr[info] = n;
             info.nRandomPos = vRandom.size();
             vRandom.push_back(n);
-            if (nVersion != 1 || nUBuckets != ADDRMAN_NEW_BUCKET_COUNT) {
-                // In case the new table data cannot be used (nVersion unknown, or bucket count wrong),
+            if (nUBuckets != ADDRMAN_NEW_BUCKET_COUNT) {
+                // In case the new table data cannot be used (bucket count wrong),
                 // immediately try to give them a reference based on their primary source address.
                 int nUBucket = info.GetNewBucket(nKey);
                 int nUBucketPos = info.GetBucketPosition(nKey, true, nUBucket);
@@ -401,7 +650,7 @@ public:
         int nLost = 0;
         for (int n = 0; n < nTried; n++) {
             CAddrInfo info;
-            s >> info;
+            UnserializeEntry(s, info, nVersion);
             int nKBucket = info.GetTriedBucket(nKey);
             int nKBucketPos = info.GetBucketPosition(nKey, false, nKBucket);
             if (vvTried[nKBucket][nKBucketPos] == -1) {
@@ -428,7 +677,7 @@ public:
                 if (nIndex >= 0 && nIndex < nNew) {
                     CAddrInfo &info = mapInfo[nIndex];
                     int nUBucketPos = info.GetBucketPosition(nKey, true, bucket);
-                    if (nVersion == 1 && nUBuckets == ADDRMAN_NEW_BUCKET_COUNT && vvNew[bucket][nUBucketPos] == -1 && info.nRefCount < ADDRMAN_NEW_BUCKETS_PER_ADDRESS) {
+                    if (nUBuckets == ADDRMAN_NEW_BUCKET_COUNT && vvNew[bucket][nUBucketPos] == -1 && info.nRefCount < ADDRMAN_NEW_BUCKETS_PER_ADDRESS) {
                         info.nRefCount++;
                         vvNew[bucket][nUBucketPos] = nIndex;
                     }

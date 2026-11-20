@@ -13,8 +13,9 @@ misbehaviour score: an entry with an unknown network id, an entry with an
 unexpected address size and an oversized address are simply ignored. The
 entries behind a malformed entry are still processed by the node.
 
-Onion addresses that are received in an "addrv2" message are parsed, but they
-are neither stored nor relayed (the local-only policy of the onion support).
+Onion addresses that are received in an "addrv2" message are stored in the
+address manager and relayed to the peers that support the BIP155 address
+relay. A peer that does not support it never receives such an address.
 """
 
 import socket
@@ -101,7 +102,9 @@ class P2PAddrV2Test(DefiTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
         # The whitelist grants PF_NOBAN, which bypasses the "addr" rate limit.
-        self.extra_args = [["-whitelist=127.0.0.1"]]
+        # The onion network is only reachable with a Tor proxy: the addresses
+        # of an unreachable network are not stored in the address manager.
+        self.extra_args = [["-whitelist=127.0.0.1", "-onion=127.0.0.1:9050"]]
 
     def setup_network(self):
         self.peers = []
@@ -247,7 +250,8 @@ class P2PAddrV2Test(DefiTestFramework):
         assert_equal(self.total_addr_processed(), before + 1)
 
         # F7: an onion address that is received in an "addrv2" message is
-        # parsed, but it is neither stored nor relayed.
+        # stored in the address manager. It is only relayed to the peers that
+        # announced the support for the BIP155 address relay.
         onion = self.add_peer()
         msg = msg_addrv2()
         msg.addrs.append(
@@ -260,16 +264,20 @@ class P2PAddrV2Test(DefiTestFramework):
             )
         )
         onion.send_and_ping(msg)
-        # The onion address is not stored in the address manager.
-        assert not any(
-            addr["address"].endswith(".onion")
-            for addr in self.nodes[0].getnodeaddresses(1000)
+        # The onion address is stored in the address manager.
+        wait_until(
+            lambda: len(self.nodes[0].getnodeaddresses(1000, "onion")) > 0,
+            timeout=60,
         )
-        # The onion address is not relayed to the other peers either.
+        # A peer that does not support the BIP155 address relay never receives
+        # the onion address: it does not even receive an "addrv2" message and
+        # the legacy "addr" message never contains such an address.
         for other in self.peers:
-            for entries in other.addrs_v2:
-                for net, addr, port in entries:
-                    assert net != CAddressV2.NET_TORV3
+            if not other.addrv2:
+                assert other.addrs_v2 == []
+                for entries in other.addrs:
+                    for ip, _port in entries:
+                        assert not ip.endswith(".onion")
 
 
 if __name__ == "__main__":
