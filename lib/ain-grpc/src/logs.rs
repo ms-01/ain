@@ -63,7 +63,7 @@ pub struct GetLogsRequest {
     pub topics: Option<LogRequestTopics>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LogRequestTopics {
     VecOfHashes(Vec<Option<H256>>),

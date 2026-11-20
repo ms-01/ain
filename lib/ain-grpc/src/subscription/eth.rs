@@ -16,9 +16,7 @@ use jsonrpsee::{
 use log::{debug, trace};
 use tokio::runtime::Handle as AsyncHandle;
 
-use crate::subscription::{
-    PubSubResult, Subscription, SubscriptionParams, SubscriptionParamsTopics, SyncStatus,
-};
+use crate::subscription::{PubSubResult, Subscription, SubscriptionParams, SyncStatus};
 
 /// Metachain WebSockets interface.
 #[rpc(server, namespace = "eth")]
@@ -97,15 +95,12 @@ impl MetachainPubSubServer for MetachainPubSubModule {
                 let criteria = params
                     .as_ref()
                     .map(|p| {
-                        let topics = p.topics.as_ref().map(|topics| match topics {
-                            SubscriptionParamsTopics::VecOfHashes(inputs) => {
-                                inputs.iter().flatten().map(|input| vec![*input]).collect()
-                            }
-                            SubscriptionParamsTopics::VecOfHashVecs(inputs) => inputs
-                                .iter()
-                                .map(|hashes| hashes.iter().flatten().copied().collect())
-                                .collect(),
-                        });
+                        // Reuse the shared conversion so that `eth_subscribe` and
+                        // `eth_getLogs` / `eth_newFilter` treat the very same payload
+                        // identically. In particular a `null` placeholder keeps its
+                        // position (positional wildcard) instead of being dropped and
+                        // shifting the following positions to the left.
+                        let topics = p.topics.clone().map(|topics| topics.into_filter_topics());
                         FilterCriteria {
                             addresses: p.address.clone(),
                             topics,
