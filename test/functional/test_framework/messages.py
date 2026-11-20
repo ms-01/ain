@@ -1244,6 +1244,91 @@ class msg_addr:
         return "msg_addr(addrs=%s)" % (repr(self.addrs))
 
 
+class CAddressV2:
+    """A single address entry of an "addrv2" (BIP155) message.
+
+    The layout of an entry is:
+      time (4 bytes, little endian) || services (CompactSize) ||
+      network id (1 byte) || COMPACTSIZE(length) || address bytes ||
+      port (2 bytes, big endian)
+    """
+
+    __slots__ = ("time", "nServices", "net", "addr", "port")
+
+    # The network identifiers of the BIP155 wire format.
+    NET_IPV4 = 1
+    NET_IPV6 = 2
+    NET_TORV2 = 3
+    NET_TORV3 = 4
+    NET_I2P = 5
+
+    def __init__(self, time=0, nServices=1, net=NET_IPV4, addr=b"", port=0):
+        self.time = time
+        self.nServices = nServices
+        self.net = net
+        self.addr = addr
+        self.port = port
+
+    def deserialize(self, f):
+        self.time = struct.unpack("<I", f.read(4))[0]
+        self.nServices = deser_compact_size(f)
+        self.net = struct.unpack("<B", f.read(1))[0]
+        length = deser_compact_size(f)
+        self.addr = f.read(length)
+        self.port = struct.unpack(">H", f.read(2))[0]
+
+    def serialize(self):
+        r = b""
+        r += struct.pack("<I", self.time)
+        r += ser_compact_size(self.nServices)
+        r += struct.pack("<B", self.net)
+        r += ser_compact_size(len(self.addr))
+        r += self.addr
+        r += struct.pack(">H", self.port)
+        return r
+
+    def __repr__(self):
+        return "CAddressV2(net=%i addr=%s port=%i)" % (
+            self.net,
+            self.addr.hex(),
+            self.port,
+        )
+
+
+class msg_addrv2:
+    __slots__ = ("addrs",)
+    command = b"addrv2"
+
+    def __init__(self):
+        self.addrs = []
+
+    def deserialize(self, f):
+        self.addrs = deser_vector(f, CAddressV2)
+
+    def serialize(self):
+        return ser_vector(self.addrs)
+
+    def __repr__(self):
+        return "msg_addrv2(addrs=%s)" % (repr(self.addrs))
+
+
+class msg_sendaddrv2:
+    __slots__ = ()
+    command = b"sendaddrv2"
+
+    def __init__(self):
+        pass
+
+    def deserialize(self, f):
+        pass
+
+    def serialize(self):
+        return b""
+
+    def __repr__(self):
+        return "msg_sendaddrv2()"
+
+
 class msg_inv:
     __slots__ = ("inv",)
     command = b"inv"

@@ -26,6 +26,7 @@ from test_framework.messages import (
     MIN_VERSION_SUPPORTED,
     msg_anchorauth,
     msg_addr,
+    msg_addrv2,
     msg_block,
     MSG_BLOCK,
     msg_blocktxn,
@@ -43,6 +44,7 @@ from test_framework.messages import (
     msg_notfound,
     msg_ping,
     msg_pong,
+    msg_sendaddrv2,
     msg_sendcmpct,
     msg_sendheaders,
     msg_tx,
@@ -61,6 +63,7 @@ logger = logging.getLogger("TestFramework.mininode")
 
 MESSAGEMAP = {
     b"addr": msg_addr,
+    b"addrv2": msg_addrv2,
     b"anchorauth": msg_anchorauth,
     b"block": msg_block,
     b"blocktxn": msg_blocktxn,
@@ -79,6 +82,7 @@ MESSAGEMAP = {
     b"ping": msg_ping,
     b"pong": msg_pong,
     b"sendcmpct": msg_sendcmpct,
+    b"sendaddrv2": msg_sendaddrv2,
     b"sendheaders": msg_sendheaders,
     b"tx": msg_tx,
     b"verack": msg_verack,
@@ -387,6 +391,9 @@ class P2PInterface(P2PConnection):
     def on_addr(self, message):
         pass
 
+    def on_addrv2(self, message):
+        pass
+
     def on_anchorauth(self, message):
         pass
 
@@ -436,6 +443,9 @@ class P2PInterface(P2PConnection):
         pass
 
     def on_sendcmpct(self, message):
+        pass
+
+    def on_sendaddrv2(self, message):
         pass
 
     def on_sendheaders(self, message):

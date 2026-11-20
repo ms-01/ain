@@ -2544,6 +2544,102 @@ void static ProcessOrphanTx(CConnman* connman, std::set<uint256>& orphan_work_se
     }
 }
 
+/**
+ * Process a batch of addresses that was received from a peer.
+ *
+ * The function is shared by the "addr" and the "addrv2" message handlers, so
+ * that both message formats are subject to the same rate limiting, the same
+ * size limit and the same relay policy. There is no way to bypass the rate
+ * limit by switching to the "addrv2" message.
+ *
+ * @param[in] pfrom     the peer the addresses were received from
+ * @param[in] msgType   the message type the addresses were received in
+ * @param[in] nEntries  the number of entries the message announced
+ * @param[in] vAddr     the decoded addresses
+ * @param[in] connman   the connection manager
+ * @param[in] interruptMsgProc the interrupt condition of the message processing
+ * @return false if the peer should be disconnected
+ */
+static bool ProcessAddrs(CNode* pfrom, const char* msgType, size_t nEntries, std::vector<CAddress>&& vAddr, CConnman* connman, const std::atomic<bool>& interruptMsgProc)
+{
+    // Store the new addresses
+    std::vector<CAddress> vAddrOk;
+    int64_t nNow = GetAdjustedTime();
+    int64_t nSince = nNow - 10 * 60;
+
+    // track rate limiting within this message
+    uint64_t nProcessedAddrs = 0;
+    uint64_t nRatelimitedAddrs = 0;
+
+    // Update/increment addr rate limiting bucket.
+    const uint64_t nCurrentTime = GetTimeMicros();
+    if (pfrom->nAddrTokenBucket < maxAddrProcessingTokenBucket) {
+        const uint64_t nTimeElapsed = std::max(nCurrentTime - pfrom->nAddrTokenTimestamp, uint64_t(0));
+        const double nIncrement = nTimeElapsed * maxAddrRatePerSecond / 1e6;
+        pfrom->nAddrTokenBucket = std::min<double>(pfrom->nAddrTokenBucket + nIncrement, maxAddrProcessingTokenBucket);
+    }
+    pfrom->nAddrTokenTimestamp = nCurrentTime;
+
+    // Randomize entries before processing, to prevent an attacker to
+    // determine which entries will make it through the rate limit
+    {
+        // Generate an fairly indeterministic seed out variables we already have
+        // from a peer point of view.
+        FastRandomContext insecure_rand;
+        auto seed = insecure_rand.randrange(nCurrentTime) * getpid();
+        std::shuffle(vAddr.begin(), vAddr.end(), std::default_random_engine{static_cast<unsigned int>(seed)});
+    }
+
+    for (CAddress& addr : vAddr)
+    {
+        if (interruptMsgProc)
+            return true;
+
+        // Apply rate limiting
+        if (!pfrom->HasPermission(PF_NOBAN)) {
+            if (pfrom->nAddrTokenBucket < 1.0) {
+                nRatelimitedAddrs++;
+                continue;
+            }
+            pfrom->nAddrTokenBucket -= 1.0;
+        }
+
+        nProcessedAddrs++;
+
+        // We only bother storing full nodes, though this may include
+        // things which we would not make an outbound connection to, in
+        // part because we may make feeler connections to them.
+        if (!MayHaveUsefulAddressDB(addr.nServices) && !HasAllDesirableServiceFlags(addr.nServices))
+            continue;
+
+        if (addr.nTime <= 100000000 || addr.nTime > nNow + 10 * 60)
+            addr.nTime = nNow - 5 * 24 * 60 * 60;
+        pfrom->AddAddressKnown(addr);
+        if (g_banman->IsBanned(addr)) continue; // Do not process banned addresses beyond remembering we received them
+        bool fReachable = IsReachable(addr);
+        if (addr.nTime > nSince && !pfrom->fGetAddr && vAddr.size() <= 10 && addr.IsRoutable())
+        {
+            // Relay to a limited number of other nodes
+            RelayAddress(addr, fReachable, connman);
+        }
+        // Do not store addresses outside our network
+        if (fReachable)
+            vAddrOk.push_back(addr);
+    }
+    pfrom->nProcessedAddrs += nProcessedAddrs;
+    pfrom->nRatelimitedAddrs += nRatelimitedAddrs;
+
+    LogPrint(BCLog::NET, "Received %s: %u addresses (%u processed, %u rate-limited) peer=%d\n",
+             msgType, vAddr.size(), nProcessedAddrs, nRatelimitedAddrs, pfrom->GetId());
+
+    connman->AddNewAddresses(vAddrOk, pfrom->addr, 2 * 60 * 60);
+    if (nEntries < 1000)
+        pfrom->fGetAddr = false;
+    if (pfrom->fOneShot)
+        pfrom->fDisconnect = true;
+    return true;
+}
+
 bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman* connman, const std::atomic<bool>& interruptMsgProc)
 {
     LogPrint(BCLog::NET, "received: %s (%u bytes) peer=%d\n", SanitizeString(strCommand), vRecv.size(), pfrom->GetId());
@@ -2644,6 +2740,12 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         }
 
         connman->PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::VERACK));
+
+        // Announce the support for the BIP155 address relay. The message is
+        // queued after our own verack, so that a peer which does not know the
+        // message does not receive it in the window in which it still expects
+        // the verack. Unknown messages are ignored by the older peers.
+        connman->PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::SENDADDRV2));
 
         pfrom->nServices = nServices;
         pfrom->SetAddrLocal(addrMe);
@@ -2822,6 +2924,26 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         return true;
     }
 
+    // BIP155 defines the "sendaddrv2" capability message, which announces that
+    // the peer understands the "addrv2" message.
+    //
+    // In contrast to upstream Bitcoin Core, which disconnects the peers that
+    // send the message after their verack and sends it between the version and
+    // the verack message, the message is accepted before and after the verack
+    // here. The deployed peers are pre-change DeFiChain nodes, and the
+    // protocol version of this chain is aliased to the network upgrade height,
+    // so it cannot be used to detect the support of the message. The message
+    // is never a reason to misbehave and never disconnects the peer.
+    if (strCommand == NetMsgType::SENDADDRV2) {
+        if (!pfrom->m_wants_addrv2) {
+            pfrom->m_wants_addrv2 = true;
+            LogPrint(BCLog::NET, "Peer supports the BIP155 address relay, peer=%d\n", pfrom->GetId());
+        } else {
+            LogPrint(BCLog::NET, "Ignoring duplicate sendaddrv2 from peer=%d\n", pfrom->GetId());
+        }
+        return true;
+    }
+
     if (!pfrom->fSuccessfullyConnected) {
         // Must have a verack message before anything else
         LOCK_PEER();
@@ -2843,82 +2965,26 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             return false;
         }
 
-        // Store the new addresses
-        std::vector<CAddress> vAddrOk;
-        int64_t nNow = GetAdjustedTime();
-        int64_t nSince = nNow - 10 * 60;
+        return ProcessAddrs(pfrom, NetMsgType::ADDR, vAddr.size(), std::move(vAddr), connman, interruptMsgProc);
+    }
 
-        // track rate limiting within this message
-        uint64_t nProcessedAddrs = 0;
-        uint64_t nRatelimitedAddrs = 0;
+    if (strCommand == NetMsgType::ADDRV2) {
+        std::vector<CAddress> vAddr;
+        // The entries are decoded one by one. An invalid entry is ignored, it
+        // never misbehaves and never disconnects the peer.
+        const uint64_t nCount = DecodeAddrV2Message(vRecv, vAddr);
 
-        // Update/increment addr rate limiting bucket.
-        const uint64_t nCurrentTime = GetTimeMicros();
-        if (pfrom->nAddrTokenBucket < maxAddrProcessingTokenBucket) {
-            const uint64_t nTimeElapsed = std::max(nCurrentTime - pfrom->nAddrTokenTimestamp, uint64_t(0));
-            const double nIncrement = nTimeElapsed * maxAddrRatePerSecond / 1e6;
-            pfrom->nAddrTokenBucket = std::min<double>(pfrom->nAddrTokenBucket + nIncrement, maxAddrProcessingTokenBucket);
-        }
-        pfrom->nAddrTokenTimestamp = nCurrentTime;
-
-        // Randomize entries before processing, to prevent an attacker to
-        // determine which entries will make it through the rate limit
+        // Don't want addr from older versions unless seeding
+        if (pfrom->nVersion < CADDR_TIME_VERSION && connman->GetAddressCount() > 1000)
+            return true;
+        if (nCount > MAX_ADDRV2_ENTRIES)
         {
-            // Generate an fairly indeterministic seed out variables we already have
-            // from a peer point of view.
-            FastRandomContext insecure_rand;
-            auto seed = insecure_rand.randrange(nCurrentTime) * getpid();
-            std::shuffle(vAddr.begin(), vAddr.end(), std::default_random_engine{static_cast<unsigned int>(seed)});
+            LOCK_PEER();
+            Misbehaving(pfrom->GetId(), 20, strprintf("message addrv2 size() = %u", nCount));
+            return false;
         }
 
-        for (CAddress& addr : vAddr)
-        {
-            if (interruptMsgProc)
-                return true;
-
-            // Apply rate limiting
-            if (!pfrom->HasPermission(PF_NOBAN)) {
-                if (pfrom->nAddrTokenBucket < 1.0) {
-                    nRatelimitedAddrs++;
-                    continue;
-                }
-                pfrom->nAddrTokenBucket -= 1.0;
-            }
-
-            nProcessedAddrs++;
-
-            // We only bother storing full nodes, though this may include
-            // things which we would not make an outbound connection to, in
-            // part because we may make feeler connections to them.
-            if (!MayHaveUsefulAddressDB(addr.nServices) && !HasAllDesirableServiceFlags(addr.nServices))
-                continue;
-
-            if (addr.nTime <= 100000000 || addr.nTime > nNow + 10 * 60)
-                addr.nTime = nNow - 5 * 24 * 60 * 60;
-            pfrom->AddAddressKnown(addr);
-            if (g_banman->IsBanned(addr)) continue; // Do not process banned addresses beyond remembering we received them
-            bool fReachable = IsReachable(addr);
-            if (addr.nTime > nSince && !pfrom->fGetAddr && vAddr.size() <= 10 && addr.IsRoutable())
-            {
-                // Relay to a limited number of other nodes
-                RelayAddress(addr, fReachable, connman);
-            }
-            // Do not store addresses outside our network
-            if (fReachable)
-                vAddrOk.push_back(addr);
-        }
-        pfrom->nProcessedAddrs += nProcessedAddrs;
-        pfrom->nRatelimitedAddrs += nRatelimitedAddrs;
-
-        LogPrint(BCLog::NET, "Received addr: %u addresses (%u processed, %u rate-limited) peer=%d\n",
-                 vAddr.size(), nProcessedAddrs, nRatelimitedAddrs, pfrom->GetId());
-
-        connman->AddNewAddresses(vAddrOk, pfrom->addr, 2 * 60 * 60);
-        if (vAddr.size() < 1000)
-            pfrom->fGetAddr = false;
-        if (pfrom->fOneShot)
-            pfrom->fDisconnect = true;
-        return true;
+        return ProcessAddrs(pfrom, NetMsgType::ADDRV2, nCount, std::move(vAddr), connman, interruptMsgProc);
     }
 
     if (strCommand == NetMsgType::SENDHEADERS) {
@@ -3967,6 +4033,14 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         pfrom->vAddrToSend.clear();
         // The response is served from the "getaddr" response cache, so that a
         // peer cannot scrape the address manager by reconnecting repeatedly.
+        //
+        // The format of the response is not decided here, but when the
+        // addresses are sent: a peer that announced the support for the
+        // BIP155 address relay receives them in the "addrv2" format, all other
+        // peers receive them in the legacy "addr" format. Both sides announce
+        // their support after their verack, so a "getaddr" that arrives before
+        // the "sendaddrv2" message of the peer is answered with the legacy
+        // format. This race is expected and does not need a retry.
         std::vector<CAddress> vAddr = connman->GetAddresses(*pfrom);
         FastRandomContext insecure_rand;
         for (const CAddress &addr : vAddr) {
@@ -4632,6 +4706,19 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
         //
         if (pto->nNextAddrSend < nNow) {
             pto->nNextAddrSend = PoissonNextSend(nNow, AVG_ADDRESS_BROADCAST_INTERVAL);
+            // Peers that announced the support for the BIP155 address relay
+            // with a "sendaddrv2" message receive the addresses in the
+            // "addrv2" format, all other peers receive them in the legacy
+            // "addr" format. The capability only selects the format of the
+            // addresses we send; both formats are always accepted.
+            const bool useAddrV2 = pto->m_wants_addrv2;
+            auto sendAddrMessage = [&](const std::vector<CAddress>& vAddr) {
+                if (useAddrV2) {
+                    connman->PushMessage(pto, msgMaker.Make(NetMsgType::ADDRV2, CAddrV2Message(vAddr)));
+                } else {
+                    connman->PushMessage(pto, msgMaker.Make(NetMsgType::ADDR, vAddr));
+                }
+            };
             std::vector<CAddress> vAddr;
             vAddr.reserve(pto->vAddrToSend.size());
             for (const CAddress& addr : pto->vAddrToSend)
@@ -4639,18 +4726,25 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                 if (!pto->addrKnown.contains(addr.GetKey()))
                 {
                     pto->addrKnown.insert(addr.GetKey());
+                    // Addresses without a BIP155 representation (the legacy Tor
+                    // v2 OnionCat form) cannot be encoded in the "addrv2"
+                    // message and are therefore not announced to a peer that
+                    // only understands that format.
+                    if (useAddrV2 && !addr.IsAddrV2Compatible()) {
+                        continue;
+                    }
                     vAddr.push_back(addr);
                     // receiver rejects addr messages larger than 1000
                     if (vAddr.size() >= 1000)
                     {
-                        connman->PushMessage(pto, msgMaker.Make(NetMsgType::ADDR, vAddr));
+                        sendAddrMessage(vAddr);
                         vAddr.clear();
                     }
                 }
             }
             pto->vAddrToSend.clear();
             if (!vAddr.empty())
-                connman->PushMessage(pto, msgMaker.Make(NetMsgType::ADDR, vAddr));
+                sendAddrMessage(vAddr);
             // we only send the big addr message once
             if (pto->vAddrToSend.capacity() > 40)
                 pto->vAddrToSend.shrink_to_fit();

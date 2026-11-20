@@ -106,6 +106,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
             "    \"inbound\": true|false,     (boolean) Inbound (true) or Outbound (false)\n"
             "    \"bip152_hb_to\": true|false,(boolean) Whether we selected peer as (compact blocks) high-bandwidth peer\n"
             "    \"bip152_hb_from\": true|false,(boolean) Whether peer selected us as (compact blocks) high-bandwidth peer\n"
+            "    \"addrv2\": true|false,(boolean) Whether peer announced its support for the BIP155 address relay\n"
             "    \"startingheight\": n,       (numeric) The starting height (block) of the peer\n"
             "    \"synced_headers\": n,       (numeric) The last header we have in common with this peer\n"
             "    \"synced_blocks\": n,        (numeric) The last block we have in common with this peer\n"
@@ -180,6 +181,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
         obj.pushKV("inbound", stats.fInbound);
         obj.pushKV("bip152_hb_to", stats.m_bip152_highbandwidth_to);
         obj.pushKV("bip152_hb_from", stats.m_bip152_highbandwidth_from);
+        obj.pushKV("addrv2", stats.m_wants_addrv2);
         obj.pushKV("startingheight", stats.nStartingHeight);
         if (fStateStats) {
             obj.pushKV("synced_headers", statestats.nSyncHeight);
