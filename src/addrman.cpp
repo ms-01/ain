@@ -258,6 +258,12 @@ bool CAddrMan::Add_(const CAddress& addr, const CNetAddr& source, int64_t nTimeP
     if (!addr.IsRoutable())
         return false;
 
+    // Addresses without a legacy (pre-BIP155) representation - Tor v3 onion
+    // addresses and I2P destinations - cannot be serialized into the on-disk
+    // addrman and are therefore never stored.
+    if (!addr.IsAddrV1Compatible())
+        return false;
+
     bool fNew = false;
     int nId;
     CAddrInfo* pinfo = Find(addr, &nId);

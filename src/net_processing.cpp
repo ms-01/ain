@@ -1840,6 +1840,14 @@ void RelayTransaction(const uint256& txid, const CConnman& connman)
 
 static void RelayAddress(const CAddress& addr, bool fReachable, CConnman* connman)
 {
+    // Addresses without a legacy (pre-BIP155) representation - Tor v3 onion
+    // addresses and I2P destinations - cannot be serialized into the v1 ADDR
+    // message and are therefore never relayed. They are only reachable through
+    // an explicit operator action (addnode, -connect, -proxy).
+    if (!addr.IsAddrV1Compatible()) {
+        return;
+    }
+
     unsigned int nRelayNodes = fReachable ? 2 : 1; // limited relaying of addresses outside our network(s)
 
     // Relay to a limited number of other nodes

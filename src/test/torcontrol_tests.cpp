@@ -2,7 +2,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 //
+#include <netaddress.h>
 #include <test/setup_common.h>
+#include <torcontrol.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -198,6 +200,30 @@ BOOST_AUTO_TEST_CASE(util_ParseTorReplyMapping)
     CheckParseTorReplyMapping("MORE  ARGS", {});
     CheckParseTorReplyMapping("EVEN more=ARGS", {});
     CheckParseTorReplyMapping("EVEN+more ARGS", {});
+}
+
+BOOST_AUTO_TEST_CASE(torcontrol_service_id_to_service)
+{
+    // The hidden service is a Tor v3 (ED25519-V3) service.
+    BOOST_CHECK_EQUAL(TOR_ONION_KEY_TYPE, "NEW:ED25519-V3");
+
+    // The service id of a Tor v3 hidden service is the 56 character base32
+    // encoded ed25519 public key; the onion address is derived from it.
+    const std::string service_id = "aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd";
+    CService service = TorServiceIdToService(service_id, 8555);
+    BOOST_CHECK(service.IsValid());
+    BOOST_CHECK(service.IsTor());
+    BOOST_CHECK(service.IsTorV3());
+    BOOST_CHECK_EQUAL(service.ToString(), service_id + ".onion:8555");
+    BOOST_CHECK_EQUAL(service.GetPort(), 8555);
+
+    // An empty or malformed service id is rejected.
+    BOOST_CHECK(!TorServiceIdToService("", 8555).IsValid());
+    BOOST_CHECK(!TorServiceIdToService("notavalidonionserviceid", 8555).IsValid());
+    // A service id with a broken checksum is rejected.
+    BOOST_CHECK(!TorServiceIdToService("aebagbafayaqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd", 8555).IsValid());
+    // A Tor v2 service id is not accepted anymore.
+    BOOST_CHECK(!TorServiceIdToService("6hzph5hv6337r6p2", 8555).IsValid());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

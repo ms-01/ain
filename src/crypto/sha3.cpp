@@ -174,6 +174,16 @@ defsha3(256)
 defsha3(384)
 defsha3(512)
 
+int sha3_256_fips202(uint8_t* out, size_t outlen, const uint8_t* in, size_t inlen)
+{
+	if (outlen > 32) {
+		return -1;
+	}
+	// FIPS 202 uses the 0x06 domain separation byte, the legacy Keccak-256
+	// implementation above uses 0x01.
+	return hash(out, outlen, in, inlen, 200 - (256 / 4), 0x06);
+}
+
 bool sha3_256_safe(const std::vector<unsigned char> &input, std::vector<unsigned char> &output)
 {
 	output.resize(32);

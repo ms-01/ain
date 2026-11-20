@@ -4,10 +4,13 @@
 
 #include <netbase.h>
 #include <net_permissions.h>
+#include <streams.h>
 #include <test/setup_common.h>
 #include <util/strencodings.h>
 
+#include <algorithm>
 #include <string>
+#include <vector>
 
 #include <boost/test/unit_test.hpp>
 
@@ -134,6 +137,150 @@ BOOST_AUTO_TEST_CASE(onioncat_test)
     BOOST_CHECK(addr1.ToStringIP() == "5wyqrzbvrdsumnok.onion");
     BOOST_CHECK(addr1.IsRoutable());
 
+}
+
+BOOST_AUTO_TEST_CASE(netbase_torv3_onion)
+{
+    // Test vector: the Tor v3 onion address of the ed25519 public key
+    // 0x010203...20.
+    const std::string onion = "aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion";
+    CNetAddr addr(ResolveIP(onion.c_str()));
+
+    BOOST_CHECK(addr.IsTor());
+    BOOST_CHECK(addr.IsOnion());
+    BOOST_CHECK(addr.IsTorV3());
+    BOOST_CHECK(!addr.IsIPv4());
+    BOOST_CHECK(!addr.IsIPv6());
+    BOOST_CHECK(!addr.IsI2P());
+    BOOST_CHECK(!addr.IsInternal());
+    BOOST_CHECK(addr.IsValid());
+    BOOST_CHECK(addr.IsRoutable());
+    BOOST_CHECK_EQUAL(addr.GetNetwork(), NET_ONION);
+    BOOST_CHECK_EQUAL(addr.GetNetClass(), NET_ONION);
+    BOOST_CHECK_EQUAL(addr.ToStringIP(), onion);
+    BOOST_CHECK(!addr.IsAddrV1Compatible());
+
+    // The raw address is the 32 byte ed25519 public key.
+    const std::vector<unsigned char> bytes = addr.GetAddrBytes();
+    BOOST_CHECK_EQUAL(bytes.size(), 32U);
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        BOOST_CHECK_EQUAL(bytes[i], i + 1);
+    }
+
+    // Tor v3 addresses are grouped by the first four bits of the address.
+    BOOST_CHECK(addr.GetGroup() == std::vector<unsigned char>({(unsigned char)NET_ONION, (unsigned char)(0x01 | 0x0f)}));
+
+    // The service is printed without brackets, like every other onion address.
+    CService service(addr, 8555);
+    BOOST_CHECK_EQUAL(service.ToString(), onion + ":8555");
+    BOOST_CHECK_EQUAL(service.GetPort(), 8555);
+
+    // The address is case insensitive.
+    std::string upper = onion;
+    for (size_t i = 0; i + 6 < upper.size(); ++i) {
+        if (upper[i] >= 'a' && upper[i] <= 'z') {
+            upper[i] = upper[i] - 'a' + 'A';
+        }
+    }
+    CNetAddr upper_addr(ResolveIP(upper.c_str()));
+    BOOST_CHECK(upper_addr.IsTorV3());
+    BOOST_CHECK(upper_addr == addr);
+    BOOST_CHECK_EQUAL(upper_addr.ToStringIP(), onion);
+}
+
+BOOST_AUTO_TEST_CASE(netbase_torv3_onion_invalid)
+{
+    // A modified checksum must be rejected.
+    BOOST_CHECK(!ResolveIP("aebagbafayaqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion").IsTorV3());
+    // A wrong version byte must be rejected (the checksum is computed over the
+    // version byte as well).
+    BOOST_CHECK(!ResolveIP("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qipzqc.onion").IsTorV3());
+    BOOST_CHECK(!ResolveIP("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qhwlqe.onion").IsTorV3());
+    // A wrong length must be rejected.
+    BOOST_CHECK(!ResolveIP("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeq.onion").IsTorV3());
+    BOOST_CHECK(!ResolveIP("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqdd.onion").IsTorV3());
+    // Invalid base32 characters must be rejected.
+    BOOST_CHECK(!ResolveIP("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeq1.onion").IsTorV3());
+    // The legacy Tor v2 (OnionCat) address is still accepted.
+    BOOST_CHECK(ResolveIP("5wyqrzbvrdsumnok.onion").IsTor());
+    BOOST_CHECK(!ResolveIP("5wyqrzbvrdsumnok.onion").IsTorV3());
+}
+
+BOOST_AUTO_TEST_CASE(netbase_i2p)
+{
+    // Test vector: the I2P destination of the bytes 0x00..0x1f.
+    const std::string i2p = "aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq.b32.i2p";
+    CNetAddr addr(ResolveIP(i2p.c_str()));
+
+    BOOST_CHECK(addr.IsI2P());
+    BOOST_CHECK(!addr.IsTor());
+    BOOST_CHECK(!addr.IsOnion());
+    BOOST_CHECK(!addr.IsTorV3());
+    BOOST_CHECK(!addr.IsIPv4());
+    BOOST_CHECK(!addr.IsIPv6());
+    BOOST_CHECK(addr.IsValid());
+    BOOST_CHECK(addr.IsRoutable());
+    BOOST_CHECK_EQUAL(addr.GetNetwork(), NET_I2P);
+    BOOST_CHECK_EQUAL(addr.GetNetClass(), NET_I2P);
+    BOOST_CHECK_EQUAL(addr.ToStringIP(), i2p);
+    BOOST_CHECK(!addr.IsAddrV1Compatible());
+    BOOST_CHECK_EQUAL(addr.GetAddrBytes().size(), 32U);
+
+    // I2P addresses are grouped by the first four bits of the address.
+    BOOST_CHECK(addr.GetGroup() == std::vector<unsigned char>({(unsigned char)NET_I2P, (unsigned char)(0x00 | 0x0f)}));
+
+    // A wrong length or an invalid checksum must be rejected.
+    BOOST_CHECK(!ResolveIP("aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dyp.b32.i2p").IsI2P());
+    BOOST_CHECK(!ResolveIP("aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypqq.b32.i2p").IsI2P());
+}
+
+BOOST_AUTO_TEST_CASE(netbase_parsenetwork_i2p)
+{
+    BOOST_CHECK_EQUAL(ParseNetwork("i2p"), NET_I2P);
+    BOOST_CHECK_EQUAL(ParseNetwork("I2P"), NET_I2P);
+    BOOST_CHECK_EQUAL(GetNetworkName(NET_I2P), "i2p");
+    BOOST_CHECK_EQUAL(GetNetworkName(NET_ONION), "onion");
+}
+
+BOOST_AUTO_TEST_CASE(netbase_v1_serialization)
+{
+    // The legacy (pre-BIP155) serialization and the addrman keys of the
+    // networks with a v1 representation must stay byte-identical.
+    CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+    stream << CService(ResolveIP("1.2.3.4"), 1234);
+    BOOST_CHECK_EQUAL(HexStr(std::vector<unsigned char>(stream.begin(), stream.end())), "00000000000000000000ffff0102030404d2");
+
+    CDataStream stream6(SER_NETWORK, PROTOCOL_VERSION);
+    stream6 << CService(ResolveIP("2001:db8::1"), 1234);
+    BOOST_CHECK_EQUAL(HexStr(std::vector<unsigned char>(stream6.begin(), stream6.end())), "20010db800000000000000000000000104d2");
+
+    CDataStream stream_onion(SER_NETWORK, PROTOCOL_VERSION);
+    stream_onion << CService(ResolveIP("5wyqrzbvrdsumnok.onion"), 1234);
+    BOOST_CHECK_EQUAL(HexStr(std::vector<unsigned char>(stream_onion.begin(), stream_onion.end())), "fd87d87eeb43edb108e43588e54635ca04d2");
+
+    // The addrman key of an IPv4 address is unchanged as well.
+    const std::vector<unsigned char> key = CService(ResolveIP("1.2.3.4"), 1234).GetKey();
+    BOOST_CHECK_EQUAL(key.size(), 18U);
+    BOOST_CHECK_EQUAL(HexStr(key), "00000000000000000000ffff0102030404d2");
+}
+
+BOOST_AUTO_TEST_CASE(netbase_onion_subnet)
+{
+    // Tor v3 onion addresses have no legacy (pre-BIP155) representation and
+    // are therefore not supported by the subnet model; they must be rejected
+    // explicitly instead of silently matching every onion address.
+    const std::string onion = "aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion";
+    CSubNet subnet;
+    BOOST_CHECK(!LookupSubNet(onion.c_str(), subnet));
+    BOOST_CHECK(!subnet.IsValid());
+    BOOST_CHECK(!CSubNet(ResolveIP(onion.c_str())).IsValid());
+    BOOST_CHECK(!CSubNet(ResolveIP(onion.c_str())).Match(ResolveIP(onion.c_str())));
+
+    // The same holds for I2P addresses.
+    const std::string i2p = "aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq.b32.i2p";
+    CSubNet i2p_subnet;
+    BOOST_CHECK(!LookupSubNet(i2p.c_str(), i2p_subnet));
+    BOOST_CHECK(!CSubNet(ResolveIP(i2p.c_str())).IsValid());
 }
 
 BOOST_AUTO_TEST_CASE(subnet_test)
