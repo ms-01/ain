@@ -62,6 +62,33 @@ static constexpr size_t ADDR_TORV3_SIZE = 32;
 /// Size of an I2P destination address (in bytes).
 static constexpr size_t ADDR_I2P_SIZE = 32;
 
+/// Size of an IPv4 address (in bytes) in the BIP155 (ADDRv2) wire format.
+static constexpr size_t ADDR_IPV4_SIZE = 4;
+
+/**
+ * The maximum size (in bytes) of the address part of a single entry in the
+ * BIP155 (ADDRv2) wire format.
+ */
+static constexpr size_t MAX_ADDRV2_SIZE = 512;
+
+/**
+ * The network identifiers of the BIP155 (ADDRv2) wire format.
+ *
+ * @see https://github.com/bitcoin/bips/blob/master/bip-0155.mediawiki
+ */
+enum BIP155Network : uint8_t {
+    /// IPv4
+    BIP155_IPV4 = 1,
+    /// IPv6
+    BIP155_IPV6 = 2,
+    /// Tor v2 (deprecated; not supported by the address layer of this node)
+    BIP155_TORV2 = 3,
+    /// Tor v3
+    BIP155_TORV3 = 4,
+    /// I2P
+    BIP155_I2P = 5,
+};
+
 /**
  * Network address.
  *
@@ -199,6 +226,40 @@ class CNetAddr
          * addresses and I2P addresses this is the raw 32 byte address.
          */
         std::vector<unsigned char> GetAddrBytes() const;
+        /**
+         * The BIP155 (ADDRv2) network identifier of this address.
+         *
+         * @return the network identifier, or 0 if the address has no
+         *         representation in the BIP155 wire format.
+         */
+        uint8_t GetBIP155Network() const;
+        /**
+         * Whether this address has a representation in the BIP155 (ADDRv2)
+         * wire format.
+         *
+         * The legacy Tor v2 (OnionCat) form has none: it is only kept for
+         * the legacy (pre-BIP155) wire format.
+         */
+        bool IsAddrV2Compatible() const;
+        /**
+         * The address bytes of the BIP155 (ADDRv2) representation of this
+         * address.
+         *
+         * IPv4 addresses are returned in their plain 4 byte form; internally
+         * they are stored in the IPv4-mapped IPv6 form.
+         *
+         * @return an empty vector if the address has no BIP155 representation.
+         */
+        std::vector<unsigned char> GetAddrV2Bytes() const;
+        /**
+         * Set this address from a BIP155 (ADDRv2) network identifier and the
+         * raw address bytes of that network.
+         *
+         * @return false if the network identifier is unknown or if the size does
+         *         not match the expected size of that network. The address is
+         *         left unchanged in that case.
+         */
+        bool SetFromBIP155(uint8_t net, const unsigned char* data, size_t size);
         int GetReachabilityFrom(const CNetAddr *paddrPartner = nullptr) const;
 
         explicit CNetAddr(const struct in6_addr& pipv6Addr, const uint32_t scope = 0);

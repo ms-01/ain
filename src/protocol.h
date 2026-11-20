@@ -13,6 +13,7 @@
 #include <netaddress.h>
 #include <primitives/transaction.h>
 #include <serialize.h>
+#include <streams.h>
 #include <uint256.h>
 #include <version.h>
 
@@ -85,6 +86,19 @@ extern const char *VERACK;
  * @see https://bitcoin.org/en/developer-reference#addr
  */
 extern const char *ADDR;
+/**
+ * The addrv2 (BIP155) message relays connection information for peers on the
+ * network in the BIP155 address format. It is only sent to peers that
+ * announced their support for it with a sendaddrv2 message.
+ * @see https://github.com/bitcoin/bips/blob/master/bip-0155.mediawiki
+ */
+extern const char *ADDRV2;
+/**
+ * The sendaddrv2 message is an empty message that announces the support for
+ * the addrv2 (BIP155) message.
+ * @see https://github.com/bitcoin/bips/blob/master/bip-0155.mediawiki
+ */
+extern const char *SENDADDRV2;
 /**
  * The inv message (inventory message) transmits one or more inventories of
  * objects known to the transmitting peer.
@@ -364,6 +378,83 @@ public:
     // disk and network only
     unsigned int nTime;
 };
+
+/**
+ * The maximum number of address entries in an "addrv2" message.
+ *
+ * A peer that announces more entries is misbehaving.
+ */
+static constexpr size_t MAX_ADDRV2_ENTRIES{1000};
+
+/**
+ * The payload of an "addrv2" message: a list of addresses in the BIP155
+ * (ADDRv2) wire format.
+ *
+ * The payload starts with the number of entries (CompactSize), followed by the
+ * entries themselves. A single entry consists of
+ *
+ *   nTime (4 bytes) || nServices (CompactSize) || netid (1 byte) ||
+ *   COMPACTSIZE(length) || address bytes || port (2 bytes, big endian)
+ *
+ * This is the same layout as the one used by upstream Bitcoin Core, so that
+ * the nodes of both networks can talk to each other.
+ *
+ * Addresses without a BIP155 representation (the legacy Tor v2 OnionCat form)
+ * are not included in the message.
+ */
+class CAddrV2Message
+{
+public:
+    explicit CAddrV2Message(const std::vector<CAddress>& vAddrIn) : vAddr(vAddrIn) {}
+
+    template <typename Stream>
+    void Serialize(Stream& s) const
+    {
+        uint64_t nCount{0};
+        for (const CAddress& addr : vAddr) {
+            if (addr.IsAddrV2Compatible()) {
+                ++nCount;
+            }
+        }
+        ::WriteCompactSize(s, nCount);
+        for (const CAddress& addr : vAddr) {
+            if (!addr.IsAddrV2Compatible()) {
+                continue;
+            }
+            const std::vector<unsigned char> vBytes = addr.GetAddrV2Bytes();
+            ::Serialize(s, addr.nTime);
+            ::WriteCompactSize(s, static_cast<uint64_t>(addr.nServices));
+            ::Serialize(s, addr.GetBIP155Network());
+            ::WriteCompactSize(s, vBytes.size());
+            if (!vBytes.empty()) {
+                s.write(reinterpret_cast<const char*>(vBytes.data()), vBytes.size());
+            }
+            // The port is transmitted in network byte order.
+            const uint16_t nPort = addr.GetPort();
+            const uint8_t pchPort[2] = {static_cast<uint8_t>(nPort >> 8), static_cast<uint8_t>(nPort & 0xff)};
+            s.write(reinterpret_cast<const char*>(pchPort), sizeof(pchPort));
+        }
+    }
+
+    std::vector<CAddress> vAddr;
+};
+
+/**
+ * Decode the payload of an "addrv2" message.
+ *
+ * The entries are decoded one by one. An entry with an unknown network id, an
+ * unexpected address size or an oversized address is ignored; the remaining
+ * entries are still processed. The function never throws: a malformed or
+ * truncated payload simply ends the decoding. If an entry cannot be skipped
+ * completely (because the announced length exceeds the remaining bytes of the
+ * message), the decoding is aborted, so that the remaining bytes are not
+ * parsed from a shifted position.
+ *
+ * @param[in]  s        the payload of the message
+ * @param[out] vAddrOut the decoded addresses
+ * @return the number of entries the peer announced
+ */
+uint64_t DecodeAddrV2Message(CDataStream& s, std::vector<CAddress>& vAddrOut);
 
 /** getdata message type flags */
 const uint32_t MSG_WITNESS_FLAG = 1 << 30;

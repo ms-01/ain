@@ -4,6 +4,7 @@
 
 #include <netbase.h>
 #include <net_permissions.h>
+#include <protocol.h>
 #include <streams.h>
 #include <test/setup_common.h>
 #include <util/strencodings.h>
@@ -262,6 +263,274 @@ BOOST_AUTO_TEST_CASE(netbase_v1_serialization)
     const std::vector<unsigned char> key = CService(ResolveIP("1.2.3.4"), 1234).GetKey();
     BOOST_CHECK_EQUAL(key.size(), 18U);
     BOOST_CHECK_EQUAL(HexStr(key), "00000000000000000000ffff0102030404d2");
+}
+
+/**
+ * Append a CompactSize encoded number to a byte vector.
+ */
+static void AppendCompactSize(std::vector<unsigned char>& out, uint64_t n)
+{
+    if (n < 253) {
+        out.push_back(static_cast<unsigned char>(n));
+    } else {
+        out.push_back(0xfd);
+        out.push_back(static_cast<unsigned char>(n & 0xff));
+        out.push_back(static_cast<unsigned char>((n >> 8) & 0xff));
+    }
+}
+
+/**
+ * Build the raw bytes of a single entry of an "addrv2" message.
+ *
+ * The layout of an entry is:
+ *   nTime (4 bytes) || nServices (CompactSize) || netid (1 byte) ||
+ *   COMPACTSIZE(length) || address bytes || port (2 bytes, big endian)
+ */
+static std::vector<unsigned char> AddrV2Entry(uint8_t netid, const std::vector<unsigned char>& addr, uint16_t port)
+{
+    std::vector<unsigned char> entry;
+    // nTime = 100000000
+    entry.insert(entry.end(), {0x00, 0xe1, 0xf5, 0x05});
+    // nServices = 1 (NODE_NETWORK)
+    entry.push_back(0x01);
+    entry.push_back(netid);
+    // The length of the address (CompactSize).
+    AppendCompactSize(entry, addr.size());
+    entry.insert(entry.end(), addr.begin(), addr.end());
+    entry.push_back(static_cast<uint8_t>(port >> 8));
+    entry.push_back(static_cast<uint8_t>(port & 0xff));
+    return entry;
+}
+
+BOOST_AUTO_TEST_CASE(netbase_v2_networks)
+{
+    // The network identifiers of the BIP155 wire format.
+    CNetAddr ipv4(ResolveIP("1.2.3.4"));
+    BOOST_CHECK_EQUAL(ipv4.GetBIP155Network(), BIP155_IPV4);
+    BOOST_CHECK(ipv4.IsAddrV2Compatible());
+    // The IPv4 addresses are stored in the IPv4-mapped IPv6 form, but the
+    // BIP155 wire format uses the plain 4 byte form.
+    BOOST_CHECK_EQUAL(ipv4.GetAddrV2Bytes().size(), 4U);
+    BOOST_CHECK(ipv4.GetAddrV2Bytes() == std::vector<unsigned char>({1, 2, 3, 4}));
+
+    CNetAddr ipv6(ResolveIP("2001:db8::1"));
+    BOOST_CHECK_EQUAL(ipv6.GetBIP155Network(), BIP155_IPV6);
+    BOOST_CHECK(ipv6.IsAddrV2Compatible());
+    BOOST_CHECK_EQUAL(ipv6.GetAddrV2Bytes().size(), 16U);
+
+    CNetAddr onion(ResolveIP("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion"));
+    BOOST_CHECK_EQUAL(onion.GetBIP155Network(), BIP155_TORV3);
+    BOOST_CHECK(onion.IsAddrV2Compatible());
+    BOOST_CHECK_EQUAL(onion.GetAddrV2Bytes().size(), 32U);
+
+    CNetAddr i2p(ResolveIP("aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq.b32.i2p"));
+    BOOST_CHECK_EQUAL(i2p.GetBIP155Network(), BIP155_I2P);
+    BOOST_CHECK(i2p.IsAddrV2Compatible());
+    BOOST_CHECK_EQUAL(i2p.GetAddrV2Bytes().size(), 32U);
+
+    // The legacy Tor v2 (OnionCat) form has no BIP155 representation.
+    CNetAddr onion_v2(ResolveIP("5wyqrzbvrdsumnok.onion"));
+    BOOST_CHECK_EQUAL(onion_v2.GetBIP155Network(), BIP155_TORV2);
+    BOOST_CHECK(!onion_v2.IsAddrV2Compatible());
+    BOOST_CHECK(onion_v2.GetAddrV2Bytes().empty());
+}
+
+BOOST_AUTO_TEST_CASE(netbase_v2_unserialize)
+{
+    // An address is decoded from its BIP155 network identifier and the raw
+    // address bytes of that network.
+    CNetAddr addr;
+    BOOST_CHECK(addr.SetFromBIP155(BIP155_IPV4, (const unsigned char*)"\x01\x02\x03\x04", 4));
+    BOOST_CHECK(addr.IsIPv4());
+    BOOST_CHECK_EQUAL(addr.ToStringIP(), "1.2.3.4");
+    // The address is kept in the IPv4-mapped IPv6 form, so that the addrman
+    // keys stay identical to the ones of the legacy wire format.
+    BOOST_CHECK(addr.GetAddrBytes() == CNetAddr(ResolveIP("1.2.3.4")).GetAddrBytes());
+
+    BOOST_CHECK(addr.SetFromBIP155(BIP155_IPV6, (const unsigned char*)"\x20\x01\x0d\xb8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01", 16));
+    BOOST_CHECK(addr.IsIPv6());
+    BOOST_CHECK_EQUAL(addr.ToStringIP(), "2001:db8::1");
+
+    std::vector<unsigned char> torv3(32);
+    for (size_t i = 0; i < torv3.size(); ++i) {
+        torv3[i] = i + 1;
+    }
+    BOOST_CHECK(addr.SetFromBIP155(BIP155_TORV3, torv3.data(), torv3.size()));
+    BOOST_CHECK(addr.IsTorV3());
+    BOOST_CHECK_EQUAL(addr.ToStringIP(), "aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion");
+
+    std::vector<unsigned char> i2p(32);
+    for (size_t i = 0; i < i2p.size(); ++i) {
+        i2p[i] = i;
+    }
+    BOOST_CHECK(addr.SetFromBIP155(BIP155_I2P, i2p.data(), i2p.size()));
+    BOOST_CHECK(addr.IsI2P());
+
+    // An unknown network id and a known network with an unexpected size are
+    // rejected; the address is left unchanged.
+    const CNetAddr before = addr;
+    BOOST_CHECK(!addr.SetFromBIP155(7, i2p.data(), i2p.size()));
+    BOOST_CHECK(addr == before);
+    // The legacy Tor v2 (OnionCat) form is not supported and is skipped.
+    BOOST_CHECK(!addr.SetFromBIP155(BIP155_TORV2, i2p.data(), i2p.size()));
+    BOOST_CHECK(addr == before);
+    BOOST_CHECK(!addr.SetFromBIP155(BIP155_IPV4, i2p.data(), i2p.size()));
+    BOOST_CHECK(addr == before);
+    BOOST_CHECK(!addr.SetFromBIP155(BIP155_TORV3, torv3.data(), 31));
+    BOOST_CHECK(addr == before);
+    // The IPv4 and the legacy Tor v2 forms must not be embedded in the IPv6
+    // form of the BIP155 wire format.
+    BOOST_CHECK(!addr.SetFromBIP155(BIP155_IPV6, (const unsigned char*)"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x01\x02\x03\x04", 16));
+    BOOST_CHECK(addr == before);
+}
+
+BOOST_AUTO_TEST_CASE(netbase_v2_serialization)
+{
+    // The golden vectors of the BIP155 (ADDRv2) wire format. The payload of an
+    // "addrv2" message starts with the number of entries, followed by the
+    // entries themselves.
+    CAddress addr4{CService(ResolveIP("1.2.3.4"), 8333), NODE_NETWORK};
+    addr4.nTime = 100000000;
+    CDataStream stream4(SER_NETWORK, PROTOCOL_VERSION);
+    stream4 << CAddrV2Message({addr4});
+    BOOST_CHECK_EQUAL(HexStr(std::vector<unsigned char>(stream4.begin(), stream4.end())), "0100e1f50501010401020304208d");
+
+    CAddress addr6{CService(ResolveIP("2001:db8::1"), 1234), NODE_NETWORK};
+    addr6.nTime = 100000000;
+    CDataStream stream6(SER_NETWORK, PROTOCOL_VERSION);
+    stream6 << CAddrV2Message({addr6});
+    BOOST_CHECK_EQUAL(HexStr(std::vector<unsigned char>(stream6.begin(), stream6.end())), "0100e1f50501021020010db800000000000000000000000104d2");
+
+    CAddress onion{CService(ResolveIP("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion"), 8555), NODE_NETWORK};
+    onion.nTime = 100000000;
+    CDataStream stream_onion(SER_NETWORK, PROTOCOL_VERSION);
+    stream_onion << CAddrV2Message({onion});
+    BOOST_CHECK_EQUAL(HexStr(std::vector<unsigned char>(stream_onion.begin(), stream_onion.end())), "0100e1f5050104200102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20216b");
+
+    CAddress i2p{CService(ResolveIP("aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq.b32.i2p"), 1234), NODE_NETWORK};
+    i2p.nTime = 100000000;
+    CDataStream stream_i2p(SER_NETWORK, PROTOCOL_VERSION);
+    stream_i2p << CAddrV2Message({i2p});
+    BOOST_CHECK_EQUAL(HexStr(std::vector<unsigned char>(stream_i2p.begin(), stream_i2p.end())), "0100e1f505010520000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f04d2");
+
+    // The legacy (pre-BIP155) wire format is not affected by the v2 format.
+    CDataStream stream_v1(SER_NETWORK, PROTOCOL_VERSION);
+    stream_v1 << CService(ResolveIP("1.2.3.4"), 1234);
+    BOOST_CHECK_EQUAL(HexStr(std::vector<unsigned char>(stream_v1.begin(), stream_v1.end())), "00000000000000000000ffff0102030404d2");
+}
+
+BOOST_AUTO_TEST_CASE(netbase_v2_decode)
+{
+    CAddress addr4{CService(ResolveIP("1.2.3.4"), 8333), NODE_NETWORK};
+    addr4.nTime = 100000000;
+    CAddress onion{CService(ResolveIP("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion"), 8555), NODE_NETWORK};
+    onion.nTime = 100000000;
+
+    // All entries are decoded.
+    CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+    stream << CAddrV2Message({addr4, onion});
+    std::vector<CAddress> vAddr;
+    BOOST_CHECK_EQUAL(DecodeAddrV2Message(stream, vAddr), 2U);
+    BOOST_CHECK_EQUAL(vAddr.size(), 2U);
+    BOOST_CHECK_EQUAL(vAddr[0].ToStringIPPort(), "1.2.3.4:8333");
+    BOOST_CHECK_EQUAL(vAddr[0].nTime, 100000000U);
+    BOOST_CHECK_EQUAL(vAddr[0].GetPort(), 8333);
+    BOOST_CHECK_EQUAL(vAddr[1].ToStringIPPort(), "aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion:8555");
+    BOOST_CHECK(vAddr[1].IsTorV3());
+
+    // An entry with an unknown network id is ignored, the remaining entries are
+    // still processed.
+    std::vector<unsigned char> payload;
+    payload.push_back(0x02); // two entries
+    const std::vector<unsigned char> unknown = AddrV2Entry(7, {1, 2, 3, 4}, 8333);
+    payload.insert(payload.end(), unknown.begin(), unknown.end());
+    const std::vector<unsigned char> valid = AddrV2Entry(BIP155_IPV4, {1, 2, 3, 4}, 8333);
+    payload.insert(payload.end(), valid.begin(), valid.end());
+    CDataStream stream_unknown(SER_NETWORK, PROTOCOL_VERSION);
+    stream_unknown.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+    vAddr.clear();
+    BOOST_CHECK_EQUAL(DecodeAddrV2Message(stream_unknown, vAddr), 2U);
+    BOOST_CHECK_EQUAL(vAddr.size(), 1U);
+    BOOST_CHECK_EQUAL(vAddr[0].ToStringIPPort(), "1.2.3.4:8333");
+
+    // An entry with a known network id and an unexpected size is ignored as
+    // well.
+    payload.clear();
+    payload.push_back(0x02);
+    const std::vector<unsigned char> wrong_size = AddrV2Entry(BIP155_IPV4, {1, 2, 3, 4, 5, 6, 7, 8}, 8333);
+    payload.insert(payload.end(), wrong_size.begin(), wrong_size.end());
+    payload.insert(payload.end(), valid.begin(), valid.end());
+    CDataStream stream_wrong_size(SER_NETWORK, PROTOCOL_VERSION);
+    stream_wrong_size.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+    vAddr.clear();
+    BOOST_CHECK_EQUAL(DecodeAddrV2Message(stream_wrong_size, vAddr), 2U);
+    BOOST_CHECK_EQUAL(vAddr.size(), 1U);
+    BOOST_CHECK_EQUAL(vAddr[0].ToStringIPPort(), "1.2.3.4:8333");
+
+    // An address that is longer than the maximum is rejected; the decoding
+    // must not throw and must not run into an endless loop.
+    payload.clear();
+    payload.push_back(0x01);
+    payload.insert(payload.end(), {0x00, 0xe1, 0xf5, 0x05, 0x01, BIP155_IPV4, 0xfd, 0x01, 0x03});
+    CDataStream stream_too_long(SER_NETWORK, PROTOCOL_VERSION);
+    stream_too_long.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+    vAddr.clear();
+    BOOST_CHECK_EQUAL(DecodeAddrV2Message(stream_too_long, vAddr), 1U);
+    BOOST_CHECK(vAddr.empty());
+
+    // A truncated payload is ignored as well.
+    payload.clear();
+    payload.push_back(0x01);
+    payload.insert(payload.end(), {0x00, 0xe1, 0xf5, 0x05, 0x01, BIP155_IPV4, 0x04, 0x01});
+    CDataStream stream_truncated(SER_NETWORK, PROTOCOL_VERSION);
+    stream_truncated.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+    vAddr.clear();
+    BOOST_CHECK_EQUAL(DecodeAddrV2Message(stream_truncated, vAddr), 1U);
+    BOOST_CHECK(vAddr.empty());
+
+    // An address that is longer than the maximum is skipped completely (the
+    // address bytes *and* the port bytes), so that the entries behind it are
+    // still decoded.
+    payload.clear();
+    payload.push_back(0x02); // two entries
+    const std::vector<unsigned char> too_long = AddrV2Entry(BIP155_IPV4, std::vector<unsigned char>(513, 0x01), 8333);
+    payload.insert(payload.end(), too_long.begin(), too_long.end());
+    payload.insert(payload.end(), valid.begin(), valid.end());
+    CDataStream stream_too_long_valid(SER_NETWORK, PROTOCOL_VERSION);
+    stream_too_long_valid.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+    vAddr.clear();
+    BOOST_CHECK_EQUAL(DecodeAddrV2Message(stream_too_long_valid, vAddr), 2U);
+    BOOST_CHECK_EQUAL(vAddr.size(), 1U);
+    BOOST_CHECK_EQUAL(vAddr[0].ToStringIPPort(), "1.2.3.4:8333");
+
+    // The same with the maximum length plus one byte.
+    payload.clear();
+    payload.push_back(0x02);
+    const std::vector<unsigned char> too_long_max = AddrV2Entry(BIP155_IPV4, std::vector<unsigned char>(MAX_ADDRV2_SIZE + 1, 0x02), 8333);
+    payload.insert(payload.end(), too_long_max.begin(), too_long_max.end());
+    payload.insert(payload.end(), valid.begin(), valid.end());
+    CDataStream stream_too_long_max(SER_NETWORK, PROTOCOL_VERSION);
+    stream_too_long_max.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+    vAddr.clear();
+    BOOST_CHECK_EQUAL(DecodeAddrV2Message(stream_too_long_max, vAddr), 2U);
+    BOOST_CHECK_EQUAL(vAddr.size(), 1U);
+    BOOST_CHECK_EQUAL(vAddr[0].ToStringIPPort(), "1.2.3.4:8333");
+
+    // An address that announces more bytes than the message contains cannot be
+    // skipped completely. The decoding of the message is aborted in that case,
+    // so that the remaining bytes are not parsed from a shifted position.
+    payload.clear();
+    payload.push_back(0x02);
+    const std::vector<unsigned char> truncated_entry = AddrV2Entry(BIP155_IPV4, std::vector<unsigned char>(64, 0x03), 8333);
+    payload.insert(payload.end(), truncated_entry.begin(), truncated_entry.end());
+    payload.insert(payload.end(), valid.begin(), valid.end());
+    // Cut the address bytes of the first entry in half.
+    payload.resize(payload.size() - truncated_entry.size() + truncated_entry.size() / 2);
+    CDataStream stream_out_of_sync(SER_NETWORK, PROTOCOL_VERSION);
+    stream_out_of_sync.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+    vAddr.clear();
+    BOOST_CHECK_EQUAL(DecodeAddrV2Message(stream_out_of_sync, vAddr), 2U);
+    BOOST_CHECK(vAddr.empty());
 }
 
 BOOST_AUTO_TEST_CASE(netbase_onion_subnet)

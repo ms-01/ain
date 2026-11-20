@@ -745,6 +745,121 @@ std::vector<unsigned char> CNetAddr::GetAddrBytes() const
     return std::vector<unsigned char>(m_addr.begin(), m_addr.end());
 }
 
+uint8_t CNetAddr::GetBIP155Network() const
+{
+    switch (m_net) {
+    case NET_IPV4:
+        return BIP155_IPV4;
+    case NET_IPV6:
+    case NET_INTERNAL:
+        // Internal addresses are serialized as IPv6, like upstream does.
+        return BIP155_IPV6;
+    case NET_ONION:
+        return IsTorV3() ? BIP155_TORV3 : BIP155_TORV2;
+    case NET_I2P:
+        return BIP155_I2P;
+    case NET_UNROUTABLE:
+    case NET_MAX:
+        break;
+    }
+    return 0;
+}
+
+bool CNetAddr::IsAddrV2Compatible() const
+{
+    switch (m_net) {
+    case NET_IPV4:
+    case NET_IPV6:
+    case NET_INTERNAL:
+        return true;
+    case NET_ONION:
+        // Only the Tor v3 form has a BIP155 representation; the legacy Tor v2
+        // (OnionCat) form is only kept for the legacy (pre-BIP155) wire format.
+        return m_addr.size() == ADDR_TORV3_SIZE;
+    case NET_I2P:
+        return true;
+    case NET_UNROUTABLE:
+    case NET_MAX:
+        break;
+    }
+    return false;
+}
+
+std::vector<unsigned char> CNetAddr::GetAddrV2Bytes() const
+{
+    if (!IsAddrV2Compatible()) {
+        return {};
+    }
+    if (m_net == NET_IPV4) {
+        // IPv4 addresses are stored in the IPv4-mapped IPv6 form, but the
+        // BIP155 wire format uses the plain 4 byte form.
+        if (m_addr.size() != ADDR_IPV6_SIZE) {
+            return {};
+        }
+        return std::vector<unsigned char>(m_addr.end() - ADDR_IPV4_SIZE, m_addr.end());
+    }
+    return std::vector<unsigned char>(m_addr.begin(), m_addr.end());
+}
+
+bool CNetAddr::SetFromBIP155(uint8_t net, const unsigned char* data, size_t size)
+{
+    switch (net) {
+    case BIP155_IPV4: {
+        if (size != ADDR_IPV4_SIZE) {
+            return false;
+        }
+        // The address layer keeps IPv4 addresses in the IPv4-mapped IPv6 form,
+        // so that the addrman keys and the legacy wire format stay identical.
+        uint8_t buf[ADDR_IPV6_SIZE] = {0};
+        memcpy(buf, pchIPv4, sizeof(pchIPv4));
+        memcpy(buf + ADDR_IPV6_SIZE - ADDR_IPV4_SIZE, data, ADDR_IPV4_SIZE);
+        SetLegacyIPv6(buf);
+        return true;
+    }
+    case BIP155_IPV6: {
+        if (size != ADDR_IPV6_SIZE) {
+            return false;
+        }
+        uint8_t buf[ADDR_IPV6_SIZE];
+        memcpy(buf, data, ADDR_IPV6_SIZE);
+        // Like upstream, the IPv4 and the legacy Tor v2 forms are not supposed
+        // to be embedded in the IPv6 form of the BIP155 wire format. Such an
+        // entry is ignored.
+        if (memcmp(buf, pchIPv4, sizeof(pchIPv4)) == 0 || memcmp(buf, pchOnionCat, sizeof(pchOnionCat)) == 0) {
+            return false;
+        }
+        // The network is derived from the well known prefixes, exactly like it
+        // is done for the legacy (pre-BIP155) representation.
+        SetLegacyIPv6(buf);
+        return true;
+    }
+    case BIP155_TORV2:
+        // The legacy Tor v2 (OnionCat) form is not supported by the BIP155
+        // address layer of this node: the entry is parsed and skipped.
+        return false;
+    case BIP155_TORV3: {
+        if (size != ADDR_TORV3_SIZE) {
+            return false;
+        }
+        m_net = NET_ONION;
+        m_addr.assign(data, data + size);
+        return true;
+    }
+    case BIP155_I2P: {
+        if (size != ADDR_I2P_SIZE) {
+            return false;
+        }
+        m_net = NET_I2P;
+        m_addr.assign(data, data + size);
+        return true;
+    }
+    default:
+        // An unknown network id may come from a future protocol version: the
+        // entry is ignored instead of being treated as a protocol violation.
+        return false;
+    }
+}
+
 void CNetAddr::GetV1Array(uint8_t (&arr)[ADDR_IPV6_SIZE]) const
 {
     if (IsAddrV1Compatible() && m_addr.size() == ADDR_IPV6_SIZE) {

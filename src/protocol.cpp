@@ -8,6 +8,9 @@
 #include <util/system.h>
 #include <util/strencodings.h>
 
+#include <algorithm>
+#include <vector>
+
 #ifndef WIN32
 # include <arpa/inet.h>
 #endif
@@ -18,6 +21,8 @@ namespace NetMsgType {
 const char *VERSION="version";
 const char *VERACK="verack";
 const char *ADDR="addr";
+const char *ADDRV2="addrv2";
+const char *SENDADDRV2="sendaddrv2";
 const char *INV="inv";
 const char *GETDATA="getdata";
 const char *MERKLEBLOCK="merkleblock";
@@ -53,6 +58,8 @@ const static std::string allNetMessageTypes[] = {
     NetMsgType::VERSION,
     NetMsgType::VERACK,
     NetMsgType::ADDR,
+    NetMsgType::ADDRV2,
+    NetMsgType::SENDADDRV2,
     NetMsgType::INV,
     NetMsgType::GETDATA,
     NetMsgType::MERKLEBLOCK,
@@ -209,6 +216,109 @@ std::string CInv::ToString() const
 const std::vector<std::string> &getAllNetMessageTypes()
 {
     return allNetMessageTypesVec;
+}
+
+/**
+ * The result of the decoding of a single entry of an "addrv2" message.
+ */
+enum class AddrV2EntryResult {
+    /** The entry was decoded successfully. */
+    OK,
+    /** The entry is invalid, but it was skipped completely. The following
+     *  entries of the message can still be decoded. */
+    SKIPPED,
+    /** The entry cannot be skipped completely, so the stream is out of sync
+     *  and the decoding of the message has to be aborted. */
+    INVALID,
+};
+
+/**
+ * Read a single address entry of an "addrv2" message.
+ *
+ * The layout of an entry is:
+ *   nTime (4 bytes) || nServices (CompactSize) || netid (1 byte) ||
+ *   COMPACTSIZE(length) || address bytes || port (2 bytes, big endian)
+ *
+ * In contrast to upstream Bitcoin Core, which throws when a known network is
+ * announced with an unexpected address size, an invalid entry is only skipped
+ * here: the remaining entries of the message are still processed and the peer
+ * is never disconnected for a malformed address.
+ *
+ * An entry that cannot be skipped completely (because the announced length
+ * exceeds the remaining bytes of the message) leaves the stream out of sync.
+ * In that case the decoding of the message has to be aborted, otherwise the
+ * following entries would be parsed from a shifted position.
+ */
+static AddrV2EntryResult UnserializeAddrV2Entry(CDataStream& s, CAddress& addrOut)
+{
+    uint32_t nTime{0};
+    s >> nTime;
+    const uint64_t nServices = ReadCompactSize(s);
+    uint8_t netid{0};
+    s >> netid;
+    const uint64_t nLen = ReadCompactSize(s);
+    // The entry consists of the address bytes and the two port bytes. If the
+    // announced length does not fit into the remaining bytes of the message,
+    // the entry cannot be skipped completely and the stream is out of sync.
+    if (nLen > s.size() || s.size() - nLen < 2) {
+        return AddrV2EntryResult::INVALID;
+    }
+    if (nLen > MAX_ADDRV2_SIZE) {
+        // The address is too long to be a valid address. The complete entry
+        // (the address bytes *and* the port bytes) is skipped, so that the
+        // remaining entries can still be processed.
+        s.ignore(static_cast<int>(nLen));
+        s.ignore(2);
+        return AddrV2EntryResult::SKIPPED;
+    }
+    std::vector<unsigned char> vBytes(nLen);
+    if (nLen > 0) {
+        s.read(reinterpret_cast<char*>(vBytes.data()), nLen);
+    }
+    uint8_t pchPort[2];
+    s.read(reinterpret_cast<char*>(pchPort), sizeof(pchPort));
+    const uint16_t nPort = (static_cast<uint16_t>(pchPort[0]) << 8) | pchPort[1];
+
+    CNetAddr netAddr;
+    if (!netAddr.SetFromBIP155(netid, vBytes.data(), vBytes.size())) {
+        // An unknown network id or an unexpected address size: the entry is
+        // ignored, but it was read completely, so the stream is still in sync.
+        return AddrV2EntryResult::SKIPPED;
+    }
+    CAddress addr{CService(netAddr, nPort), static_cast<ServiceFlags>(nServices)};
+    addr.nTime = nTime;
+    addrOut = addr;
+    return AddrV2EntryResult::OK;
+}
+
+uint64_t DecodeAddrV2Message(CDataStream& s, std::vector<CAddress>& vAddrOut)
+{
+    vAddrOut.clear();
+    uint64_t nCount{0};
+    try {
+        nCount = ReadCompactSize(s);
+        // A peer that announces more entries than allowed is misbehaving
+        // anyway, so only a limited number of entries is decoded.
+        const uint64_t nMax = std::min<uint64_t>(nCount, MAX_ADDRV2_ENTRIES + 1);
+        for (uint64_t i = 0; i < nMax; ++i) {
+            CAddress addr;
+            const AddrV2EntryResult result = UnserializeAddrV2Entry(s, addr);
+            if (result == AddrV2EntryResult::INVALID) {
+                // The entry cannot be skipped completely, so the remaining
+                // bytes of the message cannot be decoded reliably. The
+                // entries that were decoded so far are kept.
+                LogPrint(BCLog::NET, "Aborting the decoding of an addrv2 message: out of sync\n");
+                break;
+            }
+            if (result == AddrV2EntryResult::SKIPPED) {
+                continue;
+            }
+            vAddrOut.push_back(addr);
+        }
+    } catch (const std::exception& e) {
+        LogPrint(BCLog::NET, "Failed to decode an addrv2 message: %s\n", e.what());
+    }
+    return nCount;
 }
 
 GenTxid ToGenTxid(const CInv& inv)

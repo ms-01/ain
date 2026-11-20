@@ -592,6 +592,9 @@ public:
     bool m_bip152_highbandwidth_to{false};
     // Whether the peer selected us as (compact blocks) high-bandwidth peer
     bool m_bip152_highbandwidth_from{false};
+    // Whether the peer announced its support for the BIP155 address relay
+    // with a "sendaddrv2" message
+    bool m_wants_addrv2{false};
     bool m_manual_connection;
     int nStartingHeight;
     uint64_t nSendBytes;
@@ -804,6 +807,10 @@ public:
     std::atomic<bool> fPingQueued{false};
     // Whether this peer supports BIP 339 wtxid transaction relay.
     std::atomic<bool> m_wtxid_relay{false};
+    // Whether this peer announced its support for the BIP155 address relay
+    // with a "sendaddrv2" message. The flag only selects the format of the
+    // addresses we send; both message formats are always accepted.
+    std::atomic<bool> m_wants_addrv2{false};
     // We selected peer as (compact blocks) high-bandwidth peer (BIP152)
     std::atomic<bool> m_bip152_highbandwidth_to{false};
     // Peer selected us as (compact blocks) high-bandwidth peer (BIP152)
