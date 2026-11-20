@@ -252,4 +252,50 @@ BOOST_AUTO_TEST_CASE(banlist_dat_migration)
     BOOST_CHECK_EQUAL(loaded2.size(), 1U);
 }
 
+// Tor v3 onion addresses and I2P destinations have no representation in the
+// legacy (pre-BIP155) subnet model the banlist is built on. Banning them is
+// rejected explicitly instead of silently creating a ban entry that can never
+// match an incoming address.
+BOOST_AUTO_TEST_CASE(ban_privacy_network_address_rejected)
+{
+    BanMan banman(GetDataDir() / "banlist", nullptr, DEFAULT_MISBEHAVING_BANTIME);
+
+    const std::string onion_v3 = "aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion";
+    CNetAddr onion_addr;
+    BOOST_REQUIRE(LookupHost(onion_v3.c_str(), onion_addr, false));
+    BOOST_CHECK(onion_addr.IsTorV3());
+    BOOST_CHECK(!onion_addr.IsAddrV1Compatible());
+    // The address cannot be expressed as a subnet.
+    BOOST_CHECK(!CSubNet(onion_addr).IsValid());
+
+    banman.Ban(onion_addr, BanReasonManuallyAdded);
+    BOOST_CHECK(!banman.IsBanned(onion_addr));
+    banmap_t bans;
+    banman.GetBanned(bans);
+    BOOST_CHECK(bans.empty());
+
+    const std::string i2p = "aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq.b32.i2p";
+    CNetAddr i2p_addr;
+    BOOST_REQUIRE(LookupHost(i2p.c_str(), i2p_addr, false));
+    BOOST_CHECK(i2p_addr.IsI2P());
+    BOOST_CHECK(!i2p_addr.IsAddrV1Compatible());
+
+    banman.Ban(i2p_addr, BanReasonManuallyAdded);
+    BOOST_CHECK(!banman.IsBanned(i2p_addr));
+    banman.GetBanned(bans);
+    BOOST_CHECK(bans.empty());
+
+    // A legacy Tor v2 (OnionCat) address still has a legacy representation and
+    // can be banned as before.
+    const std::string onion_v2 = "6hzph5hv6337r6p2.onion";
+    CNetAddr onion_v2_addr;
+    BOOST_REQUIRE(LookupHost(onion_v2.c_str(), onion_v2_addr, false));
+    BOOST_CHECK(onion_v2_addr.IsTor());
+    BOOST_CHECK(!onion_v2_addr.IsTorV3());
+    BOOST_CHECK(onion_v2_addr.IsAddrV1Compatible());
+
+    banman.Ban(onion_v2_addr, BanReasonManuallyAdded);
+    BOOST_CHECK(banman.IsBanned(onion_v2_addr));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

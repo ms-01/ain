@@ -6,8 +6,9 @@
 #include <chainparams.h>
 #include <torcontrol.h>
 #include <util/strencodings.h>
-#include <netbase.h>
 #include <net.h>
+#include <netaddress.h>
+#include <netbase.h>
 #include <util/system.h>
 #include <crypto/hmac_sha256.h>
 
@@ -29,6 +30,8 @@
 
 /** Default control port */
 const std::string DEFAULT_TOR_CONTROL = "127.0.0.1:9051";
+/** The key type requested for the hidden service: a Tor v3 (ED25519-V3) service */
+const std::string TOR_ONION_KEY_TYPE = "NEW:ED25519-V3";
 /** Tor cookie size (from control-spec.txt) */
 static const int TOR_COOKIE_SIZE = 32;
 /** Size of client/server nonce for SAFECOOKIE */
@@ -402,7 +405,40 @@ static bool WriteBinaryFile(const fs::path &filename, const std::string &data)
     return true;
 }
 
+/**
+ * Write contents of std::string to a file that only the owner may read.
+ *
+ * Used for the hidden service private key, which must not be world readable.
+ * @return true on success.
+ */
+static bool WritePrivateKeyFile(const fs::path &filename, const std::string &data)
+{
+    if (!WriteBinaryFile(filename, data)) {
+        return false;
+    }
+    std::error_code ec;
+    fs::permissions(filename, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
+    if (ec) {
+        LogPrintf("tor: Error setting permissions on the private key file %s\n", fs::PathToString(filename));
+        return false;
+    }
+    return true;
+}
+
 /****** Defi specific TorController implementation ********/
+
+CService TorServiceIdToService(const std::string& service_id, int port)
+{
+    if (service_id.empty()) {
+        return CService();
+    }
+    CService service = LookupNumeric((service_id + ".onion").c_str(), port);
+    if (!service.IsValid() || !service.IsTorV3()) {
+        // The service id is not a valid Tor v3 onion address.
+        return CService();
+    }
+    return service;
+}
 
 /** Controller that connects to Tor control socket, authenticate, then create
  * and maintain an ephemeral hidden service.
@@ -501,9 +537,16 @@ void TorController::add_onion_cb(TorControlConnection& _conn, const TorControlRe
             }
             return;
         }
-        service = LookupNumeric(std::string(service_id+".onion").c_str(), Params().GetDefaultPort());
+        // The service id of a Tor v3 hidden service is the 56 character base32
+        // encoded ed25519 public key; the onion address is derived from it.
+        service = TorServiceIdToService(service_id, Params().GetDefaultPort());
+        if (!service.IsValid()) {
+            LogPrintf("tor: Error parsing ADD_ONION parameters: Tor returned a service id that is not a valid Tor v3 onion address\n");
+            service = CService();
+            return;
+        }
         LogPrintf("tor: Got service ID %s, advertising service %s\n", service_id, service.ToString());
-        if (WriteBinaryFile(GetPrivateKeyFile(), private_key)) {
+        if (WritePrivateKeyFile(GetPrivateKeyFile(), private_key)) {
             LogPrint(BCLog::TOR, "tor: Cached service private key to %s\n", fs::PathToString(GetPrivateKeyFile()));
         } else {
             LogPrintf("tor: Error writing service private key to %s\n", fs::PathToString(GetPrivateKeyFile()));
@@ -512,6 +555,8 @@ void TorController::add_onion_cb(TorControlConnection& _conn, const TorControlRe
         // ... onion requested - keep connection open
     } else if (reply.code == 510) { // 510 Unrecognized command
         LogPrintf("tor: Add onion failed with unrecognized command (You probably need to upgrade Tor)\n");
+    } else if (reply.code == 552) { // 552 Unrecognized key type
+        LogPrintf("tor: Add onion failed: Tor rejected the requested hidden service key type. Tor v3 (ED25519-V3) services require Tor >= 0.3.5.\n");
     } else {
         LogPrintf("tor: Add onion failed; error code %d\n", reply.code);
     }
@@ -532,8 +577,9 @@ void TorController::auth_cb(TorControlConnection& _conn, const TorControlReply& 
         }
 
         // Finally - now create the service
-        if (private_key.empty()) // No private key, generate one
-            private_key = "NEW:RSA1024"; // Explicitly request RSA1024 - see issue #9214
+        if (private_key.empty()) { // No private key, generate one
+            private_key = TOR_ONION_KEY_TYPE; // Explicitly request a Tor v3 key type
+        }
         // Request hidden service, redirect port.
         // Note that the 'virtual' port is always the default port to avoid decloaking nodes using other ports.
         _conn.Command(strprintf("ADD_ONION %s Port=%i,127.0.0.1:%i", private_key, Params().GetDefaultPort(), GetListenPort()),
@@ -718,7 +764,7 @@ void TorController::Reconnect()
 
 fs::path TorController::GetPrivateKeyFile()
 {
-    return GetDataDir() / "onion_private_key";
+    return GetDataDir() / "onion_v3_private_key";
 }
 
 void TorController::reconnect_cb(evutil_socket_t fd, short what, void *arg)

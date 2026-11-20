@@ -218,6 +218,8 @@ BASE_SCRIPTS = [
     "rpc_psbt.py",
     "rpc_users.py",
     "feature_proxy.py",
+    "feature_torcontrol.py",
+    "p2p_onion_local_only.py",
     "rpc_signrawtransaction.py",
     "wallet_groups.py",
     "p2p_disconnect_ban.py",

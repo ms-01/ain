@@ -683,6 +683,13 @@ static UniValue setban(const JSONRPCRequest& request)
     if (! (isSubnet ? subNet.IsValid() : netAddr.IsValid()) )
         throw JSONRPCError(RPC_CLIENT_INVALID_IP_OR_SUBNET, "Error: Invalid IP/Subnet");
 
+    // Privacy network addresses without a legacy (pre-BIP155) representation -
+    // Tor v3 onion addresses and I2P destinations - have no counterpart in the
+    // subnet model the banlist is built on. They are rejected explicitly
+    // instead of silently accepting a ban that can never match.
+    if (!isSubnet && !netAddr.IsAddrV1Compatible())
+        throw JSONRPCError(RPC_CLIENT_INVALID_IP_OR_SUBNET, "Error: onion and I2P addresses cannot be banned");
+
     if (strCommand == "add")
     {
         if (isSubnet ? g_banman->IsBanned(subNet) : g_banman->IsBanned(netAddr)) {

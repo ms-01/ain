@@ -135,6 +135,36 @@ BOOST_AUTO_TEST_CASE(addrman_simple)
     BOOST_CHECK(addrman.size() >= 1);
 }
 
+BOOST_AUTO_TEST_CASE(addrman_onion_v3_not_stored)
+{
+    CAddrManTest addrman;
+
+    CNetAddr source = ResolveIP("252.2.2.2");
+
+    // A Tor v3 onion address has no legacy (pre-BIP155) representation and
+    // must therefore never be stored in the addrman (it could not be
+    // serialized into addr.dat).
+    const std::string onion = "aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion";
+    CService onion_service = ResolveService(onion, 8555);
+    BOOST_CHECK(onion_service.IsTorV3());
+    BOOST_CHECK(!addrman.Add(CAddress(onion_service, NODE_NONE), source));
+    BOOST_CHECK_EQUAL(addrman.size(), 0U);
+
+    // The same holds for I2P addresses.
+    const std::string i2p = "aaaqeayeaudaocajbifqydiob4ibceqtcqkrmfyydenbwha5dypq.b32.i2p";
+    CService i2p_service = ResolveService(i2p, 8555);
+    BOOST_CHECK(i2p_service.IsI2P());
+    BOOST_CHECK(!addrman.Add(CAddress(i2p_service, NODE_NONE), source));
+    BOOST_CHECK_EQUAL(addrman.size(), 0U);
+
+    // A legacy Tor v2 address still has a v1 representation and is stored.
+    CService onion_v2 = ResolveService("6hzph5hv6337r6p2.onion", 8555);
+    BOOST_CHECK(onion_v2.IsTor());
+    BOOST_CHECK(!onion_v2.IsTorV3());
+    BOOST_CHECK(addrman.Add(CAddress(onion_v2, NODE_NONE), source));
+    BOOST_CHECK_EQUAL(addrman.size(), 1U);
+}
+
 BOOST_AUTO_TEST_CASE(addrman_ports)
 {
     CAddrManTest addrman;

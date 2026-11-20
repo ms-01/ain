@@ -126,6 +126,13 @@ void BanMan::Ban(const CNetAddr& net_addr, const BanReason& ban_reason, int64_t 
 
 void BanMan::Ban(const CSubNet& sub_net, const BanReason& ban_reason, int64_t ban_time_offset, bool since_unix_epoch)
 {
+    // Subnets without a legacy (pre-BIP155) representation - Tor v3 onion
+    // addresses and I2P destinations - cannot be matched against an incoming
+    // address and are therefore rejected explicitly.
+    if (!sub_net.IsValid()) {
+        return;
+    }
+
     CBanEntry ban_entry(GetTime(), ban_reason);
 
     int64_t normalized_ban_time_offset = ban_time_offset;
