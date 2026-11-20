@@ -9,6 +9,7 @@
 #include <consensus/validation.h>
 #include <dfi/customtx.h>
 #include <fs.h>
+#include <policy/policy.h>
 #include <serialize.h>
 #include <shutdown.h>
 #include <streams.h>
@@ -55,6 +56,15 @@ int64_t MempoolSizeBytes(int64_t megabytes)
     return megabytes * 1000000;
 }
 
+uint64_t MaxMempoolFileEntries(int64_t maxMempoolBytes)
+{
+    if (maxMempoolBytes <= 0) {
+        return 0;
+    }
+    const uint64_t bytes = static_cast<uint64_t>(maxMempoolBytes);
+    return bytes / MIN_MEMPOOL_ENTRY_SIZE + MEMPOOL_FILE_ENTRY_MARGIN;
+}
+
 bool IsMempoolTimeExpired(int64_t nTime, int64_t nNow, int64_t nExpiry)
 {
     if (nExpiry < 0) {
@@ -81,6 +91,26 @@ bool IsMempoolEntryExpired(int64_t nTime, int64_t nNow, int64_t nExpiryTimeout, 
     return !((isEVMTx && !evmExpired) || !dvmExpired);
 }
 
+bool IsPlausibleMempoolTime(int64_t nTime, int64_t nNow)
+{
+    // A timestamp before the unix epoch can only come from a corrupted file.
+    if (nTime < 0) {
+        return false;
+    }
+    if (nTime > nNow) {
+        // The difference is computed in the unsigned domain to avoid an
+        // overflow for extreme values.
+        const uint64_t drift = static_cast<uint64_t>(nTime) - static_cast<uint64_t>(nNow);
+        return drift <= static_cast<uint64_t>(MAX_MEMPOOL_TIME_DRIFT);
+    }
+    return true;
+}
+
+bool IsValidMempoolFeeDelta(const CAmount &feeDelta)
+{
+    return MoneyRange(feeDelta);
+}
+
 bool LoadMempool(CTxMemPool &pool) {
     const CChainParams &chainparams = Params();
     const int64_t nExpiryTimeout = MempoolExpirySeconds(gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_DVM_EXPIRY));
@@ -96,16 +126,25 @@ bool LoadMempool(CTxMemPool &pool) {
     int64_t expired = 0;
     int64_t failed = 0;
     int64_t already_there = 0;
+    int64_t skipped_deltas = 0;
     const int64_t nNow = GetTime();
+    const uint64_t maxEntries = MaxMempoolFileEntries(MempoolSizeBytes(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE)));
 
     try {
         uint64_t version;
         file >> version;
         if (version != MEMPOOL_DUMP_VERSION) {
+            LogPrintf("Mempool file has an unsupported version (%u). Continuing anyway.\n", version);
             return false;
         }
         uint64_t num;
         file >> num;
+        if (num > maxEntries) {
+            LogPrintf("Mempool file claims %u transactions, which exceeds the maximum of %u allowed for the configured mempool size. Continuing anyway.\n",
+                      num,
+                      maxEntries);
+            return false;
+        }
         while (num--) {
             CTransactionRef tx;
             int64_t nTime;
@@ -114,17 +153,19 @@ bool LoadMempool(CTxMemPool &pool) {
             file >> nTime;
             file >> nFeeDelta;
 
-            CAmount amountdelta = nFeeDelta;
-            if (amountdelta) {
-                pool.PrioritiseTransaction(tx->GetHash(), amountdelta);
-            }
+            const uint256 txid = tx->GetHash();
 
             std::vector<unsigned char> metadata;
             CustomTxType txType = GuessCustomTxType(*tx, metadata, true);
             const auto isEVMTx = txType == CustomTxType::EvmTx || txType == CustomTxType::TransferDomain;
 
-            CValidationState state;
-            if (!IsMempoolEntryExpired(nTime, nNow, nExpiryTimeout, nExpiryEVMTimeout, isEVMTx)) {
+            if (!IsPlausibleMempoolTime(nTime, nNow)) {
+                LogPrintf("Mempool entry %s has an implausible timestamp (%d). Skipping it.\n", txid.ToString(), nTime);
+                ++failed;
+            } else if (IsMempoolEntryExpired(nTime, nNow, nExpiryTimeout, nExpiryEVMTimeout, isEVMTx)) {
+                ++expired;
+            } else {
+                CValidationState state;
                 LOCK(cs_main);
                 AcceptToMemoryPoolWithTime(chainparams,
                                            pool,
@@ -143,35 +184,73 @@ bool LoadMempool(CTxMemPool &pool) {
                     // wallet(s) having loaded it while we were processing
                     // mempool transactions; consider these as valid, instead of
                     // failed, but mark them as 'already there'
-                    if (pool.exists(tx->GetHash())) {
+                    if (pool.exists(txid)) {
                         ++already_there;
                     } else {
                         ++failed;
                     }
                 }
-            } else {
-                ++expired;
+            }
+
+            // The fee delta is only applied for transactions that are part of the
+            // mempool, so that a corrupted file cannot inject priorities for
+            // transactions that do not exist.
+            if (nFeeDelta != 0) {
+                const CAmount amountdelta = nFeeDelta;
+                if (!IsValidMempoolFeeDelta(amountdelta)) {
+                    LogPrintf("Mempool entry %s has an out of range fee delta (%d). Ignoring it.\n", txid.ToString(), amountdelta);
+                    ++skipped_deltas;
+                } else if (pool.exists(txid)) {
+                    pool.PrioritiseTransaction(txid, amountdelta);
+                } else {
+                    LogPrintf("Mempool entry %s is not part of the mempool, ignoring its fee delta.\n", txid.ToString());
+                    ++skipped_deltas;
+                }
             }
             if (ShutdownRequested()) {
                 return false;
             }
         }
-        std::map<uint256, CAmount> mapDeltas;
-        file >> mapDeltas;
 
-        for (const auto &i : mapDeltas) {
-            pool.PrioritiseTransaction(i.first, i.second);
+        // The fee deltas of transactions that are not part of the mempool are
+        // stored at the end of the file. The number of entries is read
+        // explicitly, so that a corrupted file cannot force an unbounded
+        // allocation while the map is deserialized.
+        const uint64_t numDeltas = ReadCompactSize(file);
+        if (numDeltas > MAX_MEMPOOL_FILE_DELTAS) {
+            LogPrintf("Mempool file claims %u fee deltas, which exceeds the maximum of %u allowed. Continuing anyway.\n",
+                      numDeltas,
+                      MAX_MEMPOOL_FILE_DELTAS);
+            return false;
+        }
+        for (uint64_t i = 0; i < numDeltas; ++i) {
+            uint256 txid;
+            CAmount amountdelta;
+            file >> txid;
+            file >> amountdelta;
+            if (!IsValidMempoolFeeDelta(amountdelta)) {
+                LogPrintf("Mempool file has an out of range fee delta (%d) for %s. Ignoring it.\n", amountdelta, txid.ToString());
+                ++skipped_deltas;
+                continue;
+            }
+            if (!pool.exists(txid)) {
+                LogPrintf("Mempool file has a fee delta for %s, which is not part of the mempool. Ignoring it.\n", txid.ToString());
+                ++skipped_deltas;
+                continue;
+            }
+            pool.PrioritiseTransaction(txid, amountdelta);
         }
     } catch (const std::exception &e) {
         LogPrintf("Failed to deserialize mempool data on disk: %s. Continuing anyway.\n", e.what());
         return false;
     }
 
-    LogPrintf("Imported mempool transactions from disk: %i succeeded, %i failed, %i expired, %i already there\n",
+    LogPrintf("Imported mempool transactions from disk: %i succeeded, %i failed, %i expired, %i already there, %i fee deltas skipped\n",
               count,
               failed,
               expired,
-              already_there);
+              already_there,
+              skipped_deltas);
     return true;
 }
 
