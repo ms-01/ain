@@ -11,12 +11,34 @@ use ethereum_types::U256;
 use jsonrpsee::{
     core::{async_trait, SubscriptionResult},
     proc_macros::rpc,
+    types::ErrorObjectOwned,
     PendingSubscriptionSink, SubscriptionMessage,
 };
 use log::{debug, trace};
 use tokio::runtime::Handle as AsyncHandle;
 
-use crate::subscription::{PubSubResult, Subscription, SubscriptionParams, SyncStatus};
+use crate::{
+    errors::RPCError,
+    subscription::{PubSubResult, Subscription, SubscriptionParams, SyncStatus},
+};
+
+/// Builds the filter criteria of a log subscription from the subscription params.
+///
+/// The topic filter is converted with the very same helper as on the
+/// `eth_getLogs` / `eth_newFilter` path, so that both RPC surfaces interpret the
+/// payload identically (incl. the `null` placeholder of a positional wildcard).
+fn log_criteria(params: Option<&SubscriptionParams>) -> FilterCriteria {
+    params
+        .map(|p| {
+            let topics = p.topics.clone().map(|topics| topics.into_filter_topics());
+            FilterCriteria {
+                addresses: p.address.clone(),
+                topics,
+                ..Default::default()
+            }
+        })
+        .unwrap_or_default()
+}
 
 /// Metachain WebSockets interface.
 #[rpc(server, namespace = "eth")]
@@ -57,6 +79,20 @@ impl MetachainPubSubServer for MetachainPubSubModule {
         subscription: Subscription,
         params: Option<SubscriptionParams>,
     ) -> SubscriptionResult {
+        // The filter criteria of a log subscription are validated before the
+        // subscription is accepted, so that no subscription id is handed out and no
+        // log stream is started for an invalid filter. The validation is independent
+        // of the block range (a subscription carries no range) and uses the same
+        // limit as `eth_getLogs` / `eth_newFilter`, i.e. the very same error object
+        // is returned for the very same payload.
+        if let Subscription::Logs = &subscription {
+            if let Err(e) = log_criteria(params.as_ref()).verify_topics() {
+                pending
+                    .reject(ErrorObjectOwned::from(RPCError::EvmError(e)))
+                    .await;
+                return Ok(());
+            }
+        }
         let sink = pending.accept().await?;
         trace!(target: "pubsub", "subscribing to {:#?}", subscription);
         trace!(target: "pubsub", "params {:?}", params);
@@ -92,22 +128,7 @@ impl MetachainPubSubServer for MetachainPubSubModule {
                 self.tokio_runtime.spawn(fut);
             }
             Subscription::Logs => {
-                let criteria = params
-                    .as_ref()
-                    .map(|p| {
-                        // Reuse the shared conversion so that `eth_subscribe` and
-                        // `eth_getLogs` / `eth_newFilter` treat the very same payload
-                        // identically. In particular a `null` placeholder keeps its
-                        // position (positional wildcard) instead of being dropped and
-                        // shifting the following positions to the left.
-                        let topics = p.topics.clone().map(|topics| topics.into_filter_topics());
-                        FilterCriteria {
-                            addresses: p.address.clone(),
-                            topics,
-                            ..Default::default()
-                        }
-                    })
-                    .unwrap_or_default();
+                let criteria = log_criteria(params.as_ref());
                 let fut = async move {
                     while !sink.is_closed() {
                         let logs = match rx.recv().await? {
@@ -233,5 +254,94 @@ impl MetachainPubSubServer for MetachainPubSubModule {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use jsonrpsee::types::ErrorObjectOwned;
+    use serde_json::json;
+
+    use super::{log_criteria, FilterCriteria};
+    use crate::errors::RPCError;
+    use crate::subscription::SubscriptionParams;
+
+    const TOPIC_A: &str = "0x00000000000000000000000000000000000000000000000000000000000000aa";
+    const TOPIC_B: &str = "0x00000000000000000000000000000000000000000000000000000000000000bb";
+    const TOPIC_C: &str = "0x00000000000000000000000000000000000000000000000000000000000000cc";
+    const TOPIC_D: &str = "0x00000000000000000000000000000000000000000000000000000000000000dd";
+    const TOPIC_E: &str = "0x00000000000000000000000000000000000000000000000000000000000000ee";
+
+    fn criteria(value: serde_json::Value) -> FilterCriteria {
+        let params: SubscriptionParams = serde_json::from_value(value).unwrap();
+        log_criteria(Some(&params))
+    }
+
+    /// A subscription without any topic filter is valid.
+    #[test]
+    fn subscription_without_topics_is_accepted() {
+        let criteria = criteria(json!({"address": null}));
+        criteria.verify_topics().unwrap();
+    }
+
+    /// Exactly four topic positions are valid.
+    #[test]
+    fn subscription_with_four_topic_positions_is_accepted() {
+        let criteria = criteria(json!({"topics": [TOPIC_A, TOPIC_B, TOPIC_C, TOPIC_D]}));
+        criteria.verify_topics().unwrap();
+        assert_eq!(criteria.topics.as_ref().unwrap().len(), 4);
+    }
+
+    /// Five topic positions in the flat form are rejected.
+    #[test]
+    fn subscription_with_five_flat_topic_positions_is_rejected() {
+        let criteria = criteria(json!({"topics": [TOPIC_A, TOPIC_B, TOPIC_C, TOPIC_D, TOPIC_E]}));
+        let err = criteria.verify_topics().unwrap_err();
+        assert!(
+            err.to_string().contains("exceed max topics"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Five topic positions in the nested form are rejected as well.
+    #[test]
+    fn subscription_with_five_nested_topic_positions_is_rejected() {
+        let criteria =
+            criteria(json!({"topics": [[TOPIC_A], [TOPIC_B], [TOPIC_C], [TOPIC_D], [TOPIC_E]]}));
+        let err = criteria.verify_topics().unwrap_err();
+        assert!(
+            err.to_string().contains("exceed max topics"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The `null` placeholder keeps its position, so five entries are five positions.
+    #[test]
+    fn subscription_with_a_null_placeholder_counts_the_position() {
+        let accepted = criteria(json!({"topics": [TOPIC_A, null, TOPIC_B]}));
+        accepted.verify_topics().unwrap();
+        assert_eq!(accepted.topics.as_ref().unwrap().len(), 3);
+
+        let rejected = criteria(json!({"topics": [TOPIC_A, null, TOPIC_B, TOPIC_C, TOPIC_D]}));
+        let err = rejected.verify_topics().unwrap_err();
+        assert!(
+            err.to_string().contains("exceed max topics"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The rejected subscription carries the same error object as `eth_newFilter` /
+    /// `eth_getLogs` for the same payload.
+    #[test]
+    fn rejected_subscription_carries_the_new_filter_error_object() {
+        let err = criteria(json!({"topics": [TOPIC_A, TOPIC_B, TOPIC_C, TOPIC_D, TOPIC_E]}))
+            .verify_topics()
+            .unwrap_err();
+        let error = ErrorObjectOwned::from(RPCError::EvmError(err));
+        assert_eq!(error.code(), -32001);
+        assert_eq!(
+            error.message(),
+            "Custom error: error calling EVM : \"exceed max topics\""
+        );
     }
 }
