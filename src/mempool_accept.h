@@ -7,6 +7,7 @@
 #define DEFI_MEMPOOL_ACCEPT_H
 
 #include <amount.h>
+#include <consensus/params.h>
 #include <consensus/validation.h>
 #include <primitives/transaction.h>
 #include <sync.h>
@@ -27,6 +28,17 @@ class CCoinsViewMemPool;
 class CCustomCSView;
 class TransactionContext;
 struct PrecomputedTransactionData;
+
+/**
+ * Returns true if the exact interpretation of the governance attribute
+ * `v0/evm/block/rbf_increment_fee_pct` (a fraction of 100% scaled by 1e8) is used at the given
+ * height, i.e. from the `DF25Height` activation height on. Below the activation height the
+ * legacy whole-percent interpretation is used, which truncates the governance value to whole
+ * percentage points.
+ *
+ * This is a mempool policy rule only: it does not affect block validity or state transitions.
+ */
+bool UseExactRbfFeeIncrement(const uint32_t height, const Consensus::Params &consensus);
 
 /**
  * MemPoolAccept

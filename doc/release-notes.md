@@ -1,6 +1,25 @@
 DeFiChain release notes (unreleased)
 ====================================
 
+EVM replace-by-fee fee increment
+-------------------------------
+
+- The governance attribute `v0/evm/block/rbf_increment_fee_pct` defines the minimum fee
+  increment that a replacement (replace-by-fee) EVM transaction has to pay. Its value is a
+  fraction of 100% scaled by 1e8: `"0.015"` is 1.5%, `"10%"` is 10% (a value with a `%` suffix
+  is interpreted as percent). The default is `COIN / 10` = 10%.
+
+- **From the `DF25Height` activation height on** the attribute value is applied as the exact
+  fraction: the required bump is `floor(tip fee * increment / 1e8)`. Before the activation height
+  the value was truncated to whole percentage points (`increment / 1_000_000`), so 1.5% was
+  applied as 1% and a value below 1% was applied as 0% (in which case only the minimum fee per
+  gas floor of 1 gwei per gas applied). Whole percentage values, including the default 10%, are
+  not affected by this change.
+
+  This is a mempool policy rule only: it does not affect block validity or state transitions.
+  Transactions that are already in the mempool when the activation height is reached keep the
+  minimum RBF fee that was computed for them, i.e. they are not re-priced.
+
 P2P persistence and RPC observability
 -------------------------------------
 

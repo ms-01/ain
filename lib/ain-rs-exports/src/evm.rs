@@ -5,7 +5,7 @@ use ain_contracts::{
 use ain_evm::{
     core::{TransferDomainTxInfo, XAddress, XHash},
     evm::FinalizedBlockInfo,
-    fee::{calculate_max_tip_gas_fee, calculate_min_rbf_tip_gas_fee},
+    fee::{calculate_max_tip_gas_fee, calculate_min_rbf_tip_gas_fee, RbfFeeIncrementMode},
     services::SERVICES,
     storage::traits::{BlockStorage, LogStorage, Rollback, TransactionStorage},
     subscription::Notification,
@@ -838,7 +838,11 @@ fn evm_try_unsafe_is_smart_contract_in_template(
 }
 
 #[ffi_fallible]
-fn evm_try_get_tx_miner_info_from_raw_tx(raw_tx: &str, mnview_ptr: usize) -> Result<TxMinerInfo> {
+fn evm_try_get_tx_miner_info_from_raw_tx(
+    raw_tx: &str,
+    mnview_ptr: usize,
+    use_exact_fraction: bool,
+) -> Result<TxMinerInfo> {
     let evm_services = &SERVICES.evm;
 
     let signed_tx = evm_services.core.tx_cache.try_get_or_create(raw_tx)?;
@@ -849,8 +853,17 @@ fn evm_try_get_tx_miner_info_from_raw_tx(raw_tx: &str, mnview_ptr: usize) -> Res
     let nonce = u64::try_from(signed_tx.nonce())?;
     let initial_base_fee = block.calculate_base_fee(H256::zero(), attrs.block_gas_target_factor)?;
     let tip_fee = calculate_max_tip_gas_fee(&signed_tx, initial_base_fee)?;
-    let min_rbf_tip_fee =
-        calculate_min_rbf_tip_gas_fee(&signed_tx, tip_fee, attrs.rbf_fee_increment)?;
+    let rbf_fee_increment_mode = if use_exact_fraction {
+        RbfFeeIncrementMode::ExactFraction
+    } else {
+        RbfFeeIncrementMode::LegacyWholePercent
+    };
+    let min_rbf_tip_fee = calculate_min_rbf_tip_gas_fee(
+        &signed_tx,
+        tip_fee,
+        attrs.rbf_fee_increment,
+        rbf_fee_increment_mode,
+    )?;
 
     let tip_fee = u64::try_from(WeiAmount(tip_fee).to_satoshi()?)?;
     let min_rbf_tip_fee = u64::try_from(WeiAmount(min_rbf_tip_fee).to_satoshi()?)?;

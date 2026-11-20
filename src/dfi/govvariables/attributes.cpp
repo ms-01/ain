@@ -846,6 +846,9 @@ const std::map<uint8_t, std::map<uint8_t, std::function<ResVal<CAttributeValue>(
                  {EVMKeys::Finalized, VerifyUInt64},
                  {EVMKeys::GasLimit, VerifyUInt64},
                  {EVMKeys::GasTargetFactor, VerifyMoreThenZeroUInt64},
+                 // The minimum RBF fee increment is a fraction of 100% scaled by 1e8, e.g.
+                 // "0.015" is 1.5% (1_500_000) and "10%" is 10% (10_000_000). VerifyPctInt64
+                 // caps the value at COIN, i.e. at 100%.
                  {EVMKeys::RbfIncrementMinPct, VerifyPctInt64},
              }},
             {AttributeTypes::Governance,

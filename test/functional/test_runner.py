@@ -328,6 +328,7 @@ BASE_SCRIPTS = [
     "feature_evm_gas.py",
     "feature_evm_genesis.py",
     "feature_evm_mempool.py",
+    "feature_evm_rbf_fraction.py",
     "feature_evm_rollback.py",
     "feature_evm_rpc_transaction.py",
     "feature_evm_rpc.py",

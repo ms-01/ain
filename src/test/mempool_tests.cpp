@@ -2,6 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
+#include <chainparams.h>
+#include <mempool_accept.h>
 #include <policy/policy.h>
 #include <txmempool.h>
 #include <util/system.h>
@@ -11,6 +13,7 @@
 #include <test/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+#include <limits>
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(mempool_tests, BasicTestingSetup)
@@ -857,6 +860,26 @@ BOOST_AUTO_TEST_CASE(MempoolEvmRbfTests)
     BOOST_CHECK(!pool.checkAddressNonceAndFee(entryHigh, 100, sender, senderLimitFlag, evmConflicts));
     BOOST_CHECK(senderLimitFlag);
     BOOST_CHECK(evmConflicts.empty());
+}
+
+BOOST_AUTO_TEST_CASE(MempoolUseExactRbfFeeIncrementTests)
+{
+    Consensus::Params consensus = Params().GetConsensus();
+
+    // below the activation height the legacy whole-percent interpretation is used
+    consensus.DF25Height = 100;
+    BOOST_CHECK(!UseExactRbfFeeIncrement(0, consensus));
+    BOOST_CHECK(!UseExactRbfFeeIncrement(99, consensus));
+
+    // from the activation height on the exact fraction is used
+    BOOST_CHECK(UseExactRbfFeeIncrement(100, consensus));
+    BOOST_CHECK(UseExactRbfFeeIncrement(101, consensus));
+
+    // a disabled activation height keeps the legacy behaviour for every height
+    consensus.DF25Height = std::numeric_limits<int>::max();
+    BOOST_CHECK(!UseExactRbfFeeIncrement(0, consensus));
+    BOOST_CHECK(!UseExactRbfFeeIncrement(100, consensus));
+    BOOST_CHECK(!UseExactRbfFeeIncrement(std::numeric_limits<uint32_t>::max(), consensus));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

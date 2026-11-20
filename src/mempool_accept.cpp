@@ -564,6 +564,10 @@ bool MemPoolAccept::ConsensusScriptChecks(ATMPArgs &args, Workspace &ws, Precomp
     return true;
 }
 
+bool UseExactRbfFeeIncrement(const uint32_t height, const Consensus::Params &consensus) {
+    return Consensus::IsDF25Active(height, consensus);
+}
+
 bool MemPoolAccept::EvmChecks(ATMPArgs &args, Workspace &ws) {
     CValidationState &state = args.state;
     CCustomCSView &mnview = *m_mnview;
@@ -598,8 +602,13 @@ bool MemPoolAccept::EvmChecks(ATMPArgs &args, Workspace &ws) {
         }
 
         CrossBoundaryResult result;
+        // The RBF fee increment is applied as the exact fraction of 100% (scaled by 1e8) from the
+        // DF25 activation height on; below it the legacy whole-percent interpretation is used.
+        // The height used here is the height of the next block (the mempool block context), i.e.
+        // the same height the other mempool consensus checks are evaluated against.
+        const bool useExactRbfFeeIncrement = UseExactRbfFeeIncrement(m_blockCtx->GetHeight(), m_blockCtx->GetConsensus());
         auto txResult = evm_try_get_tx_miner_info_from_raw_tx(
-            result, rawEVMTx, static_cast<std::size_t>(reinterpret_cast<uintptr_t>(&mnview)));
+            result, rawEVMTx, static_cast<std::size_t>(reinterpret_cast<uintptr_t>(&mnview)), useExactRbfFeeIncrement);
         if (!result.ok) {
             LogPrint(BCLog::MEMPOOL, "EVM tx failed to get sender info %s\n", result.reason.c_str());
             return state.Invalid(ValidationInvalidReason::TX_NOT_STANDARD, false, "evm-sender-info");
