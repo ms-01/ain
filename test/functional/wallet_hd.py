@@ -235,7 +235,7 @@ class WalletHDTest(DefiTestFramework):
         priv_key = self.nodes[0].dumpprivkey(eth_addr)
 
         # Import multi into node 1
-        self.nodes[1].importmulti(
+        import_result = self.nodes[1].importmulti(
             [
                 {
                     "scriptPubKey": {"address": eth_addr},
@@ -245,9 +245,59 @@ class WalletHDTest(DefiTestFramework):
             ]
         )
 
+        # The import must succeed without any warnings, the matching private key has to be
+        # recognized as the key required by the ERC55 script.
+        assert_equal(len(import_result), 1)
+        assert_equal(import_result[0]["success"], True)
+        assert_equal(import_result[0].get("warnings", []), [])
+
         # Check key is now present in node 1
         result = self.nodes[1].getaddressinfo(eth_addr)
         assert_equal(result["ismine"], True)
+        assert_equal(result["solvable"], True)
+        assert_equal(result["iswatchonly"], False)
+
+        # Importing a non-matching private key must not make the address spendable
+        eth_addr_mismatch = self.nodes[0].getnewaddress("", "erc55")
+        mismatch_priv_key = self.nodes[0].dumpprivkey(
+            self.nodes[0].getnewaddress("", "erc55")
+        )
+        import_result = self.nodes[1].importmulti(
+            [
+                {
+                    "scriptPubKey": {"address": eth_addr_mismatch},
+                    "timestamp": "now",
+                    "keys": [mismatch_priv_key],
+                }
+            ]
+        )
+        assert_equal(import_result[0]["success"], True)
+        assert "some required keys are missing" in " ".join(
+            import_result[0].get("warnings", [])
+        )
+        result = self.nodes[1].getaddressinfo(eth_addr_mismatch)
+        assert_equal(result["ismine"], False)
+        assert_equal(result["solvable"], False)
+
+        # Importing the matching public key only must not make the address spendable
+        eth_addr_pubkey = self.nodes[0].getnewaddress("", "erc55")
+        pubkey = self.nodes[0].getaddressinfo(eth_addr_pubkey)["pubkey"]
+        import_result = self.nodes[1].importmulti(
+            [
+                {
+                    "scriptPubKey": {"address": eth_addr_pubkey},
+                    "timestamp": "now",
+                    "pubkeys": [pubkey],
+                }
+            ]
+        )
+        assert_equal(import_result[0]["success"], True)
+        assert "some required keys are missing" not in " ".join(
+            import_result[0].get("warnings", [])
+        )
+        result = self.nodes[1].getaddressinfo(eth_addr_pubkey)
+        assert_equal(result["ismine"], False)
+        assert_equal(result["solvable"], False)
 
         # Get another eth address
         eth_addr = self.nodes[0].getnewaddress("", "erc55")
