@@ -61,10 +61,13 @@ impl TokenSplit {
 
     /// Derives the token id from the token contract address.
     ///
-    /// NOTE: the subtraction panics if the given address is below the base address
-    /// (`0xdf00…00`). This is the current behaviour of the precompile - a defensive
-    /// `checked_sub` would change the behaviour of a consensus relevant precompile and
-    /// therefore must not be done here.
+    /// The token contract address is caller supplied (calldata), hence it can be any address.
+    /// Addresses below the base address (`0xdf00…00`) would underflow the `U256` subtraction,
+    /// so the subtraction is done with `checked_sub` and an underflow is reported as a
+    /// precompile error instead of panicking (a panic aborts the node).
+    ///
+    /// The id mapping of all addresses at or above the base address is unchanged:
+    /// `(contract_value - contract_base).low_u64() as u32`.
     fn token_id_from_contract(contract: H160) -> core::result::Result<u32, PrecompileFailure> {
         let contract_value = U256::from_big_endian(contract.as_bytes());
         let Ok(contract_base) =
@@ -75,7 +78,13 @@ impl TokenSplit {
             });
         };
 
-        Ok((contract_value - contract_base).low_u64() as u32)
+        let Some(offset) = contract_value.checked_sub(contract_base) else {
+            return Err(PrecompileFailure::Error {
+                exit_status: ExitError::Other("Invalid token contract address".into()),
+            });
+        };
+
+        Ok(offset.low_u64() as u32)
     }
 
     /// Encodes the 64 byte precompile output: the new DST20 contract address (left padded)
@@ -460,6 +469,46 @@ mod tests {
             TokenSplit::token_id_from_contract(contract_address(255)).expect("token id"),
             255
         );
+    }
+
+    #[test]
+    fn test_token_id_from_contract_boundaries() {
+        assert_eq!(
+            TokenSplit::token_id_from_contract(contract_address(0)).expect("base address"),
+            0
+        );
+        assert_eq!(
+            TokenSplit::token_id_from_contract(dst20_address(1)).expect("dst20 address"),
+            1
+        );
+        assert_eq!(
+            TokenSplit::token_id_from_contract(dst20_address(255)).expect("dst20 address"),
+            255
+        );
+    }
+
+    #[test]
+    fn test_token_id_from_contract_below_base_address_fails() {
+        // An address below the base address underflows the subtraction. It has to be reported
+        // as an error and must not panic (a panic aborts the node).
+        let addresses = [
+            H160::zero(),
+            H160::from_low_u64_be(1),
+            H160::from_low_u64_be(0xdeadbeef),
+            H160::repeat_byte(0xde),
+        ];
+
+        for address in addresses {
+            let result = std::panic::catch_unwind(|| TokenSplit::token_id_from_contract(address));
+
+            let outcome = result.expect("the precompile must not panic");
+            let failure = match outcome {
+                Ok(_) => panic!("the address must be rejected"),
+                Err(failure) => failure,
+            };
+
+            assert_eq!(error_message(&failure), "Invalid token contract address");
+        }
     }
 
     // --- behaviour pinning: output layout -----------------------------------------------
