@@ -519,6 +519,8 @@ void CNode::copyStats(CNodeStats &stats)
         X(cleanSubVer);
     }
     X(fInbound);
+    X(m_bip152_highbandwidth_to);
+    X(m_bip152_highbandwidth_from);
     X(m_manual_connection);
     X(nStartingHeight);
     {
