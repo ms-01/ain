@@ -3,6 +3,7 @@
 // file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <node/mempool_persist.h>
+#include <txmempool.h>
 
 #include <test/setup_common.h>
 

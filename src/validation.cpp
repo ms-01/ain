@@ -30,7 +30,6 @@
 #include <hash.h>
 #include <index/txindex.h>
 #include <net_processing.h>
-#include <node/mempool_persist.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
 #include <policy/settings.h>

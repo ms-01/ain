@@ -39,45 +39,11 @@ static constexpr uint64_t MAX_MEMPOOL_FILE_DELTAS = 100000;
 static constexpr int64_t MAX_MEMPOOL_TIME_DRIFT = 24 * 60 * 60;
 
 /**
- * Convert an expiry given in hours into seconds.
- *
- * The conversion saturates instead of overflowing, so that an operator
- * supplied (or corrupted) value can never turn into an undefined behaviour
- * in the signed arithmetic that follows.
- */
-int64_t MempoolExpirySeconds(int64_t hours);
-
-/**
- * Convert a mempool size given in megabytes into bytes, saturating instead of
- * overflowing.
- */
-int64_t MempoolSizeBytes(int64_t megabytes);
-
-/**
  * Upper bound for the number of transactions that may be imported from
  * mempool.dat. The bound is derived from the configured mempool size and a
  * generous margin, so that only clearly impossible values are rejected.
  */
 uint64_t MaxMempoolFileEntries(int64_t maxMempoolBytes);
-
-/**
- * Check whether a mempool entry with the given acceptance time has expired.
- *
- * The comparison is performed without any signed overflow: the deadline is
- * computed with a saturating subtraction and the acceptance time is only
- * compared against it.
- */
-bool IsMempoolTimeExpired(int64_t nTime, int64_t nNow, int64_t nExpiry);
-
-/**
- * Check whether a mempool entry has expired, honouring the DFI specific EVM
- * and DVM expiry windows.
- *
- * An EVM transaction is only considered expired once *both* the EVM and the
- * DVM expiry window have passed, which is the behaviour of the original
- * (pre-hardening) implementation.
- */
-bool IsMempoolEntryExpired(int64_t nTime, int64_t nNow, int64_t nExpiryTimeout, int64_t nExpiryEVMTimeout, bool isEVMTx);
 
 /**
  * Check whether the acceptance time stored in mempool.dat is plausible.

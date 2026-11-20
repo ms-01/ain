@@ -14,7 +14,6 @@
 #include <dfi/govvariables/attributes.h>
 #include <dfi/mn_checks.h>
 #include <logging.h>
-#include <node/mempool_persist.h>
 #include <policy/feerate.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
