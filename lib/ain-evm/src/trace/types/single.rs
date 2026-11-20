@@ -62,7 +62,7 @@ pub enum TransactionTrace {
     Raw {
         gas: U256,
         failed: bool,
-        #[serde(serialize_with = "bytes_serialize")]
+        #[serde(serialize_with = "bytes_0x_serialize")]
         return_value: Vec<u8>,
         struct_logs: Vec<RawStepLog>,
     },
