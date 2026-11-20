@@ -174,7 +174,7 @@ class EvmTracerTest(DefiTestFramework):
             {
                 "gas": "0x5208",
                 "failed": False,
-                "returnValue": "",
+                "returnValue": "0x",
                 "structLogs": [],
             },
         )
@@ -203,7 +203,7 @@ class EvmTracerTest(DefiTestFramework):
         for tx in block_txs:
             assert_equal(
                 self.nodes[0].debug_traceTransaction(tx["hash"]),
-                {"gas": "0x5208", "failed": False, "returnValue": "", "structLogs": []},
+                {"gas": "0x5208", "failed": False, "returnValue": "0x", "structLogs": []},
             )
             # Accumulate tx traces
             res = self.nodes[0].debug_traceTransaction(tx["hash"])
@@ -297,7 +297,7 @@ class EvmTracerTest(DefiTestFramework):
                     {
                         "gas": "0x5208",
                         "failed": False,
-                        "returnValue": "",
+                        "returnValue": "0x",
                         "structLogs": [],
                     },
                 )
@@ -432,7 +432,7 @@ class EvmTracerTest(DefiTestFramework):
                     {
                         "gas": "0x5208",
                         "failed": False,
-                        "returnValue": "",
+                        "returnValue": "0x",
                         "structLogs": [],
                     },
                 )
@@ -490,7 +490,7 @@ class EvmTracerTest(DefiTestFramework):
                 {
                     "gas": "0x0",
                     "failed": False,
-                    "returnValue": "",
+                    "returnValue": "0x",
                     "structLogs": [],
                 },
             )
@@ -505,7 +505,7 @@ class EvmTracerTest(DefiTestFramework):
                 {
                     "gas": "0x5208",
                     "failed": False,
-                    "returnValue": "",
+                    "returnValue": "0x",
                     "structLogs": [],
                 },
             )
@@ -541,7 +541,7 @@ class EvmTracerTest(DefiTestFramework):
             {
                 "gas": "0x0",
                 "failed": False,
-                "returnValue": "",
+                "returnValue": "0x",
                 "structLogs": [],
             },
         )
@@ -572,7 +572,7 @@ class EvmTracerTest(DefiTestFramework):
             {
                 "gas": "0x0",
                 "failed": False,
-                "returnValue": "",
+                "returnValue": "0x",
                 "structLogs": [],
             },
         )
@@ -587,7 +587,7 @@ class EvmTracerTest(DefiTestFramework):
                 {
                     "gas": "0x5208",
                     "failed": False,
-                    "returnValue": "",
+                    "returnValue": "0x",
                     "structLogs": [],
                 },
             )

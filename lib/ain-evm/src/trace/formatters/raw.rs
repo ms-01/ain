@@ -91,15 +91,12 @@ mod tests {
     fn raw_formatter_serializes_the_struct_logs() {
         let actual = format(listener(), false);
 
-        // Note: `returnValue` is serialized as a hex string *without* the `0x`
-        // prefix (see `trace::types::serialization::bytes_serialize`), which
-        // differs from the go-ethereum output.
         assert_eq!(
             actual,
             json!({
                 "gas": "0xc350",
                 "failed": false,
-                "returnValue": "0a0b",
+                "returnValue": "0x0a0b",
                 "structLogs": [
                     {
                         "depth": 1,
@@ -129,7 +126,7 @@ mod tests {
         let actual = format(listener, false);
 
         assert_eq!(actual["failed"], json!(true));
-        assert_eq!(actual["returnValue"], json!(""));
+        assert_eq!(actual["returnValue"], json!("0x"));
         assert_eq!(actual["structLogs"], json!([]));
     }
 }
