@@ -10,12 +10,16 @@
 
 #include <consensus/validation.h>
 #include <interfaces/chain.h>
+#include <key_io.h>
+#include <outputtype.h>
 #include <policy/policy.h>
 #include <rpc/server.h>
 #include <rpc/rawtransaction_util.h>
+#include <script/standard.h>
 #include <test/setup_common.h>
 #include <validation.h>
 #include <wallet/coincontrol.h>
+#include <wallet/ismine.h>
 #include <wallet/test/wallet_test_fixture.h>
 
 #include <boost/test/unit_test.hpp>
@@ -186,6 +190,152 @@ BOOST_FIXTURE_TEST_CASE(importmulti_rescan, TestChain100Setup)
         wallet->NotifyUnload();
         RemoveWallet(wallet);
     }
+}
+
+// Verify that importing an ERC55 (witness v16 eth hash) address with the matching private key
+// results in a spendable import. The ERC55 script references the eth hash of the uncompressed
+// public key, while the import key maps are keyed by the hash of the key as supplied, so the
+// matching key has to be resolved explicitly.
+BOOST_FIXTURE_TEST_CASE(importmulti_erc55, TestChain100Setup)
+{
+    auto chain = interfaces::MakeChain();
+    auto locked_chain = chain->lock();
+    LockAssertion lock(::cs_main);
+
+    std::shared_ptr<CWallet> wallet = std::make_shared<CWallet>(chain.get(), WalletLocation(), WalletDatabase::CreateDummy());
+    AddWallet(wallet);
+
+    CKey ethKey;
+    ethKey.MakeNewKey(true);
+    const CPubKey ethPubKey = ethKey.GetPubKey();
+    const CTxDestination dest = GetDestinationForKey(ethPubKey, OutputType::ERC55);
+    const std::string address = EncodeDestination(dest);
+    const CScript script = GetScriptForDestination(dest);
+
+    // Importing the matching private key has to succeed without warnings and has to make the
+    // ERC55 address spendable.
+    {
+        UniValue privkeys;
+        privkeys.setArray();
+        privkeys.push_back(EncodeSecret(ethKey));
+
+        UniValue request_key;
+        request_key.setObject();
+        UniValue script_pub_key;
+        script_pub_key.setObject();
+        script_pub_key.pushKV("address", address);
+        request_key.pushKV("scriptPubKey", script_pub_key);
+        request_key.pushKV("timestamp", 0);
+        request_key.pushKV("keys", privkeys);
+
+        UniValue requests;
+        requests.setArray();
+        requests.push_back(request_key);
+
+        JSONRPCRequest request;
+        request.params.setArray();
+        request.params.push_back(requests);
+
+        UniValue response = importmulti(request);
+        BOOST_CHECK_EQUAL(response.size(), 1U);
+        BOOST_CHECK_EQUAL(response[0]["success"].get_bool(), true);
+        BOOST_CHECK(!response[0].exists("warnings") || response[0]["warnings"].empty());
+        BOOST_CHECK_EQUAL(::IsMine(*wallet, script), ISMINE_SPENDABLE);
+    }
+
+    // Importing a non-matching private key must not resolve the required key: the import stays
+    // non-solvable and the address is not spendable.
+    {
+        CKey otherKey;
+        otherKey.MakeNewKey(true);
+        CKey mismatchKey;
+        mismatchKey.MakeNewKey(true);
+        const CTxDestination otherDest = GetDestinationForKey(mismatchKey.GetPubKey(), OutputType::ERC55);
+        const CScript otherScript = GetScriptForDestination(otherDest);
+
+        UniValue privkeys;
+        privkeys.setArray();
+        privkeys.push_back(EncodeSecret(otherKey));
+
+        UniValue request_key;
+        request_key.setObject();
+        UniValue script_pub_key;
+        script_pub_key.setObject();
+        script_pub_key.pushKV("address", EncodeDestination(otherDest));
+        request_key.pushKV("scriptPubKey", script_pub_key);
+        request_key.pushKV("timestamp", 0);
+        request_key.pushKV("keys", privkeys);
+
+        UniValue requests;
+        requests.setArray();
+        requests.push_back(request_key);
+
+        JSONRPCRequest request;
+        request.params.setArray();
+        request.params.push_back(requests);
+
+        UniValue response = importmulti(request);
+        BOOST_CHECK_EQUAL(response.size(), 1U);
+        BOOST_CHECK_EQUAL(response[0]["success"].get_bool(), true);
+        BOOST_CHECK(response[0].exists("warnings"));
+        bool missing_required_key{false};
+        for (const UniValue& warning : response[0]["warnings"].getValues()) {
+            if (warning.get_str().find("some required keys are missing") != std::string::npos) {
+                missing_required_key = true;
+            }
+        }
+        BOOST_CHECK(missing_required_key);
+        // The script is imported as watch-only, but it must not be spendable.
+        BOOST_CHECK_EQUAL(::IsMine(*wallet, otherScript), ISMINE_WATCH_ONLY);
+    }
+
+    // Importing the matching public key only resolves the required key as well, but the import
+    // stays non-spendable since no private key is available.
+    {
+        CKey pubOnlyKey;
+        pubOnlyKey.MakeNewKey(true);
+        const CTxDestination pubOnlyDest = GetDestinationForKey(pubOnlyKey.GetPubKey(), OutputType::ERC55);
+        const CScript pubOnlyScript = GetScriptForDestination(pubOnlyDest);
+
+        UniValue pubkeys;
+        pubkeys.setArray();
+        pubkeys.push_back(HexStr(pubOnlyKey.GetPubKey()));
+
+        UniValue request_key;
+        request_key.setObject();
+        UniValue script_pub_key;
+        script_pub_key.setObject();
+        script_pub_key.pushKV("address", EncodeDestination(pubOnlyDest));
+        request_key.pushKV("scriptPubKey", script_pub_key);
+        request_key.pushKV("timestamp", 0);
+        request_key.pushKV("pubkeys", pubkeys);
+
+        UniValue requests;
+        requests.setArray();
+        requests.push_back(request_key);
+
+        JSONRPCRequest request;
+        request.params.setArray();
+        request.params.push_back(requests);
+
+        UniValue response = importmulti(request);
+        BOOST_CHECK_EQUAL(response.size(), 1U);
+        BOOST_CHECK_EQUAL(response[0]["success"].get_bool(), true);
+        bool missing_required_key{false};
+        if (response[0].exists("warnings")) {
+            for (const UniValue& warning : response[0]["warnings"].getValues()) {
+                if (warning.get_str().find("some required keys are missing") != std::string::npos) {
+                    missing_required_key = true;
+                }
+            }
+        }
+        BOOST_CHECK(!missing_required_key);
+        // Without the private key the import stays watch-only and is not spendable.
+        BOOST_CHECK_EQUAL(::IsMine(*wallet, pubOnlyScript), ISMINE_WATCH_ONLY);
+    }
+
+    wallet->NotifyUnload();
+    RemoveWallet(wallet);
 }
 
 // Verify importwallet RPC starts rescan at earliest block with timestamp

@@ -915,9 +915,45 @@ enum class ScriptContext
     WITNESS_V0, //!< P2WSH witnessScript
 };
 
+// Compute the eth hash (ERC55) of the given public key. The eth hash is always derived from the
+// uncompressed public key body, so compressed keys have to be decompressed first.
+// Returns false if the public key cannot be decompressed into a valid uncompressed key.
+static bool GetEthHashOfPubKey(const CPubKey& pubkey, uint160& eth_hash)
+{
+    const CPubKey uncomp = GetBothPubkeyCompressions(pubkey).first;
+    if (!uncomp.IsFullyValid()) return false;
+    eth_hash = uint160(uncomp.GetEthID());
+    return true;
+}
+
+// Look up the key id under which the supplied key material matching the given eth hash is stored
+// in the import key maps. The import maps are keyed by CPubKey::GetID() of the key as supplied,
+// while an ERC55 script references the eth hash of the uncompressed public key, so the matching
+// entry has to be found by comparing eth ids instead of key ids.
+// Private keys are checked first, so that a matching private key is preferred over a matching
+// public key (which would render the import non-spendable).
+static bool FindEthKeyIdInImportMaps(const uint160& eth_hash, const std::map<CKeyID, CPubKey>& pubkey_map, const std::map<CKeyID, CKey>& privkey_map, CKeyID& key_id)
+{
+    for (const auto& [id, key] : privkey_map) {
+        uint160 key_eth_hash;
+        if (GetEthHashOfPubKey(key.GetPubKey(), key_eth_hash) && key_eth_hash == eth_hash) {
+            key_id = id;
+            return true;
+        }
+    }
+    for (const auto& [id, pubkey] : pubkey_map) {
+        uint160 key_eth_hash;
+        if (GetEthHashOfPubKey(pubkey, key_eth_hash) && key_eth_hash == eth_hash) {
+            key_id = id;
+            return true;
+        }
+    }
+    return false;
+}
+
 // Analyse the provided scriptPubKey, determining which keys and which redeem scripts from the ImportData struct are needed to spend it, and mark them as used.
 // Returns an error string, or the empty string for success.
-static std::string RecurseImportData(const CScript& script, ImportData& import_data, const ScriptContext script_ctx)
+static std::string RecurseImportData(const CScript& script, ImportData& import_data, const ScriptContext script_ctx, const std::map<CKeyID, CPubKey>& pubkey_map, const std::map<CKeyID, CKey>& privkey_map)
 {
     // Use Solver to obtain script type and parsed pubkeys or hashes:
     std::vector<std::vector<unsigned char>> solverdata;
@@ -943,7 +979,7 @@ static std::string RecurseImportData(const CScript& script, ImportData& import_d
         if (!subscript) return "missing redeemscript";
         if (CScriptID(*subscript) != id) return "redeemScript does not match the scriptPubKey";
         import_data.import_scripts.emplace(*subscript);
-        return RecurseImportData(*subscript, import_data, ScriptContext::P2SH);
+        return RecurseImportData(*subscript, import_data, ScriptContext::P2SH, pubkey_map, privkey_map);
     }
     case TX_MULTISIG: {
         for (size_t i = 1; i + 1< solverdata.size(); ++i) {
@@ -964,7 +1000,7 @@ static std::string RecurseImportData(const CScript& script, ImportData& import_d
             import_data.import_scripts.emplace(script); // Special rule for IsMine: native P2WSH requires the TOP script imported (see script/ismine.cpp)
         }
         import_data.import_scripts.emplace(*subscript);
-        return RecurseImportData(*subscript, import_data, ScriptContext::WITNESS_V0);
+        return RecurseImportData(*subscript, import_data, ScriptContext::WITNESS_V0, pubkey_map, privkey_map);
     }
     case TX_WITNESS_V0_KEYHASH: {
         if (script_ctx == ScriptContext::WITNESS_V0) throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Trying to nest P2WPKH inside P2WSH");
@@ -978,7 +1014,17 @@ static std::string RecurseImportData(const CScript& script, ImportData& import_d
     case TX_WITNESS_V16_ETHHASH:
     {
         if (script_ctx != ScriptContext::TOP) throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Trying to nest P2WPKH inside P2WSH");
-        CKeyID id = CKeyID(uint160(solverdata[0]));
+        const uint160 eth_hash = uint160(solverdata[0]);
+        CKeyID id = CKeyID(eth_hash);
+        // The script references the eth hash of the uncompressed public key, while the import key
+        // maps are keyed by CPubKey::GetID() of the key as supplied. Resolve the key id under
+        // which the matching key material is stored, so that the key is recognized as required
+        // and spendable. If no supplied key matches the eth hash, fall back to the eth hash
+        // itself, which keeps the previous behaviour (import degrades to watch-only).
+        CKeyID supplied_id;
+        if (FindEthKeyIdInImportMaps(eth_hash, pubkey_map, privkey_map, supplied_id)) {
+            id = supplied_id;
+        }
         import_data.used_keys[id] = true;
         if (script_ctx == ScriptContext::TOP) {
             import_data.import_scripts.emplace(script); // Special rule for IsMine: native P2WPKH requires the TOP script imported (see script/ismine.cpp)
@@ -1086,7 +1132,7 @@ static UniValue ProcessImportLegacy(ImportData& import_data, std::map<CKeyID, CP
     have_solving_data = import_data.redeemscript || import_data.witnessscript || pubkey_map.size() || privkey_map.size();
     if (have_solving_data) {
         // Match up data in import_data with the scriptPubKey in script.
-        auto error = RecurseImportData(script, import_data, ScriptContext::TOP);
+        auto error = RecurseImportData(script, import_data, ScriptContext::TOP, pubkey_map, privkey_map);
 
         // Verify whether the watchonly option corresponds to the availability of private keys.
         bool spendable = std::all_of(import_data.used_keys.begin(), import_data.used_keys.end(), [&](const std::pair<CKeyID, bool>& used_key){ return privkey_map.count(used_key.first) > 0; });
