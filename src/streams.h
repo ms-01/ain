@@ -630,12 +630,21 @@ public:
     CAutoFile(const CAutoFile&) = delete;
     CAutoFile& operator=(const CAutoFile&) = delete;
 
-    void fclose()
+    /**
+     * Close the file and return the result of the underlying ::fclose() call.
+     *
+     * @note If the file has been written to, the caller has to check the
+     * returned value: ::fclose(3) may fail to flush data that was written
+     * before, which renders the file corrupt.
+     */
+    int fclose()
     {
         if (file) {
-            ::fclose(file);
+            const int ret = ::fclose(file);
             file = nullptr;
+            return ret;
         }
+        return 0;
     }
 
     /** Get wrapped FILE* with transfer of ownership.
