@@ -537,6 +537,16 @@ bool IsPeerAddrLocalGood(CNode *pnode);
 void AdvertiseLocal(CNode *pnode);
 
 /**
+ * Announce the local privacy network services (the Tor v3 onion services and
+ * the I2P destinations that the node knows about) to a peer.
+ *
+ * The services have no representation in the legacy (pre-BIP155) wire
+ * format, so they only reach the peers that announced the support for the
+ * BIP155 address relay with a "sendaddrv2" message.
+ */
+void AdvertiseLocalPrivacy(CNode *pnode);
+
+/**
  * Mark a network as reachable or unreachable (no automatic connects to it)
  * @note Networks are reachable by default
  */
@@ -899,12 +909,27 @@ public:
         addrKnown.insert(_addr.GetKey());
     }
 
+    /**
+     * Whether this peer can receive the given address.
+     *
+     * Addresses without a legacy (pre-BIP155) representation (Tor v3 onion
+     * addresses and I2P destinations) require the BIP155 (ADDRv2) format, so
+     * they can only be sent to the peers that announced the support for the
+     * BIP155 address relay with a "sendaddrv2" message.
+     */
+    bool IsAddrCompatible(const CAddress& _addr) const
+    {
+        return m_wants_addrv2 || _addr.IsAddrV1Compatible();
+    }
+
     void PushAddress(const CAddress& _addr, FastRandomContext &insecure_rand)
     {
         // Known checking here is only to save space from duplicates.
         // SendMessages will filter it again for knowns that were added
         // after addresses were pushed.
-        if (_addr.IsValid() && !addrKnown.contains(_addr.GetKey())) {
+        // Addresses that need the BIP155 format are only queued for the
+        // peers that are able to decode them.
+        if (_addr.IsValid() && !addrKnown.contains(_addr.GetKey()) && IsAddrCompatible(_addr)) {
             if (vAddrToSend.size() >= MAX_ADDR_TO_SEND) {
                 vAddrToSend[insecure_rand.randrange(vAddrToSend.size())] = _addr;
             } else {

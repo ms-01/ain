@@ -1861,12 +1861,8 @@ static void RelayAddress(const CAddress& addr, bool fReachable, CConnman* connma
 {
     // Addresses without a legacy (pre-BIP155) representation - Tor v3 onion
     // addresses and I2P destinations - cannot be serialized into the v1 ADDR
-    // message and are therefore never relayed. They are only reachable through
-    // an explicit operator action (addnode, -connect, -proxy).
-    if (!addr.IsAddrV1Compatible()) {
-        return;
-    }
-
+    // message. They are only relayed to the peers that announced the support
+    // for the BIP155 address relay with a "sendaddrv2" message.
     unsigned int nRelayNodes = fReachable ? 2 : 1; // limited relaying of addresses outside our network(s)
 
     // Relay to a limited number of other nodes
@@ -1879,8 +1875,8 @@ static void RelayAddress(const CAddress& addr, bool fReachable, CConnman* connma
     std::array<std::pair<uint64_t, CNode*>,2> best{{{0, nullptr}, {0, nullptr}}};
     assert(nRelayNodes <= best.size());
 
-    auto sortfunc = [&best, &hasher, nRelayNodes](CNode* pnode) {
-        if (pnode->nVersion >= CADDR_TIME_VERSION) {
+    auto sortfunc = [&best, &hasher, nRelayNodes, &addr](CNode* pnode) {
+        if (pnode->nVersion >= CADDR_TIME_VERSION && pnode->IsAddrCompatible(addr)) {
             uint64_t hashKey = CSipHasher(hasher).Write(pnode->GetId()).Finalize();
             for (unsigned int i = 0; i < nRelayNodes; i++) {
                  if (hashKey > best[i].first) {
@@ -2938,6 +2934,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         if (!pfrom->m_wants_addrv2) {
             pfrom->m_wants_addrv2 = true;
             LogPrint(BCLog::NET, "Peer supports the BIP155 address relay, peer=%d\n", pfrom->GetId());
+            // The peer can now receive the addresses in the BIP155 format,
+            // so the local privacy network services are announced to it.
+            AdvertiseLocalPrivacy(pfrom);
         } else {
             LogPrint(BCLog::NET, "Ignoring duplicate sendaddrv2 from peer=%d\n", pfrom->GetId());
         }
@@ -4723,6 +4722,14 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
             vAddr.reserve(pto->vAddrToSend.size());
             for (const CAddress& addr : pto->vAddrToSend)
             {
+                // Addresses without a legacy (pre-BIP155) representation can
+                // only be sent in the "addrv2" message. They are skipped for
+                // a peer that did not announce the support for the BIP155
+                // address relay and must not be marked as known for it
+                // either.
+                if (!pto->IsAddrCompatible(addr)) {
+                    continue;
+                }
                 if (!pto->addrKnown.contains(addr.GetKey()))
                 {
                     pto->addrKnown.insert(addr.GetKey());

@@ -362,13 +362,40 @@ public:
         int nVersion = s.GetVersion();
         if (s.GetType() & SER_DISK)
             READWRITE(nVersion);
+        SerializeBody(s, ser_action, nVersion);
+    }
+
+    /**
+     * The body of an address, i.e. everything but the leading disk version
+     * word: the timestamp, the service flags and the service itself, always
+     * in the legacy (pre-BIP155) encoding.
+     *
+     * @param[in] nVersion The version word of the address. On disk it is the
+     *                     word that was read from (or is written to) the
+     *                     stream, in the network it is the version of the
+     *                     stream.
+     */
+    template <typename Stream>
+    void SerializeBody(Stream& s, CSerActionSerialize, int nVersion) const
+    {
         if ((s.GetType() & SER_DISK) ||
             (nVersion >= CADDR_TIME_VERSION && !(s.GetType() & SER_GETHASH)))
-            READWRITE(nTime);
-        uint64_t nServicesInt = nServices;
-        READWRITE(nServicesInt);
+            ::Serialize(s, nTime);
+        ::Serialize(s, static_cast<uint64_t>(nServices));
+        ::Serialize(s, static_cast<const CService&>(*this));
+    }
+
+    //! The counterpart of SerializeBody().
+    template <typename Stream>
+    void SerializeBody(Stream& s, CSerActionUnserialize, int nVersion)
+    {
+        if ((s.GetType() & SER_DISK) ||
+            (nVersion >= CADDR_TIME_VERSION && !(s.GetType() & SER_GETHASH)))
+            ::Unserialize(s, nTime);
+        uint64_t nServicesInt{0};
+        ::Unserialize(s, nServicesInt);
         nServices = static_cast<ServiceFlags>(nServicesInt);
-        READWRITEAS(CService, *this);
+        ::Unserialize(s, static_cast<CService&>(*this));
     }
 
     // TODO: make private (improves encapsulation)

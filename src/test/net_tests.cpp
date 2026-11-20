@@ -168,6 +168,35 @@ BOOST_AUTO_TEST_CASE(caddrdb_read_corrupted)
     BOOST_CHECK(addrman2.size() == 0);
 }
 
+BOOST_AUTO_TEST_CASE(caddrdb_read_privacy_addresses)
+{
+    CAddrManUncorrupted addrmanUncorrupted;
+    addrmanUncorrupted.MakeDeterministic();
+
+    CService source;
+    BOOST_CHECK(Lookup("252.5.1.1", source, 8555, false));
+
+    // A Tor v3 onion address has no legacy (pre-BIP155) representation. It is
+    // stored in the BIP155-capable format of the address database.
+    CService onion;
+    BOOST_CHECK(Lookup("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion", onion, 8555, false));
+    CAddress onion_addr(onion, NODE_NONE);
+    onion_addr.nTime = GetAdjustedTime();
+    BOOST_CHECK(addrmanUncorrupted.Add(onion_addr, source));
+    BOOST_CHECK_EQUAL(addrmanUncorrupted.GetFileFormat(), ADDRMAN_FILE_FORMAT_ADDRV2);
+
+    CDataStream ssPeers = AddrmanToStream(addrmanUncorrupted);
+    CAddrMan addrman;
+    CAddrDB adb;
+    BOOST_CHECK(adb.Read(addrman, ssPeers));
+    BOOST_CHECK_EQUAL(addrman.size(), 1U);
+
+    const std::vector<CAddress> vAddr = addrman.GetAddr(std::nullopt, 1000, 100);
+    BOOST_CHECK_EQUAL(vAddr.size(), 1U);
+    BOOST_CHECK(vAddr[0].IsTorV3());
+    BOOST_CHECK_EQUAL(vAddr[0].ToStringIP(), "aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion");
+}
+
 BOOST_AUTO_TEST_CASE(cnode_simple_test)
 {
     SOCKET hSocket = INVALID_SOCKET;
@@ -190,6 +219,42 @@ BOOST_AUTO_TEST_CASE(cnode_simple_test)
     std::unique_ptr<CNode> pnode2 = std::make_unique<CNode>(id++, NODE_NETWORK, height, hSocket, addr, 1, 1, CAddress(), 0, pszDest, fInboundIn);
     BOOST_CHECK(pnode2->fInbound == true);
     BOOST_CHECK(pnode2->fFeeler == false);
+}
+
+BOOST_AUTO_TEST_CASE(cnode_addr_compatibility)
+{
+    SOCKET hSocket = INVALID_SOCKET;
+    int height = 0;
+
+    in_addr ipv4Addr;
+    ipv4Addr.s_addr = 0xa0b0c001;
+
+    CAddress addr = CAddress(CService(ipv4Addr, 7777), NODE_NETWORK);
+    std::string pszDest;
+    bool fInboundIn = false;
+
+    std::unique_ptr<CNode> pnode = std::make_unique<CNode>(0, NODE_NETWORK, height, hSocket, addr, 0, 0, CAddress(), 0, pszDest, fInboundIn);
+
+    CService v1_service;
+    BOOST_CHECK(Lookup("250.1.1.1", v1_service, 8555, false));
+    CAddress v1_addr(v1_service, NODE_NETWORK);
+
+    CService onion_service;
+    BOOST_CHECK(Lookup("aebagbafaydqqcikbmga2dqpcaireeyuculbogazdinryhi6d4qcmeqd.onion", onion_service, 8555, false));
+    CAddress onion_addr(onion_service, NODE_NETWORK);
+    BOOST_CHECK(onion_addr.IsTorV3());
+    BOOST_CHECK(!onion_addr.IsAddrV1Compatible());
+
+    // A legacy peer can receive the addresses that have a legacy
+    // (pre-BIP155) representation.
+    BOOST_CHECK(pnode->IsAddrCompatible(v1_addr));
+    BOOST_CHECK(!pnode->IsAddrCompatible(onion_addr));
+
+    // A peer that announced the support for the BIP155 address relay can
+    // receive all the addresses.
+    pnode->m_wants_addrv2 = true;
+    BOOST_CHECK(pnode->IsAddrCompatible(v1_addr));
+    BOOST_CHECK(pnode->IsAddrCompatible(onion_addr));
 }
 
 // prior to PR #14728, this test triggers an undefined behavior

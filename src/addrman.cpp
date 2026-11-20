@@ -259,9 +259,10 @@ bool CAddrMan::Add_(const CAddress& addr, const CNetAddr& source, int64_t nTimeP
         return false;
 
     // Addresses without a legacy (pre-BIP155) representation - Tor v3 onion
-    // addresses and I2P destinations - cannot be serialized into the on-disk
-    // addrman and are therefore never stored.
-    if (!addr.IsAddrV1Compatible())
+    // addresses and I2P destinations - are stored in the BIP155 (ADDRv2)
+    // format of the on-disk addrman. They are never serialized into the
+    // legacy wire format.
+    if (!addr.IsAddrV1Compatible() && !addr.IsAddrV2Compatible())
         return false;
 
     bool fNew = false;
