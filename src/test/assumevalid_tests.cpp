@@ -26,13 +26,29 @@
 BOOST_FIXTURE_TEST_SUITE(assumevalid_tests, TestChain100Setup)
 
 /**
- * The assumed-valid block is a chain parameter and it must be disabled
- * (null) by default on every network.
+ * The assumed-valid block is a chain parameter. It is enabled on mainnet with
+ * a deeply buried, verified mainnet block and disabled (null) on every other
+ * network.
  */
-BOOST_AUTO_TEST_CASE(chainparams_assumed_valid_disabled_by_default)
+BOOST_AUTO_TEST_CASE(chainparams_assumed_valid_mainnet_default)
 {
+    // Mainnet: the assumed-valid block 6500000 (2026-10-10 22:38:54 UTC) and
+    // its cumulative chainwork. The exact constants are asserted here so that a
+    // typo or an accidental reset to uint256() fails the test suite.
+    const uint256 expectedAssumeValid =
+        uint256S("0x458bcc9a40059bd8ddd17f64090d34c0d389ab1e14400588c263b50f3c3a79b3");
+    const uint256 expectedMinimumChainWork =
+        uint256S("0x000000000000000000000000000000000000000001b98d4dad4d4aeb4c1f4902");
+
+    const auto mainParams = CreateChainParams(CBaseChainParams::MAIN);
+    BOOST_REQUIRE(mainParams != nullptr);
+    BOOST_CHECK(mainParams->GetConsensus().defaultAssumeValid == expectedAssumeValid);
+    BOOST_CHECK(!mainParams->GetConsensus().defaultAssumeValid.IsNull());
+    BOOST_CHECK(mainParams->GetConsensus().nMinimumChainWork == expectedMinimumChainWork);
+    BOOST_CHECK(!mainParams->GetConsensus().nMinimumChainWork.IsNull());
+
+    // All other networks keep the relaxation disabled.
     const std::vector<std::string> networks{
-        CBaseChainParams::MAIN,
         CBaseChainParams::TESTNET,
         CBaseChainParams::CHANGI,
         CBaseChainParams::DEVNET,
@@ -42,6 +58,7 @@ BOOST_AUTO_TEST_CASE(chainparams_assumed_valid_disabled_by_default)
         const auto params = CreateChainParams(network);
         BOOST_REQUIRE(params != nullptr);
         BOOST_CHECK(params->GetConsensus().defaultAssumeValid.IsNull());
+        BOOST_CHECK(params->GetConsensus().nMinimumChainWork == uint256());
     }
 }
 
