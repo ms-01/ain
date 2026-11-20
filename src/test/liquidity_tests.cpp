@@ -121,6 +121,16 @@ BOOST_AUTO_TEST_CASE(math_liquidity_and_trade)
         BOOST_CHECK(res.ok);
         BOOST_CHECK(pool.reserveA == 11);
         BOOST_CHECK(pool.reserveB == 100000);
+        // total liquidity is the minted amount plus the minimum liquidity locked in the pool
+        BOOST_CHECK(pool.totalLiquidity == 48 + CPoolPair::MINIMUM_LIQUIDITY);
+
+        // the values must survive the round trip through the storage layer as well
+        BOOST_REQUIRE(mnview.SetPoolPair(idPool, 1, pool).ok);
+        auto optStoredPool = mnview.GetPoolPair(idPool);
+        BOOST_REQUIRE(optStoredPool);
+        BOOST_CHECK_EQUAL(optStoredPool->reserveA, 11);
+        BOOST_CHECK_EQUAL(optStoredPool->reserveB, 100000);
+        BOOST_CHECK_EQUAL(optStoredPool->totalLiquidity, 48 + CPoolPair::MINIMUM_LIQUIDITY);
     }
 
     {   // one limit
@@ -449,7 +459,7 @@ BOOST_AUTO_TEST_CASE(owner_rewards)
                 default:
                     BOOST_REQUIRE(false);
                 }
-                mnview.AddBalance(shareAddress[0], amount);
+                BOOST_REQUIRE(mnview.AddBalance(shareAddress[0], amount).ok);
             }
         );
         return true;
@@ -504,7 +514,7 @@ BOOST_AUTO_TEST_CASE(owner_rewards)
                         BOOST_CHECK_EQUAL(amount.nValue, oldCommissionCalculation(onLiquidity(), pool).second);
                     }
                 }
-                mnview.AddBalance(shareAddress[1], amount);
+                BOOST_REQUIRE(mnview.AddBalance(shareAddress[1], amount).ok);
             }
         );
         return false;
