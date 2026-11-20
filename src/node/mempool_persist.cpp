@@ -273,11 +273,17 @@ bool DumpMempool(const CTxMemPool &pool) {
 
     int64_t mid = GetTimeMicros();
 
+    const fs::path tmpPath = GetDataDir() / "mempool.dat.new";
+    const fs::path mempoolPath = GetDataDir() / "mempool.dat";
+    bool tmpFileCreated = false;
+
     try {
-        FILE *filestr = fsbridge::fopen(GetDataDir() / "mempool.dat.new", "wb");
+        FILE *filestr = fsbridge::fopen(tmpPath, "wb");
         if (!filestr) {
+            LogPrintf("Failed to open the mempool file for writing. Continuing anyway.\n");
             return false;
         }
+        tmpFileCreated = true;
 
         CAutoFile file(filestr, SER_DISK, CLIENT_VERSION);
 
@@ -296,12 +302,28 @@ bool DumpMempool(const CTxMemPool &pool) {
         if (!FileCommit(file.Get())) {
             throw std::runtime_error("FileCommit failed");
         }
-        file.fclose();
-        RenameOver(GetDataDir() / "mempool.dat.new", GetDataDir() / "mempool.dat");
+        // The result of the close has to be checked: a failing close can mean
+        // that the data was not written to disk completely.
+        if (file.fclose() != 0) {
+            throw std::runtime_error("Failed to close the mempool file");
+        }
+        if (!RenameOver(tmpPath, mempoolPath)) {
+            throw std::runtime_error("Failed to rename the mempool file");
+        }
+        tmpFileCreated = false;
+
         int64_t last = GetTimeMicros();
         LogPrintf("Dumped mempool: %gs to copy, %gs to dump\n", (mid - start) * MICRO, (last - mid) * MICRO);
     } catch (const std::exception &e) {
         LogPrintf("Failed to dump mempool: %s. Continuing anyway.\n", e.what());
+        if (tmpFileCreated) {
+            // Do not leave a stale (and possibly truncated) temporary file behind.
+            try {
+                fs::remove(tmpPath);
+            } catch (const std::exception &cleanupError) {
+                LogPrintf("Failed to remove the temporary mempool file: %s\n", cleanupError.what());
+            }
+        }
         return false;
     }
     return true;
