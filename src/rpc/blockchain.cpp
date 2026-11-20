@@ -12,6 +12,7 @@
 #include <chainparams.h>
 #include <coins.h>
 #include <node/coinstats.h>
+#include <node/mempool_persist.h>
 #include <consensus/validation.h>
 #include <core_io.h>
 #include <hash.h>

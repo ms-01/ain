@@ -407,8 +407,8 @@ bool CheckInputs(const CTransaction &tx,
 /** Trim the mempool to the given size and remove the expired transactions **/
 void LimitMempoolSize(CTxMemPool &pool,
                       size_t limit,
-                      unsigned long age,
-                      unsigned long evmAge) EXCLUSIVE_LOCKS_REQUIRED(pool.cs, ::cs_main);
+                      int64_t age,
+                      int64_t evmAge) EXCLUSIVE_LOCKS_REQUIRED(pool.cs, ::cs_main);
 
 /** Get the BIP9 state for a given deployment at the current tip. */
 ThresholdState VersionBitsTipState(const Consensus::Params &params, Consensus::DeploymentPos pos);
@@ -1107,12 +1107,6 @@ int32_t ComputeBlockVersion(const CBlockIndex *pindexPrev, const Consensus::Para
 
 /** Get block file info entry for one block file */
 CBlockFileInfo *GetBlockFileInfo(size_t n);
-
-/** Dump the mempool to disk. */
-bool DumpMempool(const CTxMemPool &pool);
-
-/** Load the mempool from disk. */
-bool LoadMempool(CTxMemPool &pool);
 
 //! Check whether the block associated with this index entry is pruned or not.
 inline bool IsBlockPruned(const CBlockIndex *pblockindex) {

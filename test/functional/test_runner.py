@@ -174,6 +174,7 @@ BASE_SCRIPTS = [
     "wallet_avoidreuse.py",
     "mempool_reorg.py",
     "mempool_persist.py",
+    "mempool_persist_corrupt.py",
     "wallet_multiwallet.py",
     "wallet_multiwallet.py --usecli",
     "wallet_createwallet.py",

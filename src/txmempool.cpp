@@ -1494,3 +1494,53 @@ void CTxMemPool::SetIsLoaded(bool loaded) {
 SaltedTxidHasher::SaltedTxidHasher()
     : k0(GetRand(std::numeric_limits<uint64_t>::max())),
       k1(GetRand(std::numeric_limits<uint64_t>::max())) {}
+
+int64_t MempoolExpirySeconds(int64_t hours)
+{
+    if (hours <= 0) {
+        return 0;
+    }
+    constexpr int64_t maxHours = std::numeric_limits<int64_t>::max() / 3600;
+    if (hours > maxHours) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    return hours * 3600;
+}
+
+int64_t MempoolSizeBytes(int64_t megabytes)
+{
+    if (megabytes <= 0) {
+        return 0;
+    }
+    constexpr int64_t maxMegabytes = std::numeric_limits<int64_t>::max() / 1000000;
+    if (megabytes > maxMegabytes) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    return megabytes * 1000000;
+}
+
+bool IsMempoolTimeExpired(int64_t nTime, int64_t nNow, int64_t nExpiry)
+{
+    if (nExpiry < 0) {
+        nExpiry = 0;
+    }
+    // The deadline is computed with a saturating subtraction, so that neither
+    // the deadline nor the comparison below can overflow.
+    int64_t deadline;
+    if (nExpiry > 0 && nNow < std::numeric_limits<int64_t>::min() + nExpiry) {
+        deadline = std::numeric_limits<int64_t>::min();
+    } else {
+        deadline = nNow - nExpiry;
+    }
+    // An entry is expired as soon as it is not newer than the deadline.
+    return nTime <= deadline;
+}
+
+bool IsMempoolEntryExpired(int64_t nTime, int64_t nNow, int64_t nExpiryTimeout, int64_t nExpiryEVMTimeout, bool isEVMTx)
+{
+    const bool dvmExpired = IsMempoolTimeExpired(nTime, nNow, nExpiryTimeout);
+    const bool evmExpired = IsMempoolTimeExpired(nTime, nNow, nExpiryEVMTimeout);
+    // Keep the original DFI semantics: an EVM transaction is re-imported as long
+    // as either the EVM or the DVM expiry window is still open.
+    return !((isEVMTx && !evmExpired) || !dvmExpired);
+}
