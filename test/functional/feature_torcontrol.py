@@ -17,7 +17,6 @@ Test plan:
 import os
 import socket
 import threading
-import time
 
 from test_framework.test_framework import DefiTestFramework
 from test_framework.util import (

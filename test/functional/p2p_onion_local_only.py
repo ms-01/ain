@@ -36,6 +36,9 @@ PRIVATE_KEY = "ED25519-V3:2fDs5G7dgS9q5g8ZgMS7VAd4wEqS3jJvB8rFqZ2zXKqQFdQHmAm"
 
 # Number of addresses seeded into the address manager.
 NUM_ADDRESSES = 50
+# Timeout for the "addr" response of the node. The node sends the response
+# with a poisson distributed delay, so the timeout has to be generous.
+ADDR_TIMEOUT = 300
 
 
 class MockTorControlServer:
@@ -129,9 +132,9 @@ class OnionCollector(P2PInterface):
     """Collects the addresses the node sends to us.
 
     With `request` set, the verack and the "getaddr" request are sent
-    directly after the connection is opened, so that the node processes them
-    together with the version message and answers the request without the
-    (poisson distributed) delay of the address broadcast.
+    directly after the connection is opened, so that the node processes all
+    three messages in one batch and answers the request without waiting for
+    the (poisson distributed) delay of the address broadcast.
     """
 
     def __init__(self, request=False):
@@ -230,7 +233,7 @@ class OnionLocalOnlyTest(DefiTestFramework):
 
         # The onion address must not be advertised to other peers.
         requester = node.add_p2p_connection(OnionCollector(request=True))
-        wait_until(lambda: len(requester.addresses) > 0, timeout=60)
+        wait_until(lambda: len(requester.addresses) > 0, timeout=ADDR_TIMEOUT)
         assert not any(ip.endswith(".onion") for ip, _ in requester.addresses)
         assert not any(ip.endswith(".b32.i2p") for ip, _ in requester.addresses)
         assert not any(ip.endswith(".onion") for ip, _ in requester.version_addrs)
