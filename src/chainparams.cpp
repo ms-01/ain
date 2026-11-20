@@ -179,12 +179,25 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nTimeout = 1230767999; // December 31, 2008
 
         // The best chain should have at least this much work.
-        consensus.nMinimumChainWork = uint256S("0x000000000000000000000000000000000000000000003f2949bfe4efc275390c");
+        // DeFiChain mainnet: cumulative chainwork of block 6500000
+        // (458bcc9a40059bd8ddd17f64090d34c0d389ab1e14400588c263b50f3c3a79b3,
+        //  2026-10-10 22:38:54 UTC). Replaces the inherited Bitcoin PoW value,
+        //  which is unreachable on the DeFiChain PoS chain.
+        consensus.nMinimumChainWork = uint256S("0x000000000000000000000000000000000000000001b98d4dad4d4aeb4c1f4902");
 
         // By default assume that the signatures in ancestors of this block are valid.
-        // Disabled by default: the previously configured value was a Bitcoin mainnet block
-        // hash which does not exist in the DeFiChain, hence it was dead configuration.
-        consensus.defaultAssumeValid = uint256();
+        // Mainnet block 6500000 (2026-10-10 22:38:54 UTC), ~41 days / 114899 blocks
+        // behind the tip at the time of writing. Verified against a synced mainnet
+        // node and independently recomputed from the header bits.
+        // Operators can disable the relaxation with -assumevalid=0.
+        //
+        // Note: the assumed-valid relaxation only becomes effective once the best
+        // header chainwork reaches nMinimumChainWork (i.e. after the header chain
+        // has reached height 6500000). Furthermore -assumevalid=0 only disables
+        // the script-check skip, it does not restore the previous IBD /
+        // header-serving / peer-selection behaviour; restoring that additionally
+        // requires -minimumchainwork=<hex>.
+        consensus.defaultAssumeValid = uint256S("0x458bcc9a40059bd8ddd17f64090d34c0d389ab1e14400588c263b50f3c3a79b3");
 
         // Masternodes' params
         consensus.mn.activationDelay = 10;
