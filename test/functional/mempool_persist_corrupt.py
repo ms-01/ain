@@ -73,7 +73,9 @@ class MempoolPersistCorruptTest(DefiTestFramework):
         assert_equal(len(node.getrawmempool()), 0)
 
         log = self.log_since(offset)
-        assert expected_log in log, f"expected '{expected_log}' in the debug log:\n{log}"
+        assert (
+            expected_log in log
+        ), f"expected '{expected_log}' in the debug log:\n{log}"
 
         self.stop_node(0)
 
@@ -81,7 +83,9 @@ class MempoolPersistCorruptTest(DefiTestFramework):
         node0 = self.nodes[0]
         node1 = self.nodes[1]
 
-        self.log.debug("Relay a transaction to node0, so that its mempool file is not empty")
+        self.log.debug(
+            "Relay a transaction to node0, so that its mempool file is not empty"
+        )
         txid = node1.sendtoaddress(node1.getnewaddress(), 1.0)
         wait_until(lambda: txid in node0.getrawmempool(), timeout=30)
         entry_time = node0.getmempoolentry(txid)["time"]
@@ -91,12 +95,16 @@ class MempoolPersistCorruptTest(DefiTestFramework):
         self.stop_node(1)
         self.stop_node(0)
 
-        self.log.debug("A mempool file with an extreme acceptance time must be rejected")
+        self.log.debug(
+            "A mempool file with an extreme acceptance time must be rejected"
+        )
         with open(self.mempool_path(), "rb") as mempool_file:
             mempool_data = mempool_file.read()
         # The acceptance time is stored as a signed 64 bit integer.
         pattern = struct.pack("<q", entry_time)
-        assert pattern in mempool_data, "the acceptance time was not found in mempool.dat"
+        assert (
+            pattern in mempool_data
+        ), "the acceptance time was not found in mempool.dat"
         patched = mempool_data.replace(pattern, struct.pack("<q", INT64_MAX), 1)
         self.start_with_mempool(patched, "implausible timestamp")
 
@@ -114,17 +122,23 @@ class MempoolPersistCorruptTest(DefiTestFramework):
 
         self.log.debug("A truncated mempool file must be rejected")
         self.start_with_mempool(
-            struct.pack("<Q", MEMPOOL_DUMP_VERSION) + struct.pack("<Q", 1) + b"\x01\x02\x03",
+            struct.pack("<Q", MEMPOOL_DUMP_VERSION)
+            + struct.pack("<Q", 1)
+            + b"\x01\x02\x03",
             "Failed to deserialize mempool data on disk",
         )
 
-        self.log.debug("A mempool file with an absurd number of transactions must be rejected")
+        self.log.debug(
+            "A mempool file with an absurd number of transactions must be rejected"
+        )
         self.start_with_mempool(
             struct.pack("<Q", MEMPOOL_DUMP_VERSION) + struct.pack("<Q", (1 << 64) - 1),
             "exceeds the maximum",
         )
 
-        self.log.debug("A mempool file with an absurd number of fee deltas must be rejected")
+        self.log.debug(
+            "A mempool file with an absurd number of fee deltas must be rejected"
+        )
         self.start_with_mempool(
             struct.pack("<Q", MEMPOOL_DUMP_VERSION)
             + struct.pack("<Q", 0)
@@ -133,7 +147,9 @@ class MempoolPersistCorruptTest(DefiTestFramework):
             "exceeds the maximum",
         )
 
-        self.log.debug("A mempool file with an oversized fee delta count must be rejected")
+        self.log.debug(
+            "A mempool file with an oversized fee delta count must be rejected"
+        )
         self.start_with_mempool(
             struct.pack("<Q", MEMPOOL_DUMP_VERSION)
             + struct.pack("<Q", 0)
