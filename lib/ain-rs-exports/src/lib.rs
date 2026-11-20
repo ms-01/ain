@@ -337,6 +337,7 @@ pub mod ffi {
             result: &mut CrossBoundaryResult,
             raw_tx: &str,
             mnview_ptr: usize,
+            use_exact_fraction: bool,
         ) -> TxMinerInfo;
 
         fn evm_try_dispatch_pending_transactions_event(
