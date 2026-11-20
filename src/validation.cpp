@@ -30,6 +30,7 @@
 #include <hash.h>
 #include <index/txindex.h>
 #include <net_processing.h>
+#include <node/mempool_persist.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
@@ -371,7 +372,7 @@ bool CheckSequenceLocks(const CTxMemPool &pool,
 // Returns the script flags which should be checked for a given block
 unsigned int GetBlockScriptFlags(const CBlockIndex *pindex, const Consensus::Params &chainparams);
 
-void LimitMempoolSize(CTxMemPool &pool, size_t limit, unsigned long age, unsigned long evmAge)
+void LimitMempoolSize(CTxMemPool &pool, size_t limit, int64_t age, int64_t evmAge)
     EXCLUSIVE_LOCKS_REQUIRED(pool.cs, ::cs_main) {
     const auto time = GetTime();
     int expired = pool.Expire(time - age, time - evmAge);
@@ -478,9 +479,9 @@ static void UpdateMempoolForReorg(DisconnectedBlockTransactions &disconnectpool,
         &::ChainstateActive().CoinsTip(), ::ChainActive().Tip()->nHeight + 1, STANDARD_LOCKTIME_VERIFY_FLAGS);
     // Re-limit mempool size, in case we added any transactions
     LimitMempoolSize(mempool,
-                     gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000,
-                     gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_DVM_EXPIRY) * 60 * 60,
-                     gArgs.GetArg("-mempoolexpiryevm", DEFAULT_MEMPOOL_EVM_EXPIRY) * 60 * 60);
+                     MempoolSizeBytes(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE)),
+                     MempoolExpirySeconds(gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_DVM_EXPIRY)),
+                     MempoolExpirySeconds(gArgs.GetArg("-mempoolexpiryevm", DEFAULT_MEMPOOL_EVM_EXPIRY)));
 }
 
 /**

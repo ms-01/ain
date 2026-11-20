@@ -21,6 +21,7 @@
 
 #include <cstdio>
 #include <exception>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <vector>
@@ -30,10 +31,60 @@ static const uint64_t MEMPOOL_DUMP_VERSION = 1;
 // Scale factor used to convert microseconds into seconds for the dump log message.
 static const double MICRO = 0.000001;
 
+int64_t MempoolExpirySeconds(int64_t hours)
+{
+    if (hours <= 0) {
+        return 0;
+    }
+    constexpr int64_t maxHours = std::numeric_limits<int64_t>::max() / 3600;
+    if (hours > maxHours) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    return hours * 3600;
+}
+
+int64_t MempoolSizeBytes(int64_t megabytes)
+{
+    if (megabytes <= 0) {
+        return 0;
+    }
+    constexpr int64_t maxMegabytes = std::numeric_limits<int64_t>::max() / 1000000;
+    if (megabytes > maxMegabytes) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    return megabytes * 1000000;
+}
+
+bool IsMempoolTimeExpired(int64_t nTime, int64_t nNow, int64_t nExpiry)
+{
+    if (nExpiry < 0) {
+        nExpiry = 0;
+    }
+    // The deadline is computed with a saturating subtraction, so that neither
+    // the deadline nor the comparison below can overflow.
+    int64_t deadline;
+    if (nExpiry > 0 && nNow < std::numeric_limits<int64_t>::min() + nExpiry) {
+        deadline = std::numeric_limits<int64_t>::min();
+    } else {
+        deadline = nNow - nExpiry;
+    }
+    // An entry is expired as soon as it is not newer than the deadline.
+    return nTime <= deadline;
+}
+
+bool IsMempoolEntryExpired(int64_t nTime, int64_t nNow, int64_t nExpiryTimeout, int64_t nExpiryEVMTimeout, bool isEVMTx)
+{
+    const bool dvmExpired = IsMempoolTimeExpired(nTime, nNow, nExpiryTimeout);
+    const bool evmExpired = IsMempoolTimeExpired(nTime, nNow, nExpiryEVMTimeout);
+    // Keep the original DFI semantics: an EVM transaction is re-imported as long
+    // as either the EVM or the DVM expiry window is still open.
+    return !((isEVMTx && !evmExpired) || !dvmExpired);
+}
+
 bool LoadMempool(CTxMemPool &pool) {
     const CChainParams &chainparams = Params();
-    int64_t nExpiryTimeout = gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_DVM_EXPIRY) * 60 * 60;
-    int64_t nExpiryEVMTimeout = gArgs.GetArg("-mempoolexpiryevm", DEFAULT_MEMPOOL_EVM_EXPIRY) * 60 * 60;
+    const int64_t nExpiryTimeout = MempoolExpirySeconds(gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_DVM_EXPIRY));
+    const int64_t nExpiryEVMTimeout = MempoolExpirySeconds(gArgs.GetArg("-mempoolexpiryevm", DEFAULT_MEMPOOL_EVM_EXPIRY));
     FILE *filestr = fsbridge::fopen(GetDataDir() / "mempool.dat", "rb");
     CAutoFile file(filestr, SER_DISK, CLIENT_VERSION);
     if (file.IsNull()) {
@@ -45,7 +96,7 @@ bool LoadMempool(CTxMemPool &pool) {
     int64_t expired = 0;
     int64_t failed = 0;
     int64_t already_there = 0;
-    int64_t nNow = GetTime();
+    const int64_t nNow = GetTime();
 
     try {
         uint64_t version;
@@ -70,10 +121,10 @@ bool LoadMempool(CTxMemPool &pool) {
 
             std::vector<unsigned char> metadata;
             CustomTxType txType = GuessCustomTxType(*tx, metadata, true);
-            auto isEVMTx = txType == CustomTxType::EvmTx || txType == CustomTxType::TransferDomain;
+            const auto isEVMTx = txType == CustomTxType::EvmTx || txType == CustomTxType::TransferDomain;
 
             CValidationState state;
-            if ((isEVMTx && (nTime + nExpiryEVMTimeout > nNow)) || (nTime + nExpiryTimeout > nNow)) {
+            if (!IsMempoolEntryExpired(nTime, nNow, nExpiryTimeout, nExpiryEVMTimeout, isEVMTx)) {
                 LOCK(cs_main);
                 AcceptToMemoryPoolWithTime(chainparams,
                                            pool,

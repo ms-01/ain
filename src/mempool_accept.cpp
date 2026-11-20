@@ -14,6 +14,7 @@
 #include <dfi/govvariables/attributes.h>
 #include <dfi/mn_checks.h>
 #include <logging.h>
+#include <node/mempool_persist.h>
 #include <policy/feerate.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
@@ -724,9 +725,9 @@ bool MemPoolAccept::Finalize(ATMPArgs &args, Workspace &ws) {
     // trim mempool and check if tx was trimmed
     if (!args.bypass_limits) {
         LimitMempoolSize(m_pool,
-                         gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000,
-                         gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_DVM_EXPIRY) * 60 * 60,
-                         gArgs.GetArg("-mempoolexpiryevm", DEFAULT_MEMPOOL_EVM_EXPIRY) * 60 * 60);
+                         MempoolSizeBytes(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE)),
+                         MempoolExpirySeconds(gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_DVM_EXPIRY)),
+                         MempoolExpirySeconds(gArgs.GetArg("-mempoolexpiryevm", DEFAULT_MEMPOOL_EVM_EXPIRY)));
         if (!m_pool.exists(hash)) {
             return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "mempool full");
         }
