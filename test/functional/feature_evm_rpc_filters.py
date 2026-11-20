@@ -280,6 +280,39 @@ class EVMTest(DefiTestFramework):
         )
         assert_equal(len(contract_logs), self.num_blocks * self.num_logs_in_each_block)
 
+        # A null placeholder in the flat form is a wildcard that keeps its position
+        contract_logs = self.nodes[0].eth_getLogs(
+            {
+                "fromBlock": 0,
+                "toBlock": curr_block,
+                "address": self.contract_address,
+                "topics": [topics[0], None, topics[2]],
+            }
+        )
+        assert_equal(len(contract_logs), self.num_blocks * self.num_logs_in_each_block)
+
+        # A null placeholder inside an OR-list makes the whole position a wildcard
+        contract_logs = self.nodes[0].eth_getLogs(
+            {
+                "fromBlock": 0,
+                "toBlock": curr_block,
+                "address": self.contract_address,
+                "topics": [[topics[1], None]],
+            }
+        )
+        assert_equal(len(contract_logs), self.num_blocks * self.num_logs_in_each_block)
+
+        # A log with fewer topics than the filter positions is not matched
+        contract_logs = self.nodes[0].eth_getLogs(
+            {
+                "fromBlock": 0,
+                "toBlock": curr_block,
+                "address": self.contract_address,
+                "topics": [topics[0], None, None, topics[2]],
+            }
+        )
+        assert_equal(len(contract_logs), 0)
+
     def test_get_filter_logs_rpc(self):
         self.rollback_to(self.start_height)
         self.filter_log_ids = []
@@ -399,6 +432,36 @@ class EVMTest(DefiTestFramework):
                 "toBlock": curr_block,
                 "address": self.contract_address,
                 "topics": many_nested_topics,
+            }
+        )
+        contract_logs = self.nodes[0].eth_getFilterLogs(id)
+        assert_equal(int(id, 16), self.last_id)
+        assert_equal(len(contract_logs), self.num_blocks * self.num_logs_in_each_block)
+        self.filter_log_ids.append(id)
+        self.last_id += 1
+
+        # A null placeholder in the flat form is a wildcard that keeps its position
+        id = self.nodes[0].eth_newFilter(
+            {
+                "fromBlock": 0,
+                "toBlock": curr_block,
+                "address": self.contract_address,
+                "topics": [topics[0], None, topics[2]],
+            }
+        )
+        contract_logs = self.nodes[0].eth_getFilterLogs(id)
+        assert_equal(int(id, 16), self.last_id)
+        assert_equal(len(contract_logs), self.num_blocks * self.num_logs_in_each_block)
+        self.filter_log_ids.append(id)
+        self.last_id += 1
+
+        # A null placeholder inside an OR-list makes the whole position a wildcard
+        id = self.nodes[0].eth_newFilter(
+            {
+                "fromBlock": 0,
+                "toBlock": curr_block,
+                "address": self.contract_address,
+                "topics": [[topics[1], None]],
             }
         )
         contract_logs = self.nodes[0].eth_getFilterLogs(id)

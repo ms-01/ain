@@ -70,6 +70,38 @@ pub enum LogRequestTopics {
     VecOfHashVecs(Vec<Vec<Option<H256>>>),
 }
 
+impl LogRequestTopics {
+    /// Convert the requested topics into the internal filter representation.
+    ///
+    /// The internal representation holds one entry per topic position, where an empty entry
+    /// is the wildcard (any topic at this position).
+    ///
+    /// * A `null` in the flat form is a positional wildcard and keeps its position, so the
+    ///   following positions are not shifted.
+    /// * A `null` inside an OR-list turns the whole position into a wildcard. This follows
+    ///   the Ethereum JSON-RPC specification (null matches any topic at that position) and
+    ///   deviates from go-ethereum, which decodes a nested `null` into the zero hash.
+    pub fn into_filter_topics(self) -> Vec<Vec<H256>> {
+        match self {
+            LogRequestTopics::VecOfHashes(inputs) => inputs
+                .into_iter()
+                .map(|hash| hash.map(|hash| vec![hash]).unwrap_or_default())
+                .collect(),
+            LogRequestTopics::VecOfHashVecs(inputs) => inputs
+                .into_iter()
+                .map(|hashes| {
+                    if hashes.iter().any(|hash| hash.is_none()) {
+                        // Any topic is accepted at this position.
+                        Vec::new()
+                    } else {
+                        hashes.into_iter().flatten().collect()
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ethereum_types::{H160, H256, U256};
@@ -163,6 +195,53 @@ mod tests {
                 "logIndex": "0x7",
                 "removed": true
             })
+        );
+    }
+}
+
+#[cfg(test)]
+mod filter_topics_tests {
+    use ethereum_types::H256;
+    use serde_json::json;
+
+    use super::{GetLogsRequest, LogRequestTopics};
+
+    fn t(v: u64) -> H256 {
+        H256::from_low_u64_be(v)
+    }
+
+    #[test]
+    fn flat_topics_keep_their_position() {
+        let topics = LogRequestTopics::VecOfHashes(vec![Some(t(1)), None, Some(t(3))]);
+        assert_eq!(
+            topics.into_filter_topics(),
+            vec![vec![t(1)], vec![], vec![t(3)]]
+        );
+        let topics = LogRequestTopics::VecOfHashes(vec![None]);
+        assert_eq!(topics.into_filter_topics(), vec![Vec::<H256>::new()]);
+        let topics = LogRequestTopics::VecOfHashes(vec![Some(t(1)), Some(t(2))]);
+        assert_eq!(topics.into_filter_topics(), vec![vec![t(1)], vec![t(2)]]);
+    }
+
+    #[test]
+    fn nested_topics_keep_their_position() {
+        let topics =
+            LogRequestTopics::VecOfHashVecs(vec![vec![Some(t(1)), None], vec![Some(t(3))]]);
+        assert_eq!(topics.into_filter_topics(), vec![vec![], vec![t(3)]]);
+        let topics = LogRequestTopics::VecOfHashVecs(vec![vec![Some(t(1))], vec![Some(t(3))]]);
+        assert_eq!(topics.into_filter_topics(), vec![vec![t(1)], vec![t(3)]]);
+        let topics = LogRequestTopics::VecOfHashVecs(vec![vec![]]);
+        assert_eq!(topics.into_filter_topics(), vec![Vec::<H256>::new()]);
+    }
+
+    #[test]
+    fn a_deserialized_flat_topic_list_keeps_its_position() {
+        let request: GetLogsRequest =
+            serde_json::from_value(json!({ "topics": [t(1), null, t(3)] })).unwrap();
+        let topics = request.topics.expect("missing topics");
+        assert_eq!(
+            topics.into_filter_topics(),
+            vec![vec![t(1)], vec![], vec![t(3)]]
         );
     }
 }

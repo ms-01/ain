@@ -63,7 +63,7 @@ pub struct FilterCriteria {
     // The topic list restricts matches to particular event topics. Each event has a list
     // of topics. Topics matches a prefix of that list. An empty element slice matches any
     // topic. Non-empty elements represent an alternative that matches any of the contained
-    // topics.
+    // topics. A log only matches if it has at least as many topics as the list has entries.
     // Examples:
     // {} or nil          matches any topic list
     // {{A}}              matches topic A in first position
@@ -297,22 +297,19 @@ impl FilterService {
             Some(topics) => logs
                 .into_iter()
                 .filter(|log| {
-                    log.topics
-                        .clone()
-                        .into_iter()
-                        .enumerate()
-                        .all(|(idx, log_item)| {
-                            if idx < topics.len() {
-                                let topic = &topics[idx];
-                                if topic.is_empty() {
-                                    true
-                                } else {
-                                    topic.contains(&log_item)
-                                }
-                            } else {
-                                true
-                            }
-                        })
+                    // A log can only match if it provides at least as many topics as the
+                    // filter has positions (wildcard positions included).
+                    if log.topics.len() < topics.len() {
+                        return false;
+                    }
+                    topics.iter().enumerate().all(|(idx, topic)| {
+                        if topic.is_empty() {
+                            // Any topic is accepted at this position.
+                            true
+                        } else {
+                            topic.contains(&log.topics[idx])
+                        }
+                    })
                 })
                 .collect(),
         }
@@ -796,5 +793,68 @@ mod tests {
         let filtered = FilterService::filter_logs(&criteria, logs);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].address, addr_b);
+    }
+}
+
+#[cfg(test)]
+mod filter_topics_tests {
+    use std::collections::HashMap;
+
+    use ethereum_types::{H160, H256, U256};
+
+    use super::{FilterCriteria, FilterService};
+    use crate::log::LogIndex;
+
+    fn make_log(address: H160, topics: Vec<H256>) -> LogIndex {
+        LogIndex {
+            block_hash: H256::zero(),
+            block_number: U256::from(1),
+            topics,
+            data: vec![],
+            log_index: U256::zero(),
+            address,
+            removed: false,
+            transaction_hash: H256::zero(),
+            transaction_index: U256::zero(),
+        }
+    }
+
+    #[test]
+    fn filter_logs_matches_a_wildcard_in_a_middle_position() {
+        let address = H160::from_low_u64_be(1);
+        let topic_a = H256::from_low_u64_be(10);
+        let topic_x = H256::from_low_u64_be(30);
+        let topic_b = H256::from_low_u64_be(20);
+
+        let mut logs = HashMap::new();
+        logs.insert(
+            address,
+            vec![make_log(address, vec![topic_a, topic_x, topic_b])],
+        );
+
+        let criteria = FilterCriteria {
+            topics: Some(vec![vec![topic_a], vec![], vec![topic_b]]),
+            ..Default::default()
+        };
+        let filtered = FilterService::filter_logs(&criteria, logs);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].topics, vec![topic_a, topic_x, topic_b]);
+    }
+
+    #[test]
+    fn filter_logs_rejects_a_log_with_fewer_topics_than_the_filter() {
+        let address = H160::from_low_u64_be(1);
+        let topic_a = H256::from_low_u64_be(10);
+        let topic_b = H256::from_low_u64_be(20);
+
+        let mut logs = HashMap::new();
+        logs.insert(address, vec![make_log(address, vec![topic_a, topic_b])]);
+
+        let criteria = FilterCriteria {
+            topics: Some(vec![vec![topic_a], vec![], vec![topic_b]]),
+            ..Default::default()
+        };
+        let filtered = FilterService::filter_logs(&criteria, logs);
+        assert!(filtered.is_empty());
     }
 }

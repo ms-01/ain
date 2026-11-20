@@ -23,7 +23,7 @@ use crate::{
     codegen::types::EthTransactionInfo,
     errors::{to_custom_err, RPCError},
     filters::{GetFilterChangesResult, NewFilterRequest},
-    logs::{GetLogsRequest, LogRequestTopics, LogResult},
+    logs::{GetLogsRequest, LogResult},
     receipt::ReceiptResult,
     sync::{SyncInfo, SyncState},
     transaction_request::{TransactionMessage, TransactionRequest},
@@ -1119,15 +1119,7 @@ impl MetachainRPCServer for MetachainRPCModule {
         } else {
             None
         };
-        let topics = input.topics.map(|topics| match topics {
-            LogRequestTopics::VecOfHashes(inputs) => {
-                inputs.iter().flatten().map(|input| vec![*input]).collect()
-            }
-            LogRequestTopics::VecOfHashVecs(inputs) => inputs
-                .iter()
-                .map(|hashes| hashes.iter().flatten().copied().collect())
-                .collect(),
-        });
+        let topics = input.topics.map(|topics| topics.into_filter_topics());
         let curr_block = get_block(&self.handler.storage, Some(BlockNumber::Latest))?
             .header
             .number;
@@ -1178,15 +1170,7 @@ impl MetachainRPCServer for MetachainRPCModule {
         } else {
             None
         };
-        let topics = input.topics.map(|topics| match topics {
-            LogRequestTopics::VecOfHashes(inputs) => {
-                inputs.iter().flatten().map(|input| vec![*input]).collect()
-            }
-            LogRequestTopics::VecOfHashVecs(inputs) => inputs
-                .iter()
-                .map(|hashes| hashes.iter().flatten().copied().collect())
-                .collect(),
-        });
+        let topics = input.topics.map(|topics| topics.into_filter_topics());
         let curr_block = get_block(&self.handler.storage, Some(BlockNumber::Latest))?
             .header
             .number;
