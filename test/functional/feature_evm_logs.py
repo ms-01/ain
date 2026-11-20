@@ -131,6 +131,16 @@ class EVMTestLogs(DefiTestFramework):
 
         node.w3.eth.wait_for_transaction_receipt(hash)
 
+        # The `NumberStored` event carries three topics: the event signature, the
+        # stored number and the caller.
+        self.log_topics = [
+            topic if isinstance(topic, str) else "0x" + bytes(topic).hex()
+            for topic in node.w3.eth.wait_for_transaction_receipt(hash)["logs"][0][
+                "topics"
+            ]
+        ]
+        assert_equal(len(self.log_topics), 3)
+
         block = self.nodes[0].eth_getBlockByNumber("latest")
         receipt = self.nodes[0].eth_getTransactionReceipt(block["transactions"][0])
         assert_equal(len(receipt["logs"]), 1)
@@ -232,6 +242,80 @@ class EVMTestLogs(DefiTestFramework):
 
         asyncio.run(run_ws_reorg_check())
 
+    def subscribe_logs(self, topics, timeout=5):
+        """Subscribe to the logs of the contract and emit a new log.
+
+        Returns the delivered log or `None` if no log was delivered within `timeout`
+        seconds.
+        """
+        node = self.nodes[0]
+        ws_url = f"ws://127.0.0.1:{rpc_port(node.index, 4)}"
+
+        async def run_ws_check():
+            async with websockets.connect(ws_url) as ws:
+                await ws.send(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "eth_subscribe",
+                            "params": [
+                                "logs",
+                                {"address": self.contract.address, "topics": topics},
+                            ],
+                        }
+                    )
+                )
+                sub_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                sub_id = sub_resp["result"]
+
+                tx = self.contract.functions.store(10).build_transaction(
+                    {
+                        "chainId": node.w3.eth.chain_id,
+                        "from": self.evm_key_pair.address,
+                        "nonce": node.w3.eth.get_transaction_count(
+                            self.evm_key_pair.address
+                        ),
+                        "gasPrice": 10_000_000_000,
+                    }
+                )
+                signed = node.w3.eth.account.sign_transaction(
+                    tx, self.evm_key_pair.privkey
+                )
+                node.w3.eth.send_raw_transaction(signed.rawTransaction)
+
+                node.generate(1)
+
+                try:
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
+                except asyncio.TimeoutError:
+                    return None
+
+                assert_equal(msg["method"], "eth_subscription")
+                assert_equal(msg["params"]["subscription"], sub_id)
+                return msg["params"]["result"]
+
+        return asyncio.run(run_ws_check())
+
+    def should_subscribe_logs_with_null_topic_placeholder(self):
+        # A `null` placeholder in the flat form is a positional wildcard: the
+        # positions of the following topics must not be shifted.
+        log = self.subscribe_logs([self.log_topics[0], None, self.log_topics[2]])
+        assert log is not None, "log with a null topic placeholder was not delivered"
+        assert_equal(log["topics"], self.log_topics)
+
+        # A `null` inside an OR-list turns the whole position into a wildcard.
+        log = self.subscribe_logs([[self.log_topics[1], None]])
+        assert (
+            log is not None
+        ), "log with a nested null topic placeholder was not delivered"
+        assert_equal(log["topics"], self.log_topics)
+
+        # A position that does not match must not deliver any log.
+        wrong_topic = "0x" + "ff" * 32
+        log = self.subscribe_logs([self.log_topics[0], None, wrong_topic])
+        assert log is None, "log was delivered although a topic position does not match"
+
     def run_test(self):
         self.setup()
 
@@ -240,6 +324,8 @@ class EVMTestLogs(DefiTestFramework):
         self.should_contract_store_and_emit_logs()
 
         self.transferdomain_receipt_gas_used()
+
+        self.should_subscribe_logs_with_null_topic_placeholder()
 
         self.should_emit_removed_logs_on_reorg()
 
