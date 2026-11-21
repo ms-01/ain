@@ -606,7 +606,7 @@ public:
         cache.usage() += InsertCoinsMapEntry(cache.map(), cache_value, cache_flags);
     }
 
-    CCoinsView root;
+    CCoinsViewEmpty root;
     CCoinsViewCacheTest base{&root};
     CCoinsViewCacheTest cache{&base};
 };

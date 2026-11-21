@@ -215,6 +215,26 @@ public:
 };
 
 
+/**
+ * A no-op view on the open txout dataset.
+ *
+ * It behaves exactly like a default constructed CCoinsView - every coin lookup
+ * fails, every write is rejected and there is no cursor - but it makes the
+ * intent of the call sites explicit.
+ */
+class CCoinsViewEmpty : public CCoinsView
+{
+public:
+    bool GetCoin(const COutPoint &outpoint, Coin &coin) const override { return false; }
+    bool HaveCoin(const COutPoint &outpoint) const override { return false; }
+    uint256 GetBestBlock() const override { return uint256(); }
+    std::vector<uint256> GetHeadBlocks() const override { return {}; }
+    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) override { return false; }
+    CCoinsViewCursor *Cursor() const override { return nullptr; }
+    size_t EstimateSize() const override { return 0; }
+};
+
+
 /** CCoinsView backed by another CCoinsView */
 class CCoinsViewBacked : public CCoinsView
 {

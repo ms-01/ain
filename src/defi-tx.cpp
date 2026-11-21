@@ -554,7 +554,7 @@ static void MutateTxSign(CMutableTransaction& tx, const std::string& flagStr)
     // starts as a clone of the raw tx:
     CMutableTransaction mergedTx{tx};
     const CMutableTransaction txv{tx};
-    CCoinsView viewDummy;
+    CCoinsViewEmpty viewDummy;
     CCoinsViewCache view(&viewDummy);
 
     if (!registers.count("privatekeys"))

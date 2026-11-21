@@ -324,7 +324,7 @@ SetupDummyInputs(FillableSigningProvider& keystoreRet, CCoinsViewCache& coinsRet
 BOOST_AUTO_TEST_CASE(test_Get)
 {
     FillableSigningProvider keystore;
-    CCoinsView coinsDummy;
+    CCoinsViewEmpty coinsDummy;
     CCoinsViewCache coins(&coinsDummy);
     std::vector<CMutableTransaction> dummyTransactions = SetupDummyInputs(keystore, coins);
 
@@ -679,7 +679,7 @@ BOOST_AUTO_TEST_CASE(test_IsStandard)
 {
     LOCK(cs_main);
     FillableSigningProvider keystore;
-    CCoinsView coinsDummy;
+    CCoinsViewEmpty coinsDummy;
     CCoinsViewCache coins(&coinsDummy);
     std::vector<CMutableTransaction> dummyTransactions = SetupDummyInputs(keystore, coins);
 
