@@ -48,6 +48,64 @@ EVM replace-by-fee fee increment
   Transactions that are already in the mempool when the activation height is reached keep the
   minimum RBF fee that was computed for them, i.e. they are not re-priced.
 
+Time offset handling and the `DF25Height` future time rule
+-----------------------------------------------------------
+
+- The node now tracks the clock offsets of its **outbound** peers in a bounded
+  FIFO (50 samples) and uses their **median** (at least 5 samples are required,
+  otherwise the offset is 0) as the applied time offset. This replaces the
+  legacy implementation, which kept one sample per peer address in a
+  200-slot median filter that was only updated while the sample count was odd
+  (the applied offset therefore froze for the lifetime of the node).
+
+  The applied offset is still bound by `-maxtimeadjustment` (default: 70
+  minutes).
+
+- The operator is warned when the median offset exceeds 10 minutes, because a
+  clock that is out of sync with the network may lead to consensus failures.
+
+  **Deviation compared to upstream Bitcoin Core:** upstream raises the warning
+  through its `node::Warning` mechanism, which allows the warning to be unset
+  again. DeFiChain has no such infrastructure, so the warning is raised through
+  `SetMiscWarning()` and the log. The warning therefore stays visible until the
+  node is restarted, even if the median recovers in the meantime.
+
+- The RPC fields now report two different quantities (as they do upstream):
+  `getnetworkinfo.timeoffset` reports the **median** of the collected peer
+  samples, while `getpeerinfo.timeoffset` reports the **raw** offset of the
+  individual peer. Before this change both fields reported the legacy applied
+  offset.
+
+- **From the `DF25Height` activation height on** the 2 hour future time rule
+  (the upper bound of the block timestamp) uses the **unadjusted** clock, so
+  the peer derived time offset can no longer influence the acceptance of a
+  block. Below the activation height the rule keeps using the legacy applied
+  offset, so the acceptance window for historical blocks stays exactly as it
+  was and a full initial block download from the genesis block is not
+  affected.
+
+  The other future time rules (30 seconds and 5 minutes) already used the
+  unadjusted clock before this change.
+
+- The mining path (the timestamp of a locally mined block and the search
+  interval of the proof-of-stake kernel search) now uses the **unadjusted**
+  clock as well. The validation limits are unadjusted, so a positive peer
+  derived offset could otherwise make the node mine a block that its own
+  validation rejects. The startup check for a block in the future uses the
+  unadjusted clock for the same reason.
+
+- The selection of an anchor (SPV RPC only, no consensus impact) uses the
+  block time of the chain tip as reference instead of the local wall clock, so
+  that all nodes on the same chain reach the same conclusion. For a node whose
+  tip lags behind, the "anchor too new" check becomes more permissive than
+  before; the check on the Bitcoin side still rejects genuinely too new
+  anchors.
+
+- The legacy time offset computation is still needed below the `DF25Height`
+  activation height (the public networks have it set to an unlimited height
+  until the release window is fixed). Its removal is a follow-up for a later
+  release.
+
 P2P persistence and RPC observability
 -------------------------------------
 

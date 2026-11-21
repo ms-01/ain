@@ -55,7 +55,10 @@ struct EvmTxPreApplyContext {
 
 int64_t UpdateTime(CBlockHeader *pblock, const Consensus::Params &consensusParams, const CBlockIndex *pindexPrev) {
     int64_t nOldTime = pblock->nTime;
-    int64_t nNewTime = std::max(pindexPrev->GetMedianTimePast() + 1, GetAdjustedTime());
+    // The block time is derived from the unadjusted clock: the validation limits are unadjusted
+    // as well, so a peer derived offset could otherwise make us mine a block that we reject
+    // ourselves.
+    int64_t nNewTime = std::max(pindexPrev->GetMedianTimePast() + 1, GetTime());
 
     if (nOldTime < nNewTime) {
         pblock->nTime = nNewTime;
@@ -1246,7 +1249,7 @@ namespace pos {
             LOCK(cs_main);
             tip = ::ChainActive().Tip();
             blockHeight = tip->nHeight + 1;
-            blockTime = std::max(tip->GetMedianTimePast() + 1, GetAdjustedTime());
+            blockTime = std::max(tip->GetMedianTimePast() + 1, GetTime());
             const auto nodePtr = pcustomcsview->GetMasternode(masternodeID);
             if (!nodePtr || !nodePtr->IsActive(blockHeight, *pcustomcsview)) {
                 return Status::initWaiting;
@@ -1271,7 +1274,7 @@ namespace pos {
         if (!nLastCoinStakeSearchTime || lastBlockSeen != tip->GetBlockHash()) {
             if (Params().NetworkIDString() == CBaseChainParams::REGTEST) {
                 // For regtest use previous oldest time
-                nLastCoinStakeSearchTime = GetAdjustedTime() - 60;
+                nLastCoinStakeSearchTime = GetTime() - 60;
                 if (nLastCoinStakeSearchTime <= tip->GetMedianTimePast()) {
                     nLastCoinStakeSearchTime = tip->GetMedianTimePast() + 1;
                 }
@@ -1426,14 +1429,14 @@ namespace pos {
     void Staker::withSearchInterval(F &&f, int64_t height) {
         if (height >= Params().GetConsensus().DF10EunosPayaHeight) {
             // Mine up to max future minus 1 second buffer
-            nFutureTime = GetAdjustedTime() + (MAX_FUTURE_BLOCK_TIME_EUNOSPAYA - 1);  // 29 seconds
+            nFutureTime = GetTime() + (MAX_FUTURE_BLOCK_TIME_EUNOSPAYA - 1);  // 29 seconds
         } else {
             // Mine up to max future minus 5 second buffer
-            nFutureTime = GetAdjustedTime() + (MAX_FUTURE_BLOCK_TIME_DAKOTACRESCENT - 5);  // 295 seconds
+            nFutureTime = GetTime() + (MAX_FUTURE_BLOCK_TIME_DAKOTACRESCENT - 5);  // 295 seconds
         }
 
         if (nFutureTime > nLastCoinStakeSearchTime) {
-            f(GetAdjustedTime(), nLastCoinStakeSearchTime, nFutureTime);
+            f(GetTime(), nLastCoinStakeSearchTime, nFutureTime);
         }
     }
 

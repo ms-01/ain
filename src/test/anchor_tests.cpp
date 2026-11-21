@@ -1,3 +1,4 @@
+#include <chain.h>
 #include <chainparams.h>
 #include <dfi/anchors.h>
 #include <dfi/masternodes.h>
@@ -389,6 +390,40 @@ BOOST_AUTO_TEST_CASE(Test_AnchorConfirmationOrder)
 
     // Expect to get lowset BTC height first, not lowest TX hash which would be block 16,000.
     BOOST_CHECK_EQUAL(result[0].btcTxHeight, 1000);
+}
+
+/**
+ * The "anchor too new" check uses the block time of the chain tip as reference, so the result is
+ * deterministic and does not depend on the local wall clock or on the peer derived time offset.
+ */
+BOOST_AUTO_TEST_CASE(anchor_too_new_check_is_deterministic)
+{
+    const int64_t depth{3 * 60 * 60};
+
+    CBlockIndex tip;
+    tip.nHeight = 10;
+    tip.nTime = 1000000;
+
+    // An anchor that is at least `depth` seconds older than the tip is not too new.
+    CBlockIndex old;
+    old.nHeight = 5;
+    old.nTime = tip.nTime - depth;
+    BOOST_CHECK(!IsAnchorTooNew(&old, &tip, depth));
+
+    // One second less old is too new.
+    CBlockIndex tooNew;
+    tooNew.nHeight = 5;
+    tooNew.nTime = tip.nTime - depth + 1;
+    BOOST_CHECK(IsAnchorTooNew(&tooNew, &tip, depth));
+
+    // The tip itself is too new (it is not old enough to be used as an anchor base).
+    BOOST_CHECK(IsAnchorTooNew(&tip, &tip, depth));
+
+    // Without a chain tip there is no deterministic reference, so the anchor is not too new.
+    BOOST_CHECK(!IsAnchorTooNew(&old, nullptr, depth));
+
+    // A missing anchor block is always too new.
+    BOOST_CHECK(IsAnchorTooNew(nullptr, &tip, depth));
 }
 
 BOOST_AUTO_TEST_CASE(Test_AnchorFinalMsgCount)

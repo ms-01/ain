@@ -4,6 +4,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <chain.h>
 #include <chainparams.h>
 #include <consensus/merkle.h>
 #include <consensus/validation.h>
@@ -16,6 +17,8 @@
 #include <validation.h>
 #include <validationinterface.h>
 
+#include <cstdlib>
+#include <limits>
 #include <thread>
 
 struct RegtestingSetup : public TestingSetup {
@@ -334,5 +337,43 @@ BOOST_AUTO_TEST_CASE(mempool_locks_reorg)
 //        // We can join the other thread, which returns when the reorg was successful
 //        rpc_thread.join();
 //    }
+}
+
+/**
+ * The 2 hour future time rule (the only consensus relevant change of the DF25 time hardening)
+ * uses the legacy peer adjusted clock below the DF25 activation height and the unadjusted clock
+ * from the activation height on. Below the activation height the acceptance window has to stay
+ * byte identical to the behaviour before the upgrade.
+ */
+BOOST_AUTO_TEST_CASE(future_block_time_limit_df25_gate)
+{
+    Consensus::Params consensus = Params().GetConsensus();
+    const int64_t legacyOffset{3600};
+    const int height{100};
+
+    // Below the activation height the legacy applied offset is part of the acceptance window.
+    consensus.DF25Height = std::numeric_limits<int>::max();
+    const int64_t preGate{GetFutureBlockTimeLimit(height, consensus, legacyOffset)};
+    const int64_t preGateNoOffset{GetFutureBlockTimeLimit(height, consensus, 0)};
+    BOOST_CHECK(preGate - preGateNoOffset >= legacyOffset - 2);
+    BOOST_CHECK(preGate - preGateNoOffset <= legacyOffset + 2);
+    BOOST_CHECK(preGate >= GetTime() + MAX_FUTURE_BLOCK_TIME + legacyOffset - 2);
+    BOOST_CHECK(preGate <= GetTime() + MAX_FUTURE_BLOCK_TIME + legacyOffset + 2);
+
+    // From the activation height on the unadjusted clock is used and the peer derived offset can
+    // no longer influence block acceptance.
+    consensus.DF25Height = 1;
+    const int64_t postGate{GetFutureBlockTimeLimit(height, consensus, legacyOffset)};
+    const int64_t postGateNoOffset{GetFutureBlockTimeLimit(height, consensus, 0)};
+    BOOST_CHECK(std::abs(postGate - postGateNoOffset) <= 2);
+    BOOST_CHECK(postGate >= GetTime() + MAX_FUTURE_BLOCK_TIME - 2);
+    BOOST_CHECK(postGate <= GetTime() + MAX_FUTURE_BLOCK_TIME + 2);
+
+    // The gate is height dependent.
+    consensus.DF25Height = height;
+    const int64_t belowGate{GetFutureBlockTimeLimit(height - 1, consensus, legacyOffset)};
+    const int64_t atGate{GetFutureBlockTimeLimit(height, consensus, legacyOffset)};
+    BOOST_CHECK(belowGate - atGate >= legacyOffset - 2);
+    BOOST_CHECK(belowGate - atGate <= legacyOffset + 2);
 }
 BOOST_AUTO_TEST_SUITE_END()

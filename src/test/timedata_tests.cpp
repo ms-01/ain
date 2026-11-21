@@ -53,7 +53,9 @@ static void MultiAddTimeData(int n, int64_t offset)
 
 BOOST_AUTO_TEST_CASE(addtimedata)
 {
-    BOOST_CHECK_EQUAL(GetTimeOffset(), 0);
+    // The legacy computation (frozen 200 slot median filter) is kept, because it is still used by
+    // the consensus relevant 2 hour future time rule below the DF25 activation height.
+    BOOST_CHECK_EQUAL(GetLegacyTimeOffset(), 0);
 
     //Part 1: Add large offsets to test a warning message that our clock may be wrong.
     MultiAddTimeData(3, DEFAULT_MAX_TIME_ADJUSTMENT + 1);
@@ -66,35 +68,54 @@ BOOST_AUTO_TEST_CASE(addtimedata)
     BOOST_CHECK(GetWarnings("gui").find("clock is wrong") != std::string::npos);
 
     // nTimeOffset is not changed if the median of offsets exceeds DEFAULT_MAX_TIME_ADJUSTMENT
-    BOOST_CHECK_EQUAL(GetTimeOffset(), 0);
+    BOOST_CHECK_EQUAL(GetLegacyTimeOffset(), 0);
 
     // Part 2: Test positive and negative medians by adding more offsets
     MultiAddTimeData(4, 100); // filter size 9
-    BOOST_CHECK_EQUAL(GetTimeOffset(), 100);
+    BOOST_CHECK_EQUAL(GetLegacyTimeOffset(), 100);
     MultiAddTimeData(10, -100); //filter size 19
-    BOOST_CHECK_EQUAL(GetTimeOffset(), -100);
+    BOOST_CHECK_EQUAL(GetLegacyTimeOffset(), -100);
 
     // Part 3: Test behaviour when filter has reached maximum number of offsets
     const int MAX_SAMPLES = 200;
     int nfill = (MAX_SAMPLES - 3 - 19) / 2; //89
     MultiAddTimeData(nfill, 100);
     MultiAddTimeData(nfill, -100); //filter size MAX_SAMPLES - 3
-    BOOST_CHECK_EQUAL(GetTimeOffset(), -100);
+    BOOST_CHECK_EQUAL(GetLegacyTimeOffset(), -100);
 
     MultiAddTimeData(2, 100);
     //filter size MAX_SAMPLES -1, median is the initial 0 offset
     //since we added same number of positive/negative offsets
 
-    BOOST_CHECK_EQUAL(GetTimeOffset(), 0);
+    BOOST_CHECK_EQUAL(GetLegacyTimeOffset(), 0);
 
     // After the number of offsets has reached MAX_SAMPLES -1 (=199), nTimeOffset will never change
     // because it is only updated when the number of elements in the filter becomes odd. It was decided
     // not to fix this because it prevents possible attacks. See the comment in AddTimeData() or issue #4521
     // for a more detailed explanation.
     MultiAddTimeData(2, 100); // filter median is 100 now, but nTimeOffset will not change
-    BOOST_CHECK_EQUAL(GetTimeOffset(), 0);
+    BOOST_CHECK_EQUAL(GetLegacyTimeOffset(), 0);
 
     // We want this test to end with nTimeOffset==0, otherwise subsequent tests of the suite will fail.
+}
+
+BOOST_AUTO_TEST_CASE(legacy_and_new_offset_are_separate)
+{
+    // The legacy samples must not influence the applied (new) time offset ...
+    GetTimeOffsets().Clear();
+    const int64_t legacyBefore{GetLegacyTimeOffset()};
+    MultiAddTimeData(4, 100);
+    BOOST_CHECK_EQUAL(GetTimeOffset(), 0);
+
+    // ... and the new samples must not influence the legacy offset.
+    for (int i{0}; i < 5; ++i) {
+        AddTimeOffsetSample(100);
+    }
+    BOOST_CHECK_EQUAL(GetTimeOffset(), 100);
+    BOOST_CHECK_EQUAL(GetLegacyTimeOffset(), legacyBefore);
+
+    GetTimeOffsets().Clear();
+    BOOST_CHECK_EQUAL(GetTimeOffset(), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

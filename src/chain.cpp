@@ -5,6 +5,9 @@
 
 #include <chain.h>
 
+#include <timedata.h>
+#include <util/time.h>
+
 /**
  * CChain implementation
  */
@@ -168,4 +171,14 @@ const CBlockIndex* LastCommonAncestor(const CBlockIndex* pa, const CBlockIndex* 
     // Eventually all chain branches meet at the genesis block.
     assert(pa == pb);
     return pa;
+}
+
+int64_t GetFutureBlockTimeLimit(int nHeight, const Consensus::Params &consensus, int64_t nLegacyTimeOffset)
+{
+    // Below the DF25 activation height the legacy peer adjusted clock is used, so that the
+    // acceptance window for historical blocks stays byte identical to the pre-DF25 behaviour.
+    const int64_t nBaseTime{Consensus::IsDF25Active(static_cast<uint32_t>(nHeight), consensus)
+                                ? GetTime()
+                                : GetTime() + nLegacyTimeOffset};
+    return nBaseTime + MAX_FUTURE_BLOCK_TIME;
 }
