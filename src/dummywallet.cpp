@@ -50,6 +50,8 @@ void DummyWalletInit::AddWalletOptions() const
         "-privdb",
         "-walletrejectlongchains",
         "-backupwallet",
+        "-dbtype",
+        "-unsafesqlitesync",
     });
 }
 

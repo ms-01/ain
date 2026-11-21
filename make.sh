@@ -706,6 +706,7 @@ pkg_install_deps() {
         libboost-chrono-dev libboost-test-dev libboost-thread-dev \
         libminiupnpc-dev libzmq3-dev libqrencode-dev wget ccache \
         libdb-dev libdb++-dev libdb5.3 libdb5.3-dev libdb5.3++ libdb5.3++-dev \
+        libsqlite3-dev \
         curl cmake zip unzip libc6-dev gcc-multilib locales locales-all python3-dev
 
     _fold_end

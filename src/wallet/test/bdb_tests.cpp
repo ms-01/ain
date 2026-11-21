@@ -6,13 +6,13 @@
 
 #include <fs.h>
 #include <test/setup_common.h>
-#include <wallet/db.h>
+#include <wallet/bdb.h>
 
 #include <fstream>
 #include <memory>
 #include <string>
 
-BOOST_FIXTURE_TEST_SUITE(db_tests, BasicTestingSetup)
+BOOST_FIXTURE_TEST_SUITE(bdb_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(getwalletenv_file)
 {

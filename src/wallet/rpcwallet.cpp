@@ -32,6 +32,7 @@
 #include <wallet/psbtwallet.h>
 #include <wallet/rpcwallet.h>
 #include <wallet/wallet.h>
+#include <wallet/migrate.h>
 #include <wallet/walletdb.h>
 #include <wallet/walletutil.h>
 
@@ -2619,10 +2620,12 @@ static UniValue loadwallet(const JSONRPCRequest& request)
     if (!location.Exists()) {
         throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet " + location.GetName() + " not found.");
     } else if (fs::is_directory(location.GetPath())) {
-        // The given filename is a directory. Check that there's a wallet.dat file.
+        // The given filename is a directory. Check that there's a wallet file.
         fs::path wallet_dat_file = location.GetPath() / "wallet.dat";
-        if (fs::symlink_status(wallet_dat_file).type() == fs::file_type::not_found) {
-            throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Directory " + location.GetName() + " does not contain a wallet.dat file.");
+        fs::path wallet_sqlite_file = location.GetPath() / "wallet.sqlite";
+        if (fs::symlink_status(wallet_dat_file).type() == fs::file_type::not_found &&
+            fs::symlink_status(wallet_sqlite_file).type() == fs::file_type::not_found) {
+            throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Directory " + location.GetName() + " does not contain a wallet.dat file (nor a wallet.sqlite file).");
         }
     }
 
@@ -2739,6 +2742,7 @@ static UniValue createwallet(const JSONRPCRequest& request)
             {"blank", RPCArg::Type::BOOL, /* default */ "false", "Create a blank wallet. A blank wallet has no keys or HD seed. One can be set using sethdseed."},
             {"passphrase", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Encrypt the wallet with this passphrase."},
             {"avoid_reuse", RPCArg::Type::BOOL, /* default */ "false", "Keep track of coin reuse, and treat dirty and clean coins differently with privacy considerations in mind."},
+            {"dbtype", RPCArg::Type::STR, /* default */ "bdb", "The database backend of the new wallet, either \"bdb\" (legacy Berkeley DB) or \"sqlite\"."},
         },
         RPCResult{
             "{\n"
@@ -2775,10 +2779,18 @@ static UniValue createwallet(const JSONRPCRequest& request)
         flags |= WALLET_FLAG_AVOID_REUSE;
     }
 
+    DatabaseFormat format = DefaultDatabaseFormat();
+    if (!request.params[5].isNull()) {
+        const std::string dbtype = request.params[5].get_str();
+        if (!ParseDatabaseFormat(dbtype, format)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Unknown wallet database type %s, expected \"bdb\" or \"sqlite\"", dbtype));
+        }
+    }
+
     std::string error;
     std::string create_warning;
     std::shared_ptr<CWallet> wallet;
-    WalletCreationStatus status = CreateWallet(*g_rpc_interfaces->chain, passphrase, flags, request.params[0].get_str(), error, create_warning, wallet);
+    WalletCreationStatus status = CreateWallet(*g_rpc_interfaces->chain, passphrase, flags, request.params[0].get_str(), error, create_warning, wallet, format);
     switch (status) {
         case WalletCreationStatus::CREATION_FAILED:
             throw JSONRPCError(RPC_WALLET_ERROR, error);
@@ -2841,6 +2853,91 @@ static UniValue unloadwallet(const JSONRPCRequest& request)
     UnloadWallet(std::move(wallet));
 
     return NullUniValue;
+}
+
+static UniValue migratewallet(const JSONRPCRequest& request)
+{
+            RPCHelpMan{"migratewallet",
+                "\nMigrates a legacy Berkeley DB wallet into a new SQLite wallet.\n"
+                "The source wallet is opened read-only and is never modified, the migrated\n"
+                "wallet is written to a new wallet directory. The migration is verified\n"
+                "record by record before it is reported as successful.\n"
+                "The source wallet must not be loaded, unload it before migrating.\n",
+                {
+                    {"wallet_name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name of the wallet that should be migrated. The wallet must not be loaded."},
+                    {"target_name", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "The name of the newly created SQLite wallet, defaults to \"<wallet_name>_sqlite\"."},
+                    {"backup", RPCArg::Type::BOOL, /* default */ "false", "Keep a copy of the legacy wallet file (\"wallet.dat.legacy.bak\") next to the original."},
+                },
+                RPCResult{
+            "{\n"
+            "  \"source\" :   <wallet_name>,  (string) The name of the migrated wallet.\n"
+            "  \"target\" :   <wallet_name>,  (string) The name of the newly created wallet.\n"
+            "  \"records\" :  <count>,        (numeric) The number of migrated records.\n"
+            "  \"format\" :   \"sqlite\",      (string) The backend of the newly created wallet.\n"
+            "}\n"
+                },
+                RPCExamples{
+            HelpExampleCli("migratewallet", "\"legacywallet\"")
+            + HelpExampleRpc("migratewallet", "\"legacywallet\"")
+                },
+            }.Check(request);
+
+    const std::string source_name = request.params[0].get_str();
+    if (source_name.empty()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "The name of the wallet that should be migrated must not be empty");
+    }
+
+    WalletLocation source_location(source_name);
+    if (!source_location.Exists()) {
+        throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet " + source_name + " not found.");
+    }
+
+    // A loaded wallet cannot be migrated, the source is opened read-only by a
+    // separate database environment which conflicts with the loaded wallet.
+    if (IsWalletLoaded(source_location.GetPath())) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Wallet " + source_name + " is loaded, unload it before migrating it.");
+    }
+
+    std::string target_name = source_name + "_sqlite";
+    if (!request.params[1].isNull()) {
+        target_name = request.params[1].get_str();
+        if (target_name.empty()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "The name of the target wallet must not be empty");
+        }
+    }
+    if (target_name == source_name) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "The target wallet must have a different name than the source wallet");
+    }
+
+    WalletLocation target_location(target_name);
+    if (target_location.Exists()) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Wallet " + target_name + " already exists.");
+    }
+
+    WalletMigrationResult result;
+    if (!MigrateWalletDatabase(source_location.GetPath(), target_location.GetPath(), DatabaseFormat::SQLITE, result)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, result.error);
+    }
+
+    if (!request.params[2].isNull() && request.params[2].get_bool()) {
+        const fs::path source_file = WalletDataFilePath(source_location.GetPath());
+        const fs::path backup_file = fs::PathFromString(fs::PathToString(source_file) + ".legacy.bak");
+        std::error_code ec;
+        std::filesystem::copy_file(source_file, backup_file, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            LogPrintf("migratewallet: unable to create the backup %s: %s\n", fs::PathToString(backup_file), ec.message());
+        } else {
+            LogPrintf("migratewallet: created the backup %s\n", fs::PathToString(backup_file));
+        }
+    }
+
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("source", source_name);
+    obj.pushKV("target", target_name);
+    obj.pushKV("records", result.records);
+    obj.pushKV("format", DatabaseFormatName(result.target_format));
+
+    return obj;
 }
 
 static UniValue listunspent(const JSONRPCRequest& request)
@@ -4378,7 +4475,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "addressmap",                       &addressmap,                    {"input", "type"} },
     { "wallet",             "backupwallet",                     &backupwallet,                  {"destination"} },
     { "wallet",             "bumpfee",                          &bumpfee,                       {"txid", "options"} },
-    { "wallet",             "createwallet",                     &createwallet,                  {"wallet_name", "disable_private_keys", "blank", "passphrase", "avoid_reuse"} },
+    { "wallet",             "createwallet",                     &createwallet,                  {"wallet_name", "disable_private_keys", "blank", "passphrase", "avoid_reuse", "dbtype"} },
     { "wallet",             "dumpprivkey",                      &dumpprivkey,                   {"address"}  },
     { "wallet",             "dumpwallet",                       &dumpwallet,                    {"filename"} },
     { "wallet",             "encryptwallet",                    &encryptwallet,                 {"passphrase"} },
@@ -4422,6 +4519,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "setwalletflag",                    &setwalletflag,                 {"flag","value"} },
     { "wallet",             "signmessage",                      &signmessage,                   {"address","message"} },
     { "wallet",             "signrawtransactionwithwallet",     &signrawtransactionwithwallet,  {"hexstring","prevtxs","sighashtype"} },
+    { "wallet",             "migratewallet",                    &migratewallet,                 {"wallet_name", "target_name", "backup"} },
     { "wallet",             "unloadwallet",                     &unloadwallet,                  {"wallet_name"} },
     { "wallet",             "walletcreatefundedpsbt",           &walletcreatefundedpsbt,        {"inputs","outputs","locktime","options","bip32derivs"} },
     { "wallet",             "walletlock",                       &walletlock,                    {} },

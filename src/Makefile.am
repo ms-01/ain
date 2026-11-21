@@ -307,6 +307,9 @@ DEFI_CORE_H = \
   wallet/coincontrol.h \
   wallet/crypter.h \
   wallet/db.h \
+  wallet/bdb.h \
+  wallet/sqlite.h \
+  wallet/migrate.h \
   wallet/feebumper.h \
   wallet/fees.h \
   wallet/ismine.h \
@@ -545,6 +548,10 @@ libdefi_wallet_a_SOURCES = \
   wallet/coincontrol.cpp \
   wallet/crypter.cpp \
   wallet/db.cpp \
+  wallet/dbformat.cpp \
+  wallet/bdb.cpp \
+  wallet/sqlite.cpp \
+  wallet/migrate.cpp \
   wallet/feebumper.cpp \
   wallet/fees.cpp \
   wallet/ismine.cpp \
@@ -768,6 +775,11 @@ defid_LDADD = \
   $(LIBSECP256K1)
 
 defid_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS)
+
+if ENABLE_SQLITE
+DEFI_INCLUDES += $(SQLITE_CPPFLAGS)
+defid_LDADD += $(SQLITE_LIBS)
+endif
 
 if TARGET_DARWIN
 defid_LDFLAGS += -framework Security -framework SystemConfiguration -framework CoreFoundation

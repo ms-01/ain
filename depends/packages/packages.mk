@@ -1,7 +1,7 @@
 packages := boost libevent protobuf solc
 
 rapidcheck_packages = rapidcheck
-wallet_packages = bdb
+wallet_packages = bdb sqlite
 zmq_packages = zeromq
 upnp_packages = miniupnpc
 

@@ -28,6 +28,8 @@
  * - BerkeleyEnvironment is an environment in which the database exists.
  * - BerkeleyDatabase represents a wallet database.
  * - BerkeleyBatch is a low-level database batch update.
+ * - SQLiteDatabase represents a wallet database.
+ * - SQLiteBatch is a low-level database batch update.
  */
 
 static const bool DEFAULT_FLUSHWALLET         = true;
@@ -41,9 +43,6 @@ class CWallet;
 class CWalletTx;
 class uint160;
 class uint256;
-
-/** Backend-agnostic database type. */
-using WalletDatabase = BerkeleyDatabase;
 
 /** Error statuses for the wallet database */
 enum class DBErrors { LOAD_OK, CORRUPT, NONCRITICAL_ERROR, TOO_NEW, LOAD_FAIL, NEED_REWRITE };
@@ -176,31 +175,31 @@ class WalletBatch {
 private:
     template <typename K, typename T>
     bool WriteIC(const K &key, const T &value, bool fOverwrite = true) {
-        if (!m_batch.Write(key, value, fOverwrite)) {
+        if (!m_batch->Write(key, value, fOverwrite)) {
             return false;
         }
         m_database.IncrementUpdateCounter();
         if (m_database.nUpdateCounter % 1000 == 0) {
-            m_batch.Flush();
+            m_batch->Flush();
         }
         return true;
     }
 
     template <typename K>
     bool EraseIC(const K &key) {
-        if (!m_batch.Erase(key)) {
+        if (!m_batch->Erase(key)) {
             return false;
         }
         m_database.IncrementUpdateCounter();
         if (m_database.nUpdateCounter % 1000 == 0) {
-            m_batch.Flush();
+            m_batch->Flush();
         }
         return true;
     }
 
 public:
-    explicit WalletBatch(WalletDatabase &database, const char *pszMode = "r+", bool _fFlushOnClose = true)
-        : m_batch(database, pszMode, _fFlushOnClose),
+    explicit WalletBatch(WalletDatabase &database, DatabaseBatchMode mode = DatabaseBatchMode::READ_WRITE, bool _fFlushOnClose = true)
+        : m_batch(database.MakeBatch(mode, _fFlushOnClose)),
           m_database(database) {}
     WalletBatch(const WalletBatch &)            = delete;
     WalletBatch &operator=(const WalletBatch &) = delete;
@@ -251,17 +250,18 @@ public:
     static bool Recover(const fs::path &wallet_path,
                         void *callbackDataIn,
                         bool (*recoverKVcallback)(void *callbackData, CDataStream ssKey, CDataStream ssValue),
-                        std::string &out_backup_filename);
+                        std::string &out_backup_filename,
+                        DatabaseFormat format = DatabaseFormat::BERKELEY);
     /* Recover convenience-function to bypass the key filter callback, called when verify fails, recovers everything */
-    static bool Recover(const fs::path &wallet_path, std::string &out_backup_filename);
+    static bool Recover(const fs::path &wallet_path, std::string &out_backup_filename, DatabaseFormat format = DatabaseFormat::BERKELEY);
     /* Recover filter (used as callback), will only let keys (cryptographical keys) as KV/key-type pass through */
     static bool RecoverKeysOnlyFilter(void *callbackData, CDataStream ssKey, CDataStream ssValue);
     /* Function to determine if a certain KV/key-type is a key (cryptographical key) type */
     static bool IsKeyType(const std::string &strType);
     /* verifies the database environment */
-    static bool VerifyEnvironment(const fs::path &wallet_path, std::string &errorStr);
+    static bool VerifyEnvironment(const fs::path &wallet_path, std::string &errorStr, DatabaseFormat format = DatabaseFormat::BERKELEY);
     /* verifies the database file */
-    static bool VerifyDatabaseFile(const fs::path &wallet_path, std::string &warningStr, std::string &errorStr);
+    static bool VerifyDatabaseFile(const fs::path &wallet_path, std::string &warningStr, std::string &errorStr, DatabaseFormat format = DatabaseFormat::BERKELEY);
 
     //! write the hdchain model (external chain child index counter)
     bool WriteHDChain(const CHDChain &chain);
@@ -275,7 +275,7 @@ public:
     bool TxnAbort();
 
 private:
-    BerkeleyBatch m_batch;
+    std::unique_ptr<DatabaseBatch> m_batch;
     WalletDatabase &m_database;
 };
 

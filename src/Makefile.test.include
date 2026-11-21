@@ -192,7 +192,9 @@ endif
 
 if ENABLE_WALLET
 DEFI_TESTS += \
-  wallet/test/db_tests.cpp \
+  wallet/test/bdb_tests.cpp \
+  wallet/test/sqlite_tests.cpp \
+  wallet/test/migrate_tests.cpp \
   wallet/test/psbt_wallet_tests.cpp \
   wallet/test/wallet_tests.cpp \
   wallet/test/wallet_crypto_tests.cpp \
@@ -235,6 +237,10 @@ test_test_defi_LDADD += \
   $(EVENT_LIBS)
 
 test_test_defi_LDADD += $(BOOST_LIBS) $(BOOST_UNIT_TEST_FRAMEWORK_LIB) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(RAPIDCHECK_LIBS)
+
+if ENABLE_SQLITE
+test_test_defi_LDADD += $(SQLITE_LIBS)
+endif
 
 if TARGET_DARWIN
 test_test_defi_LDFLAGS += -framework Security -framework SystemConfiguration -framework CoreFoundation

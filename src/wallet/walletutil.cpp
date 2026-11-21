@@ -6,9 +6,11 @@
 
 #include <logging.h>
 #include <util/system.h>
+#include <wallet/db.h>
 
 #include <exception>
 #include <fstream>
+#include <set>
 #include <system_error>
 #include <vector>
 
@@ -34,36 +36,12 @@ fs::path GetWalletDir()
     return path;
 }
 
-static bool IsBerkeleyBtree(const fs::path& path)
-{
-    if (!fs::exists(path)) return false;
-
-    // A Berkeley DB Btree file has at least 4K.
-    // This check also prevents opening lock files.
-    std::error_code ec;
-    auto size = fs::file_size(path, ec);
-    if (ec) LogPrintf("%s: %s %s\n", __func__, ec.message(), fs::PathToString(path));
-    if (size < 4096) return false;
-
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) return false;
-
-    file.seekg(12, std::ios::beg); // Magic bytes start at offset 12
-    uint32_t data = 0;
-    file.read((char*) &data, sizeof(data)); // Read 4 bytes of file to compare against magic
-
-    // Berkeley DB Btree magic bytes, from:
-    //  https://github.com/file/file/blob/5824af38469ec1ca9ac3ffd251e7afe9dc11e227/magic/Magdir/database#L74-L75
-    //  - big endian systems - 00 05 31 62
-    //  - little endian systems - 62 31 05 00
-    return data == 0x00053162 || data == 0x62310500;
-}
-
 std::vector<fs::path> ListWalletDir()
 {
     const fs::path wallet_dir = GetWalletDir();
     const size_t offset = wallet_dir.native().size() + 1;
     std::vector<fs::path> paths;
+    std::set<fs::path> seen;
     std::error_code ec;
 
     for (auto it = fs::recursive_directory_iterator(wallet_dir, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
@@ -77,20 +55,26 @@ std::vector<fs::path> ListWalletDir()
         const auto path_str = it->path().native().substr(offset);
         const fs::path path{path_str.begin(), path_str.end()};
 
-        if (it->status().type() == fs::file_type::directory && IsBerkeleyBtree(it->path() / "wallet.dat")) {
-            // Found a directory which contains wallet.dat btree file, add it as a wallet.
-            paths.emplace_back(path);
-        } else if (it.depth() == 0 && it->symlink_status().type() == fs::file_type::regular && IsBerkeleyBtree(it->path())) {
-            if (it->path().filename() == "wallet.dat") {
-                // Found top-level wallet.dat btree file, add top level directory ""
-                // as a wallet.
-                paths.emplace_back();
+        if (it->status().type() == fs::file_type::directory) {
+            // Found a directory which contains a wallet file (Berkeley DB or SQLite), add it as a wallet.
+            if (IsBDBFile(it->path() / "wallet.dat") || IsSQLiteFile(it->path() / "wallet.sqlite")) {
+                if (seen.insert(path).second) paths.emplace_back(path);
+            }
+        } else if (it.depth() == 0 && it->symlink_status().type() == fs::file_type::regular) {
+            const bool is_bdb = IsBDBFile(it->path());
+            const bool is_sqlite = IsSQLiteFile(it->path());
+            if (!is_bdb && !is_sqlite) continue;
+
+            const std::string filename = it->path().filename().string();
+            if (filename == "wallet.dat" || filename == "wallet.sqlite") {
+                // Found top-level wallet file, add top level directory "" as a wallet.
+                if (seen.insert(fs::path()).second) paths.emplace_back();
             } else {
-                // Found top-level btree file not called wallet.dat. Current defi
+                // Found top-level wallet file not called wallet.dat/wallet.sqlite. Current defi
                 // software will never create these files but will allow them to be
                 // opened in a shared database environment for backwards compatibility.
                 // Add it to the list of available wallets.
-                paths.emplace_back(path);
+                if (seen.insert(path).second) paths.emplace_back(path);
             }
         }
     }

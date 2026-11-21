@@ -364,6 +364,13 @@ class TestNode:
         if extra_args is None:
             extra_args = self.extra_args
 
+        # Additional node arguments can be injected with the environment
+        # variable DEFI_TEST_EXTRA_ARGS, e.g. to run the wallet tests with a
+        # different wallet database backend ("DEFI_TEST_EXTRA_ARGS=-dbtype=sqlite").
+        env_extra_args = os.environ.get("DEFI_TEST_EXTRA_ARGS", "")
+        if env_extra_args:
+            extra_args = list(extra_args) + env_extra_args.split()
+
         # Add a new stdout and stderr file each time defid is started
         if stderr is None:
             stderr = tempfile.NamedTemporaryFile(dir=self.stderr_dir, delete=False)
