@@ -80,6 +80,7 @@ namespace BCLog {
         OCEAN                = (1ull << 34ull),
         ICXBUG               = (1ull << 35ull),
         ACCOUNTCONSOLIDATE   = (1ull << 36ull),
+        I2P                  = (1ull << 37ull),
         ALL                  = ~(0ull),
     };
 

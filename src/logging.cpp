@@ -166,6 +166,7 @@ const CLogCategoryDesc LogCategories[] =
     {BCLog::OCEAN, "ocean"},
     {BCLog::ICXBUG, "icxbug"},
     {BCLog::ACCOUNTCONSOLIDATE, "accountconsolidate"},
+    {BCLog::I2P, "i2p"},
     {BCLog::ALL, "1"},
     {BCLog::ALL, "all"},
 };

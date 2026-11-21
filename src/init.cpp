@@ -125,6 +125,19 @@ static uint256 g_assumed_valid_block;
 static const char* FEE_ESTIMATES_FILENAME="fee_estimates.dat";
 
 /**
+ * The I2P SAM v3 bridge (invalid if the I2P transport is not used).
+ *
+ * The bridge is not a SOCKS5 proxy: it speaks the SAM protocol and is
+ * therefore handed over to the connection manager directly.
+ */
+static CService g_i2p_sam_addr;
+
+/**
+ * Whether the inbound I2P connections are accepted through the SAM bridge.
+ */
+static bool g_i2p_accept_incoming{DEFAULT_I2P_ACCEPT_INCOMING};
+
+/**
  * The PID file facilities.
  */
 static const char* DEFI_PID_FILENAME = "defid.pid";
@@ -509,7 +522,10 @@ void SetupServerArgs()
     gArgs.AddArg("-maxtimeadjustment", strprintf("Maximum allowed median peer time offset adjustment. Local perspective of time may be influenced by peers forward or backward by this amount. (default: %u seconds)", DEFAULT_MAX_TIME_ADJUSTMENT), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxuploadtarget=<n>", strprintf("Tries to keep outbound traffic under the given target (in MiB per 24h), 0 = no limit (default: %d)", DEFAULT_MAX_UPLOAD_TARGET), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-onion=<ip:port>", "Use separate SOCKS5 proxy to reach peers via Tor hidden services, set -noonion to disable (default: -proxy)", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
-    gArgs.AddArg("-onlynet=<net>", "Make outgoing connections only through network <net> (ipv4, ipv6 or onion). Incoming connections are not affected by this option. This option can be specified multiple times to allow multiple networks.", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-onlynet=<net>", "Make outgoing connections only through network <net> (ipv4, ipv6, onion or i2p). Incoming connections are not affected by this option. This option can be specified multiple times to allow multiple networks.", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-i2p=<host:port>", strprintf("I2P SAM v3 bridge to use for connecting to I2P peers (alias of -i2psam, default port: %d)", DEFAULT_I2P_SAM_PORT), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-i2psam=<host:port>", strprintf("I2P SAM v3 bridge to use for connecting to I2P peers (default port: %d)", DEFAULT_I2P_SAM_PORT), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-i2pacceptincoming", strprintf("Accept inbound I2P connections through the SAM bridge (default: %d)", DEFAULT_I2P_ACCEPT_INCOMING), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-peerbloomfilters", strprintf("Support filtering of blocks and transaction with bloom filters (default: %u)", DEFAULT_PEERBLOOMFILTERS), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-permitbaremultisig", strprintf("Relay non-P2SH multisig (default: %u)", DEFAULT_PERMIT_BAREMULTISIG), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-port=<port>", strprintf("Listen for connections on <port> (default: %u, testnet: %u, changi: %u, devnet: %u, regtest: %u)", defaultChainParams->GetDefaultPort(), testnetChainParams->GetDefaultPort(), changiChainParams->GetDefaultPort(), devnetChainParams->GetDefaultPort(), regtestChainParams->GetDefaultPort()), ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::CONNECTION);
@@ -1566,6 +1582,26 @@ bool SetupNetwork() {
             strSubVersion.size(), MAX_SUBVERSION_LENGTH));
     }
 
+    // Check for host lookup allowed before parsing any network related parameters
+    fNameLookup = gArgs.GetBoolArg("-dns", DEFAULT_NAME_LOOKUP);
+
+    // The I2P SAM v3 bridge. The bridge is not registered as a SOCKS5 proxy
+    // (SAM is not SOCKS5): it is handed over to the connection manager, which
+    // uses it for the I2P sessions.
+    std::string i2psam_arg = gArgs.GetArg("-i2psam", "");
+    std::string i2p_arg = gArgs.GetArg("-i2p", "");
+    if (!i2p_arg.empty() && !i2psam_arg.empty() && i2p_arg != i2psam_arg) {
+        return InitError(strprintf(_("Conflicting -i2p (%s) and -i2psam (%s) values.").translated, i2p_arg, i2psam_arg));
+    }
+    if (i2psam_arg.empty()) i2psam_arg = i2p_arg;
+    if (!i2psam_arg.empty() && i2psam_arg != "0") {
+        if (!Lookup(i2psam_arg.c_str(), g_i2p_sam_addr, DEFAULT_I2P_SAM_PORT, fNameLookup) || !g_i2p_sam_addr.IsValid()) {
+            return InitError(strprintf(_("Invalid -i2psam address or hostname: '%s'").translated, i2psam_arg));
+        }
+        // The I2P network is only reachable through the SAM bridge.
+        SetReachable(NET_I2P, true);
+    }
+
     if (gArgs.IsArgSet("-onlynet")) {
         std::set<enum Network> nets;
         for (const std::string& snet : gArgs.GetArgs("-onlynet")) {
@@ -1574,6 +1610,9 @@ bool SetupNetwork() {
                 return InitError(strprintf(_("Unknown network specified in -onlynet: '%s'").translated, snet));
             nets.insert(net);
         }
+        if (nets.count(NET_I2P) && !g_i2p_sam_addr.IsValid()) {
+            return InitError(_("-onlynet=i2p requires -i2psam to be set.").translated);
+        }
         for (int n = 0; n < NET_MAX; n++) {
             enum Network net = (enum Network)n;
             if (!nets.count(net))
@@ -1581,8 +1620,10 @@ bool SetupNetwork() {
         }
     }
 
-    // Check for host lookup allowed before parsing any network related parameters
-    fNameLookup = gArgs.GetBoolArg("-dns", DEFAULT_NAME_LOOKUP);
+    g_i2p_accept_incoming = gArgs.GetBoolArg("-i2pacceptincoming", DEFAULT_I2P_ACCEPT_INCOMING);
+    if (g_i2p_accept_incoming && !g_i2p_sam_addr.IsValid()) {
+        return InitError(_("-i2pacceptincoming requires -i2psam to be set.").translated);
+    }
 
     bool proxyRandomize = gArgs.GetBoolArg("-proxyrandomize", DEFAULT_PROXYRANDOMIZE);
     // -proxy sets a proxy for all outgoing network traffic
@@ -1628,6 +1669,10 @@ bool SetupNetwork() {
 
     // see Step 2: parameter interactions for more information about these
     fListen = gArgs.GetBoolArg("-listen", DEFAULT_LISTEN);
+    if (!fListen && g_i2p_accept_incoming) {
+        LogPrintf("Warning: -listen=0 implies -i2pacceptincoming=0\n");
+        g_i2p_accept_incoming = false;
+    }
     fDiscover = gArgs.GetBoolArg("-discover", true);
     g_relay_txes = !gArgs.GetBoolArg("-blocksonly", DEFAULT_BLOCKSONLY);
 
@@ -2518,6 +2563,14 @@ bool AppInitMain(InitInterfaces& interfaces)
     }
 
     connOptions.vSeedNodes = gArgs.GetArgs("-seednode");
+
+    // The I2P transport (SAM v3.1). The session is created lazily, an
+    // unreachable bridge does not prevent the node from starting.
+    if (g_i2p_sam_addr.IsValid()) {
+        connOptions.m_i2p_sam = g_i2p_sam_addr;
+        connOptions.m_i2p_accept_incoming = g_i2p_accept_incoming;
+        connOptions.m_i2p_private_key_path = GetDataDir() / "i2p_private_key";
+    }
 
     // Initiate outbound connections unless connect=0
     connOptions.m_use_addrman_outgoing = !gArgs.IsArgSet("-connect");

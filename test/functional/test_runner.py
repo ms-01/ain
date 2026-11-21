@@ -219,6 +219,7 @@ BASE_SCRIPTS = [
     "rpc_psbt.py",
     "rpc_users.py",
     "feature_proxy.py",
+    "feature_i2p_sam.py",
     "feature_torcontrol.py",
     "rpc_signrawtransaction.py",
     "wallet_groups.py",
