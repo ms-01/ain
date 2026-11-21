@@ -35,6 +35,21 @@ static constexpr int64_t MAX_FUTURE_BLOCK_TIME_EUNOSPAYA = 30;
 static constexpr int64_t TIMESTAMP_WINDOW = MAX_FUTURE_BLOCK_TIME;
 
 /**
+ * Upper bound for the timestamp of a block at the given height (the "2 hour" future time rule).
+ *
+ * Below the DF25 activation height the legacy peer adjusted clock is used, so that the acceptance
+ * window for historical blocks stays exactly as it was before the upgrade. From the DF25
+ * activation height on the unadjusted clock is used and the peer derived time offset can no
+ * longer influence block acceptance.
+ *
+ * @param nHeight           height of the block that is checked
+ * @param consensus         consensus parameters
+ * @param nLegacyTimeOffset legacy applied time offset (see GetLegacyTimeOffset())
+ * @return the maximum accepted block timestamp
+ */
+int64_t GetFutureBlockTimeLimit(int nHeight, const Consensus::Params &consensus, int64_t nLegacyTimeOffset);
+
+/**
  * Maximum gap between node time and block time used
  * for the "Catching up..." mode in GUI.
  *

@@ -40,6 +40,20 @@ namespace Consensus {
 
 typedef uint32_t THeight;  // cause not decided yet which type to use for heights
 
+/**
+ * Check whether the anchor block is too new to be used as an anchor base.
+ *
+ * The reference is the block time of the chain tip, so the result is deterministic and does not
+ * depend on the local wall clock or on the peer derived time offset. All nodes on the same chain
+ * therefore reach the same conclusion.
+ *
+ * @param anchorIndex          index of the anchor block
+ * @param tipIndex             index of the chain tip (nullptr if there is no tip)
+ * @param anchoringTimeDepth   maximum age of the anchor block (in seconds)
+ * @return true if the anchor block is too new
+ */
+bool IsAnchorTooNew(const CBlockIndex *anchorIndex, const CBlockIndex *tipIndex, int64_t anchoringTimeDepth);
+
 struct CAnchorData {
     using CTeam = std::set<CKeyID>;
 

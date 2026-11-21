@@ -25,6 +25,7 @@
 #include <primitives/transaction.h>
 #include <spv/spv_wrapper.h>
 #include <random.h>
+#include <timedata.h>
 #include <reverse_iterator.h>
 #include <scheduler.h>
 #include <tinyformat.h>
@@ -2821,6 +2822,12 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         int64_t nTimeOffset = nTime - GetTime();
         pfrom->nTimeOffset = nTimeOffset;
         AddTimeData(pfrom->addr, nTimeOffset);
+        if (!pfrom->fInbound) {
+            // Only the clocks of our outbound peers are sampled for the time offset tracker, the
+            // same way upstream Bitcoin Core does it.
+            AddTimeOffsetSample(nTimeOffset);
+            GetTimeOffsets().WarnIfOutOfSync();
+        }
 
         // If the peer is old enough to have the old alert system, send it the final alert.
         if (pfrom->nVersion <= 70012) {

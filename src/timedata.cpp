@@ -11,13 +11,20 @@
 #include <netaddress.h>
 #include <sync.h>
 #include <ui_interface.h>
+#include <logging.h>
 #include <util/system.h>
+#include <util/time.h>
 #include <util/translation.h>
 #include <warnings.h>
 
+#include <cstdint>
+#include <limits>
+
+using namespace std::chrono_literals;
+
 
 static CCriticalSection cs_nTimeOffset;
-static int64_t nTimeOffset GUARDED_BY(cs_nTimeOffset) = 0;
+static int64_t nLegacyTimeOffset GUARDED_BY(cs_nTimeOffset) = 0;
 
 /**
  * "Never go to sea with two chronometers; take one or three."
@@ -26,10 +33,19 @@ static int64_t nTimeOffset GUARDED_BY(cs_nTimeOffset) = 0;
  *  - Median of other nodes clocks
  *  - The user (asking the user to fix the system clock if the first two disagree)
  */
-int64_t GetTimeOffset()
+int64_t GetLegacyTimeOffset()
 {
     LOCK(cs_nTimeOffset);
-    return nTimeOffset;
+    return nLegacyTimeOffset;
+}
+
+int64_t GetTimeOffset()
+{
+    const auto median{GetTimeOffsets().Median()};
+    const int64_t nOffset{static_cast<int64_t>(median.count())};
+    // Only let the other nodes change our time by so much.
+    const int64_t nMaxAdjustment{std::max<int64_t>(0, gArgs.GetArg("-maxtimeadjustment", DEFAULT_MAX_TIME_ADJUSTMENT))};
+    return std::max(-nMaxAdjustment, std::min(nMaxAdjustment, nOffset));
 }
 
 int64_t GetAdjustedTime()
@@ -76,6 +92,10 @@ void AddTimeData(const CNetAddr& ip, int64_t nOffsetSample)
     // So we should hold off on fixing this and clean it up as part of
     // a timing cleanup that strengthens it in a number of other ways.
     //
+    // The legacy computation is kept (and still used by the consensus relevant
+    // 2 hour future time rule below the DF25 activation height) until the
+    // cleanup above is done in a dedicated release.
+    //
     if (vTimeOffsets.size() >= 5 && vTimeOffsets.size() % 2 == 1)
     {
         int64_t nMedian = vTimeOffsets.median();
@@ -83,11 +103,11 @@ void AddTimeData(const CNetAddr& ip, int64_t nOffsetSample)
         // Only let other nodes change our time by so much
         if (abs64(nMedian) <= std::max<int64_t>(0, gArgs.GetArg("-maxtimeadjustment", DEFAULT_MAX_TIME_ADJUSTMENT)))
         {
-            nTimeOffset = nMedian;
+            nLegacyTimeOffset = nMedian;
         }
         else
         {
-            nTimeOffset = 0;
+            nLegacyTimeOffset = 0;
 
             static bool fDone;
             if (!fDone)
@@ -114,7 +134,62 @@ void AddTimeData(const CNetAddr& ip, int64_t nOffsetSample)
             }
             LogPrint(BCLog::NET, "|  "); /* Continued */
 
-            LogPrint(BCLog::NET, "nTimeOffset = %+d  (%+d minutes)\n", nTimeOffset, nTimeOffset/60);
+            LogPrint(BCLog::NET, "nTimeOffset = %+d  (%+d minutes)\n", nLegacyTimeOffset, nLegacyTimeOffset/60);
         }
     }
+}
+
+void TimeOffsets::Add(std::chrono::seconds offset)
+{
+    LOCK(m_mutex);
+
+    if (m_offsets.size() >= MAX_SIZE) {
+        m_offsets.pop_front();
+    }
+    m_offsets.push_back(offset);
+    LogPrint(BCLog::NET, "added time offset %+d seconds, total samples %d\n", offset.count(), m_offsets.size());
+}
+
+std::chrono::seconds TimeOffsets::Median() const{
+    LOCK(m_mutex);
+
+    // Only calculate the median if we have enough offsets
+    if (m_offsets.size() < MIN_SAMPLES) return 0s;
+
+    auto sorted_copy = m_offsets;
+    std::sort(sorted_copy.begin(), sorted_copy.end());
+    return sorted_copy[sorted_copy.size() / 2]; // approximate median is good enough, keep it simple
+}
+
+void TimeOffsets::Clear()
+{
+    LOCK(m_mutex);
+    m_offsets.clear();
+}
+
+bool TimeOffsets::WarnIfOutOfSync() const
+{
+    // when median == std::numeric_limits<int64_t>::min(), calling std::chrono::abs is UB
+    const auto median{std::max(Median(), std::chrono::seconds(std::numeric_limits<int64_t>::min() + 1))};
+    if (std::chrono::abs(median) <= WARN_THRESHOLD) {
+        return false;
+    }
+
+    const std::string strMessage{strprintf(_("Your computer's date and time appear to be more than %d minutes out of sync with the network, this may lead to consensus failure. After you've confirmed your computer's clock, this message should no longer appear when you restart your node. Without a restart, it should stop showing automatically after you've connected to a sufficient number of new outbound peers, which may take some time. You can inspect the `timeoffset` field of the `getpeerinfo` and `getnetworkinfo` RPC methods to get more info.").translated,
+                                     static_cast<int64_t>(WARN_THRESHOLD.count()))};
+    LogPrintf("%s\n", strMessage);
+    SetMiscWarning(strMessage);
+    return true;
+}
+
+static TimeOffsets g_time_offsets;
+
+TimeOffsets &GetTimeOffsets()
+{
+    return g_time_offsets;
+}
+
+void AddTimeOffsetSample(int64_t nOffsetSample)
+{
+    GetTimeOffsets().Add(std::chrono::seconds{nOffsetSample});
 }

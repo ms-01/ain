@@ -244,6 +244,18 @@ CAmount GetAnchorSubsidy(int anchorHeight, int prevAnchorHeight, const Consensus
            (period / consensusParams.spv.subsidyIncreasePeriod) * consensusParams.spv.subsidyIncreaseValue;
 }
 
+bool IsAnchorTooNew(const CBlockIndex *anchorIndex, const CBlockIndex *tipIndex, int64_t anchoringTimeDepth) {
+    if (!anchorIndex) {
+        return true;
+    }
+    // Without a chain tip there is no deterministic reference available, so the anchor is not
+    // considered too new.
+    if (!tipIndex) {
+        return false;
+    }
+    return anchorIndex->GetBlockTime() + anchoringTimeDepth > tipIndex->GetBlockTime();
+}
+
 /*
  * Choose best (high) anchor auth group with
  */
@@ -307,8 +319,7 @@ CAnchor CAnchorAuthIndex::CreateBestAnchor(const CTxDestination &rewardDest) con
 
                 // Fix to avoid "Anchor too new" error until F hard fork
                 auto anchorIndex = ::ChainActive()[it0->height];
-                if (!anchorIndex ||
-                    anchorIndex->nTime + Params().GetConsensus().mn.anchoringTimeDepth > GetAdjustedTime()) {
+                if (IsAnchorTooNew(anchorIndex, ::ChainActive().Tip(), Params().GetConsensus().mn.anchoringTimeDepth)) {
                     continue;
                 }
 

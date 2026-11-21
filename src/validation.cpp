@@ -4473,8 +4473,7 @@ std::vector<unsigned char> GenerateCoinbaseCommitment(CBlock &block,
 static bool ContextualCheckBlockHeader(const CBlockHeader &block,
                                        CValidationState &state,
                                        const CChainParams &params,
-                                       const CBlockIndex *pindexPrev,
-                                       int64_t nAdjustedTime) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+                                       const CBlockIndex *pindexPrev) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
     assert(pindexPrev != nullptr);
     const int nHeight = pindexPrev->nHeight + 1;
 
@@ -4538,7 +4537,11 @@ static bool ContextualCheckBlockHeader(const CBlockHeader &block,
         }
     }
 
-    if (block.GetBlockTime() > nAdjustedTime + MAX_FUTURE_BLOCK_TIME) {
+    // Rule B (2 hours). Below the DF25 activation height the legacy peer adjusted clock is used,
+    // so that the acceptance window for historical blocks stays byte identical to the pre-DF25
+    // behaviour. From the DF25 activation height on the unadjusted clock is used and the peer
+    // derived time offset can no longer influence block acceptance.
+    if (block.GetBlockTime() > GetFutureBlockTimeLimit(nHeight, consensusParams, GetLegacyTimeOffset())) {
         return state.Invalid(
             ValidationInvalidReason::BLOCK_TIME_FUTURE, false, "time-too-new", "block timestamp too far in the future");
     }
@@ -4739,7 +4742,7 @@ bool BlockManager::AcceptBlockHeader(const CBlockHeader &block,
                 ValidationInvalidReason::BLOCK_INVALID_PREV, error("%s: prev block invalid", __func__), "bad-prevblk");
         }
         bool versionGateMismatch = false;
-        if (!ContextualCheckBlockHeader(block, state, chainparams, pindexPrev, GetAdjustedTime())) {
+        if (!ContextualCheckBlockHeader(block, state, chainparams, pindexPrev)) {
             if (state.GetReason() != ValidationInvalidReason::BLOCK_INVALID_HEADER_VERSION) {
                 return error("%s: Consensus::ContextualCheckBlockHeader: %s, %s",
                              __func__,
@@ -5290,7 +5293,7 @@ bool TestBlockValidity(CValidationState &state,
     CheckContextState ctxState;
 
     // NOTE: ContextualCheckProofOfStake is called by CheckBlock
-    if (!ContextualCheckBlockHeader(block, state, chainparams, pindexPrev, GetAdjustedTime())) {
+    if (!ContextualCheckBlockHeader(block, state, chainparams, pindexPrev)) {
         return error("%s: Consensus::ContextualCheckBlockHeader: %s", __func__, FormatStateMessage(state));
     }
 
