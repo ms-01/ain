@@ -18,6 +18,7 @@
 #include <stdint.h>
 
 #include <functional>
+#include <string>
 #include <unordered_map>
 
 /**
@@ -118,6 +119,41 @@ struct CCoinsCacheEntry
 
     CCoinsCacheEntry() : flags(0) {}
     explicit CCoinsCacheEntry(Coin&& coin_) : coin(std::move(coin_)), flags(0) {}
+
+    /**
+     * The flag bits above are the single source of truth for the state of a
+     * cache entry. Production code must use the accessors below instead of
+     * manipulating the raw bits, so that the flag semantics are documented in
+     * exactly one place.
+     *
+     * The valid states of a cache entry are:
+     *
+     *   coin    | DIRTY | FRESH | origin
+     *   --------+-------+-------+--------------------------------------------------
+     *   unspent | no    | no    | clean coin fetched from the parent view
+     *   unspent | yes   | no    | coin modified in this cache
+     *   unspent | yes   | yes   | coin added by AddCoin(), the parent has no
+     *           |       |       | (unspent) entry
+     *   spent   | yes   | no    | coin spent in this cache, flushed to the
+     *           |       |       | parent as an erase
+     *   spent   | no    | yes   | DFI only: pruned parent entry fetched by
+     *           |       |       | FetchCoin()
+     */
+
+    //! Whether the entry differs from the version in the parent view.
+    bool IsDirty() const { return (flags & DIRTY) != 0; }
+
+    //! Whether the parent view does not have this entry (or has it pruned).
+    bool IsFresh() const { return (flags & FRESH) != 0; }
+
+    //! Mark the entry as differing from the version in the parent view.
+    void SetDirty() { flags |= DIRTY; }
+
+    //! Mark the entry as absent (or pruned) in the parent view.
+    void SetFresh() { flags |= FRESH; }
+
+    //! Mark the entry as identical to the version in the parent view.
+    void SetClean() { flags = 0; }
 };
 
 typedef std::unordered_map<COutPoint, CCoinsCacheEntry, SaltedOutpointHasher> CCoinsMap;
@@ -212,6 +248,18 @@ protected:
     /* Cached dynamic memory usage for the inner Coin objects. */
     mutable size_t cachedCoinsUsage;
 
+    /*
+     * Number of cache entries that are flagged as DIRTY, i.e. that differ from
+     * the version in the parent view.
+     *
+     * This counter is diagnostic only: it must never be used to decide *what*
+     * is flushed. The flush path keeps scanning the whole cache and filtering
+     * on the DIRTY flag, exactly as before. It is maintained at every site
+     * that can change the dirty state of an entry and is cross-checked by
+     * SanityCheck().
+     */
+    size_t m_dirty_count{0};
+
 public:
     CCoinsViewCache(CCoinsView *baseIn);
 
@@ -280,6 +328,33 @@ public:
 
     //! Calculate the size of the cache (in bytes)
     size_t DynamicMemoryUsage() const;
+
+    /**
+     * Number of cache entries that are flagged as DIRTY, i.e. that differ from
+     * the version in the parent view. Diagnostic only, see m_dirty_count.
+     */
+    size_t GetDirtyCount() const { return m_dirty_count; }
+
+    /**
+     * Run an internal sanity check on the cache data structure and abort if
+     * the cache is inconsistent. See CheckSanity() for the checked invariants.
+     */
+    void SanityCheck() const;
+
+    /**
+     * Check the internal consistency of the cache data structure without
+     * aborting.
+     *
+     * The following invariants are verified:
+     *  - every entry is in one of the valid states listed in CCoinsCacheEntry,
+     *  - the O(1) dirty counter matches the number of DIRTY entries,
+     *  - the cached memory usage matches the recomputed usage.
+     *
+     * @param[out] error Optional pointer to a string that receives a
+     *                   description of the first inconsistency found.
+     * @return true if the cache is consistent, false otherwise.
+     */
+    bool CheckSanity(std::string* error = nullptr) const;
 
     /**
      * Amount of defis coming in to a transaction

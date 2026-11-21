@@ -938,4 +938,506 @@ BOOST_AUTO_TEST_CASE(ccoins_batchwrite_uncache_invariants)
     }
 }
 
+namespace
+{
+//! A deterministic parent view for the coins cache tests. In contrast to
+//! CCoinsViewTest it never returns a coin randomly and never drops entries
+//! randomly, so that it can be used as the reference parent of the
+//! differential test.
+class DiffParentView : public CCoinsView
+{
+public:
+    //! The coins that are known to the parent view.
+    std::map<COutPoint, Coin> map;
+
+    bool GetCoin(const COutPoint& outpoint, Coin& coin) const override
+    {
+        const auto it = map.find(outpoint);
+        if (it == map.end()) return false;
+        coin = it->second;
+        return true;
+    }
+
+    bool BatchWrite(CCoinsMap& mapCoins, const uint256& hashBlock) override
+    {
+        for (CCoinsMap::iterator it = mapCoins.begin(); it != mapCoins.end();) {
+            if (it->second.IsDirty()) {
+                if (it->second.coin.IsSpent()) {
+                    map.erase(it->first);
+                } else {
+                    map[it->first] = it->second.coin;
+                }
+            }
+            CCoinsMap::iterator itOld = it++;
+            mapCoins.erase(itOld);
+        }
+        return true;
+    }
+};
+
+//! A deterministic pseudo random number generator, so that every seed
+//! reproduces exactly the same sequence of operations.
+class DeterministicRng
+{
+public:
+    explicit DeterministicRng(uint64_t seed) : m_state(seed + 1) {}
+
+    uint64_t Next()
+    {
+        m_state = m_state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return m_state;
+    }
+
+    uint32_t Range(uint32_t range) { return static_cast<uint32_t>((Next() >> 33) % range); }
+
+private:
+    uint64_t m_state;
+};
+
+/**
+ * Reference implementation of the v0.21 coins cache semantics.
+ *
+ * The rules implemented here are the documented v0.21 rules (fetch a coin from
+ * the parent view, add a coin, spend a coin, drop an unmodified entry and
+ * flush the cache into the parent view). They are written independently from
+ * the production code, so that the differential test compares two independent
+ * implementations of the same specification.
+ */
+class RefCoinsCache
+{
+public:
+    struct Entry {
+        CAmount value{0};
+        bool spent{true};
+        unsigned char flags{0};
+    };
+
+    //! The coins that are known to the parent view.
+    std::map<COutPoint, Coin> parent;
+    //! The entries of the cache layer.
+    std::map<COutPoint, Entry> cache;
+
+    //! Fetch a coin from the parent view into the cache (as FetchCoin() does).
+    bool Fetch(const COutPoint& outpoint)
+    {
+        const auto it = cache.find(outpoint);
+        if (it != cache.end()) return true;
+        const auto parent_it = parent.find(outpoint);
+        if (parent_it == parent.end()) return false;
+        Entry entry;
+        entry.spent = parent_it->second.IsSpent();
+        entry.value = entry.spent ? 0 : parent_it->second.out.nValue;
+        // A pruned parent entry is fresh, but not dirty.
+        entry.flags = entry.spent ? FRESH : 0;
+        cache.emplace(outpoint, entry);
+        return true;
+    }
+
+    //! Add a coin to the cache (as AddCoin() does).
+    void Add(const COutPoint& outpoint, CAmount value, bool possible_overwrite)
+    {
+        Entry& entry = cache[outpoint];
+        bool fresh = false;
+        if (!possible_overwrite) {
+            if (!entry.spent) {
+                throw std::logic_error("Adding new coin that replaces non-pruned entry");
+            }
+            fresh = (entry.flags & DIRTY) == 0;
+        }
+        entry.value = value;
+        entry.spent = false;
+        entry.flags |= DIRTY | (fresh ? FRESH : 0);
+    }
+
+    //! Spend a coin in the cache (as SpendCoin() does).
+    bool Spend(const COutPoint& outpoint)
+    {
+        if (!Fetch(outpoint)) return false;
+        auto& entry = cache.at(outpoint);
+        if (entry.flags & FRESH) {
+            // The parent does not have an (unspent) entry, so the coin is
+            // simply dropped from the cache.
+            cache.erase(outpoint);
+        } else {
+            entry.flags |= DIRTY;
+            entry.value = 0;
+            entry.spent = true;
+        }
+        return true;
+    }
+
+    //! Drop an unmodified entry from the cache (as Uncache() does).
+    void Uncache(const COutPoint& outpoint)
+    {
+        const auto it = cache.find(outpoint);
+        if (it != cache.end() && it->second.flags == 0) {
+            cache.erase(it);
+        }
+    }
+
+    //! Write the cache into the parent view and clear it (as Flush() does).
+    void Flush()
+    {
+        for (auto it = cache.begin(); it != cache.end();) {
+            auto it_old = it++;
+            const Entry& entry = it_old->second;
+            if (entry.flags & DIRTY) {
+                if (entry.spent) {
+                    parent.erase(it_old->first);
+                } else {
+                    CTxOut out;
+                    out.nValue = entry.value;
+                    parent[it_old->first] = Coin(std::move(out), 1, false);
+                }
+            }
+            cache.erase(it_old);
+        }
+    }
+
+    //! The number of entries that are flagged as dirty.
+    size_t DirtyCount() const
+    {
+        size_t count = 0;
+        for (const auto& item : cache) {
+            if (item.second.flags & DIRTY) ++count;
+        }
+        return count;
+    }
+};
+
+//! The outpoints that are used by the differential test.
+const std::vector<COutPoint> DIFF_OUTPOINTS = {
+    COutPoint(uint256S("0000000000000000000000000000000000000000000000000000000000000001"), 0),
+    COutPoint(uint256S("0000000000000000000000000000000000000000000000000000000000000002"), 0),
+    COutPoint(uint256S("0000000000000000000000000000000000000000000000000000000000000003"), 1),
+    COutPoint(uint256S("0000000000000000000000000000000000000000000000000000000000000004"), 0),
+    COutPoint(uint256S("0000000000000000000000000000000000000000000000000000000000000005"), 2),
+    COutPoint(uint256S("0000000000000000000000000000000000000000000000000000000000000006"), 0),
+    COutPoint(uint256S("0000000000000000000000000000000000000000000000000000000000000007"), 0),
+    COutPoint(uint256S("0000000000000000000000000000000000000000000000000000000000000008"), 3),
+};
+
+//! Compare the production cache and the reference implementation.
+static void CompareWithReference(const CCoinsViewCacheTest& cache, const DiffParentView& parent,
+                                 const RefCoinsCache& reference, const std::string& context)
+{
+    for (const auto& outpoint : DIFF_OUTPOINTS) {
+        const auto actual_it = cache.map().find(outpoint);
+        const auto expected_it = reference.cache.find(outpoint);
+        const bool actual_present = actual_it != cache.map().end();
+        const bool expected_present = expected_it != reference.cache.end();
+        BOOST_CHECK_MESSAGE(actual_present == expected_present, context << ": entry presence mismatch");
+        if (actual_present && expected_present) {
+            BOOST_CHECK_MESSAGE(actual_it->second.coin.IsSpent() == expected_it->second.spent,
+                                context << ": spent flag mismatch");
+            if (!expected_it->second.spent) {
+                BOOST_CHECK_MESSAGE(actual_it->second.coin.out.nValue == expected_it->second.value,
+                                    context << ": coin value mismatch");
+            }
+            BOOST_CHECK_MESSAGE(actual_it->second.flags == expected_it->second.flags,
+                                context << ": flag mismatch");
+        }
+    }
+
+    // The O(1) dirty counter must match the reference implementation.
+    BOOST_CHECK_MESSAGE(cache.GetDirtyCount() == reference.DirtyCount(),
+                        context << ": dirty count mismatch");
+
+    // The cache must be internally consistent.
+    std::string error;
+    BOOST_CHECK_MESSAGE(cache.CheckSanity(&error), context << ": sanity check failed: " << error);
+
+    // The parent view must match the reference implementation.
+    for (const auto& outpoint : DIFF_OUTPOINTS) {
+        const auto actual_it = parent.map.find(outpoint);
+        const auto expected_it = reference.parent.find(outpoint);
+        const bool actual_present = actual_it != parent.map.end();
+        const bool expected_present = expected_it != reference.parent.end();
+        BOOST_CHECK_MESSAGE(actual_present == expected_present, context << ": parent presence mismatch");
+        if (actual_present && expected_present) {
+            BOOST_CHECK_MESSAGE(actual_it->second.out.nValue == expected_it->second.out.nValue,
+                                context << ": parent value mismatch");
+            BOOST_CHECK_MESSAGE(actual_it->second.IsSpent() == expected_it->second.IsSpent(),
+                                context << ": parent spent flag mismatch");
+        }
+    }
+}
+
+static Coin MakeCoin(CAmount value, bool coinbase = false)
+{
+    CTxOut out;
+    out.nValue = value;
+    return Coin(std::move(out), 1, coinbase);
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(ccoins_dirty_count)
+{
+    /* Check the O(1) dirty counter of the cache.
+     *
+     * The counter is diagnostic only: it counts the entries that are flagged
+     * as DIRTY, i.e. the entries that differ from the parent view.
+     */
+
+    DiffParentView root;
+    CCoinsViewCacheTest cache{&root};
+
+    // An empty cache has no dirty entries.
+    BOOST_CHECK_EQUAL(cache.GetDirtyCount(), 0U);
+
+    // A coin that is fetched from the parent view is clean.
+    root.map[OUTPOINT] = MakeCoin(VALUE1);
+    Coin coin;
+    BOOST_CHECK(cache.GetCoin(OUTPOINT, coin));
+    BOOST_CHECK_EQUAL(cache.GetDirtyCount(), 0U);
+
+    // Spending a clean coin marks the entry as dirty.
+    BOOST_CHECK(cache.SpendCoin(OUTPOINT));
+    BOOST_CHECK_EQUAL(cache.GetDirtyCount(), 1U);
+
+    // Uncache() only drops clean entries, so the counter does not change.
+    cache.Uncache(OUTPOINT);
+    BOOST_CHECK_EQUAL(cache.GetDirtyCount(), 1U);
+
+    // Adding a coin marks the entry as dirty, an already dirty entry does not
+    // increase the counter.
+    cache.AddCoin(OUTPOINT, MakeCoin(VALUE2), true);
+    BOOST_CHECK_EQUAL(cache.GetDirtyCount(), 1U);
+
+    // Flushing the cache resets the counter.
+    BOOST_CHECK(cache.Flush());
+    BOOST_CHECK_EQUAL(cache.GetDirtyCount(), 0U);
+
+    // Spending a pruned (fresh) coin drops the entry from the cache and leaves
+    // the counter unchanged.
+    {
+        DiffParentView pruned_root;
+        CCoinsViewCacheTest pruned_cache{&pruned_root};
+        // The parent knows the outpoint, but not its value (pruned).
+        pruned_root.map[OUTPOINT] = Coin();
+
+        Coin pruned_coin;
+        BOOST_CHECK(!pruned_cache.GetCoin(OUTPOINT, pruned_coin));
+        BOOST_CHECK_EQUAL(pruned_cache.GetDirtyCount(), 0U);
+        BOOST_CHECK(pruned_cache.SpendCoin(OUTPOINT));
+        BOOST_CHECK_EQUAL(pruned_cache.GetDirtyCount(), 0U);
+        BOOST_CHECK_EQUAL(pruned_cache.GetCacheSize(), 0U);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(ccoins_sanity_check)
+{
+    /* Check the sanity check of the cache.
+     *
+     * The sanity check verifies that every entry is in one of the valid states
+     * of the cache entry state table, that the O(1) dirty counter matches the
+     * number of dirty entries and that the cached memory usage matches the
+     * recomputed usage.
+     */
+
+    DiffParentView root;
+    CCoinsViewCacheTest cache{&root};
+
+    // A fresh cache is consistent.
+    std::string error;
+    BOOST_CHECK_MESSAGE(cache.CheckSanity(&error), error);
+
+    // A coin that is fetched from the parent view is consistent.
+    root.map[OUTPOINT] = MakeCoin(VALUE1);
+    Coin coin;
+    BOOST_CHECK(cache.GetCoin(OUTPOINT, coin));
+    BOOST_CHECK_MESSAGE(cache.CheckSanity(&error), error);
+
+    // A hand-built entry that is spent, dirty and fresh at the same time is
+    // invalid.
+    {
+        DiffParentView invalid_root;
+        CCoinsViewCacheTest invalid_cache{&invalid_root};
+        const auto it = invalid_cache.map().emplace(OUTPOINT, CCoinsCacheEntry()).first;
+        it->second.coin.Clear();
+        it->second.flags = char(DIRTY | FRESH);
+        std::string invalid_error;
+        BOOST_CHECK(!invalid_cache.CheckSanity(&invalid_error));
+        BOOST_CHECK(!invalid_error.empty());
+    }
+
+    // An unspent entry that is fresh but not dirty is invalid.
+    {
+        DiffParentView invalid_root;
+        CCoinsViewCacheTest invalid_cache{&invalid_root};
+        const auto it = invalid_cache.map().emplace(OUTPOINT, CCoinsCacheEntry()).first;
+        it->second.coin = MakeCoin(VALUE2);
+        it->second.flags = FRESH;
+        std::string invalid_error;
+        BOOST_CHECK(!invalid_cache.CheckSanity(&invalid_error));
+        BOOST_CHECK(!invalid_error.empty());
+    }
+
+    // A spent entry that is dirty (but not fresh) is valid: it is the state of
+    // a coin that was spent in this cache.
+    {
+        DiffParentView valid_root;
+        CCoinsViewCacheTest valid_cache{&valid_root};
+        valid_root.map[OUTPOINT] = MakeCoin(VALUE1);
+        Coin valid_coin;
+        BOOST_CHECK(valid_cache.GetCoin(OUTPOINT, valid_coin));
+        BOOST_CHECK(valid_cache.SpendCoin(OUTPOINT));
+        std::string valid_error;
+        BOOST_CHECK_MESSAGE(valid_cache.CheckSanity(&valid_error), valid_error);
+    }
+    // A spent entry that is fresh (but not dirty) is valid as well: it is the
+    // DFI specific state of a pruned parent entry.
+    {
+        DiffParentView valid_root;
+        CCoinsViewCacheTest valid_cache{&valid_root};
+        valid_root.map[OUTPOINT] = Coin();
+        Coin valid_coin;
+        BOOST_CHECK(!valid_cache.GetCoin(OUTPOINT, valid_coin));
+        std::string valid_error;
+        BOOST_CHECK_MESSAGE(valid_cache.CheckSanity(&valid_error), valid_error);
+    }
+    BOOST_CHECK_MESSAGE(cache.CheckSanity(&error), error);
+}
+
+BOOST_AUTO_TEST_CASE(ccoins_flush_dirty_only)
+{
+    /* Check that a flush only propagates the dirty entries of the cache and
+     * leaves the clean entries of the parent view untouched.
+     */
+
+    const COutPoint dirty_outpoint(uint256S("0000000000000000000000000000000000000000000000000000000000000011"), 0);
+    const COutPoint clean_outpoint(uint256S("0000000000000000000000000000000000000000000000000000000000000012"), 0);
+
+    DiffParentView root;
+    CCoinsViewCacheTest parent{&root};
+    CCoinsViewCacheTest child{&parent};
+
+    root.map[dirty_outpoint] = MakeCoin(VALUE1);
+    root.map[clean_outpoint] = MakeCoin(VALUE1);
+
+    // Fetch both coins in the child cache, they are clean.
+    Coin coin;
+    BOOST_CHECK(child.GetCoin(dirty_outpoint, coin));
+    BOOST_CHECK(child.GetCoin(clean_outpoint, coin));
+    BOOST_CHECK_EQUAL(child.GetDirtyCount(), 0U);
+
+    // Modify one of the coins in the child cache.
+    child.AddCoin(dirty_outpoint, MakeCoin(VALUE2), true);
+    BOOST_CHECK_EQUAL(child.GetDirtyCount(), 1U);
+
+    // Flushing the cache propagates the dirty entry and clears the cache.
+    BOOST_CHECK(child.Flush());
+    BOOST_CHECK_EQUAL(child.GetCacheSize(), 0U);
+    BOOST_CHECK_EQUAL(child.GetDirtyCount(), 0U);
+
+    // The parent entry of the modified coin is dirty and holds the new value.
+    const auto dirty_it = parent.map().find(dirty_outpoint);
+    BOOST_REQUIRE(dirty_it != parent.map().end());
+    BOOST_CHECK_EQUAL(dirty_it->second.coin.out.nValue, VALUE2);
+    BOOST_CHECK(dirty_it->second.IsDirty());
+    BOOST_CHECK_EQUAL(parent.GetDirtyCount(), 1U);
+
+    // The parent entry of the untouched coin is unchanged and still clean.
+    const auto clean_it = parent.map().find(clean_outpoint);
+    BOOST_REQUIRE(clean_it != parent.map().end());
+    BOOST_CHECK_EQUAL(clean_it->second.coin.out.nValue, VALUE1);
+    BOOST_CHECK(!clean_it->second.IsDirty());
+    BOOST_CHECK_EQUAL(parent.GetDirtyCount(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(ccoins_differential_v021_semantics)
+{
+    /* Differential test of the coins cache against an in-test reference
+     * implementation of the v0.21 semantics (see RefCoinsCache).
+     *
+     * Randomised sequences of add / spend / uncache / flush / fetch operations
+     * are applied to the production cache and to the reference implementation.
+     * After every single operation both the coin values, the spent flags and
+     * the flag bits of all entries are compared, the O(1) dirty counter is
+     * compared against the reference implementation and the sanity check of
+     * the cache must pass.
+     *
+     * The seeds are fixed, so that a failure is reproducible.
+     */
+
+    for (uint64_t seed = 1; seed <= 1000; ++seed) {
+        DeterministicRng rng(seed);
+        DiffParentView parent;
+        RefCoinsCache reference;
+        CCoinsViewCacheTest cache{&parent};
+
+        // Set up an identical parent view in both implementations. Every third
+        // outpoint is unknown to the parent, every other one is either an
+        // unspent coin or a pruned (spent) coin.
+        for (size_t i = 0; i < DIFF_OUTPOINTS.size(); ++i) {
+            const COutPoint& outpoint = DIFF_OUTPOINTS[i];
+            if (i % 3 == 0) {
+                const Coin coin = MakeCoin(VALUE1 + static_cast<CAmount>(i));
+                parent.map[outpoint] = coin;
+                reference.parent[outpoint] = coin;
+            } else if (i % 3 == 1) {
+                // A pruned coin: the parent knows the outpoint, but not its
+                // value.
+                const Coin coin;
+                parent.map[outpoint] = coin;
+                reference.parent[outpoint] = coin;
+            }
+        }
+
+        for (int step = 0; step < 50; ++step) {
+            const COutPoint& outpoint = DIFF_OUTPOINTS[rng.Range(static_cast<uint32_t>(DIFF_OUTPOINTS.size()))];
+            const std::string context = "seed " + std::to_string(seed) + ", step " + std::to_string(step);
+            const uint32_t operation = rng.Range(5);
+
+            switch (operation) {
+            case 0: {
+                // Add a coin. Adding a coin that replaces an unspent entry is
+                // a logic error in the production code; that path is covered
+                // by the ccoins_add test and is not part of this test, because
+                // it leaves the cached memory usage accounting inconsistent.
+                bool possible_overwrite = rng.Range(2) == 0;
+                if (!possible_overwrite) {
+                    const auto ref_it = reference.cache.find(outpoint);
+                    if (ref_it != reference.cache.end() && !ref_it->second.spent) {
+                        possible_overwrite = true;
+                    }
+                }
+                const CAmount value = VALUE1 + static_cast<CAmount>(step);
+                cache.AddCoin(outpoint, MakeCoin(value), possible_overwrite);
+                reference.Add(outpoint, value, possible_overwrite);
+                break;
+            }
+            case 1: {
+                // Spend a coin.
+                const bool actual = cache.SpendCoin(outpoint);
+                const bool expected = reference.Spend(outpoint);
+                BOOST_CHECK_MESSAGE(actual == expected, context << ": spend result mismatch");
+                break;
+            }
+            case 2: {
+                // Drop an unmodified entry from the cache.
+                cache.Uncache(outpoint);
+                reference.Uncache(outpoint);
+                break;
+            }
+            case 3: {
+                // Flush the cache into the parent view.
+                cache.Flush();
+                reference.Flush();
+                break;
+            }
+            case 4: {
+                // Fetch a coin from the parent view.
+                Coin coin;
+                cache.GetCoin(outpoint, coin);
+                reference.Fetch(outpoint);
+                break;
+            }
+            }
+
+            CompareWithReference(cache, parent, reference, context);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
