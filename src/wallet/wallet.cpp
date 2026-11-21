@@ -161,7 +161,30 @@ std::shared_ptr<CWallet> LoadWallet(interfaces::Chain& chain, const std::string&
     return LoadWallet(chain, WalletLocation(name), error, warning);
 }
 
-WalletCreationStatus CreateWallet(interfaces::Chain& chain, const SecureString& passphrase, uint64_t wallet_creation_flags, const std::string& name, std::string& error, std::string& warning, std::shared_ptr<CWallet>& result)
+bool ParseDatabaseFormat(const std::string& name, DatabaseFormat& format)
+{
+    if (name == "bdb" || name == "berkeley") {
+        format = DatabaseFormat::BERKELEY;
+        return true;
+    }
+    if (name == "sqlite") {
+        format = DatabaseFormat::SQLITE;
+        return true;
+    }
+    return false;
+}
+
+DatabaseFormat DefaultDatabaseFormat()
+{
+    DatabaseFormat format = DatabaseFormat::BERKELEY;
+    const std::string dbtype = gArgs.GetArg("-dbtype", "bdb");
+    if (!ParseDatabaseFormat(dbtype, format)) {
+        LogPrintf("Unknown wallet database type %s, expected \"bdb\" or \"sqlite\", falling back to \"bdb\"\n", dbtype);
+    }
+    return format;
+}
+
+WalletCreationStatus CreateWallet(interfaces::Chain& chain, const SecureString& passphrase, uint64_t wallet_creation_flags, const std::string& name, std::string& error, std::string& warning, std::shared_ptr<CWallet>& result, DatabaseFormat format)
 {
     // Indicate that the wallet is actually supposed to be blank and not just blank to make it encrypted
     bool create_blank = (wallet_creation_flags & WALLET_FLAG_BLANK_WALLET);
@@ -180,7 +203,7 @@ WalletCreationStatus CreateWallet(interfaces::Chain& chain, const SecureString& 
 
     // Wallet::Verify will check if we're trying to create a wallet with a duplicate name.
     std::string wallet_error;
-    if (!CWallet::Verify(chain, location, false, wallet_error, warning)) {
+    if (!CWallet::Verify(chain, location, false, wallet_error, warning, format)) {
         error = "Wallet file verification failed: " + wallet_error;
         return WalletCreationStatus::CREATION_FAILED;
     }
@@ -192,7 +215,7 @@ WalletCreationStatus CreateWallet(interfaces::Chain& chain, const SecureString& 
     }
 
     // Make the wallet
-    std::shared_ptr<CWallet> wallet = CWallet::CreateWalletFromFile(chain, location, wallet_creation_flags);
+    std::shared_ptr<CWallet> wallet = CWallet::CreateWalletFromFile(chain, location, wallet_creation_flags, format);
     if (!wallet) {
         error = "Wallet creation failed";
         return WalletCreationStatus::CREATION_FAILED;
@@ -1049,7 +1072,7 @@ bool CWallet::MarkReplaced(const uint256& originalHash, const uint256& newHash)
 
         wtx.mapValue["replaced_by_txid"] = newHash.ToString();
 
-        WalletBatch batch(*database, "r+");
+        WalletBatch batch(*database, DatabaseBatchMode::READ_WRITE);
 
         if (!batch.WriteTx(wtx)) {
             WalletLogPrintf("%s: Updating batch tx %s failed\n", __func__, wtx.GetHash().ToString());
@@ -1095,7 +1118,7 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn, bool fFlushOnClose)
 {
     LOCK(cs_wallet);
 
-    WalletBatch batch(*database, "r+", fFlushOnClose);
+    WalletBatch batch(*database, DatabaseBatchMode::READ_WRITE, fFlushOnClose);
 
     if (IsWalletFlagSet(WALLET_FLAG_AVOID_REUSE)) {
         // Mark used destinations
@@ -1284,7 +1307,7 @@ bool CWallet::AbandonTransaction(interfaces::Chain::Lock& locked_chain, const ui
     auto locked_chain_recursive = chain().lock();  // Temporary. Removed in upcoming lock cleanup
     LOCK2(cs_wallet, locked_chain_recursive->mutex());
 
-    WalletBatch batch(*database, "r+");
+    WalletBatch batch(*database, DatabaseBatchMode::READ_WRITE);
 
     std::set<uint256> todo;
     std::set<uint256> done;
@@ -1350,7 +1373,7 @@ void CWallet::MarkConflicted(const uint256& hashBlock, const uint256& hashTx)
         return;
 
     // Do not flush the wallet here for performance reasons
-    WalletBatch batch(*database, "r+", false);
+    WalletBatch batch(*database, DatabaseBatchMode::READ_WRITE, false);
 
     std::set<uint256> todo;
     std::set<uint256> done;
@@ -3438,7 +3461,7 @@ DBErrors CWallet::LoadWallet(bool& fFirstRunRet)
     LOCK(cs_wallet);
 
     fFirstRunRet = false;
-    DBErrors nLoadWalletRet = WalletBatch(*database,"cr+").LoadWallet(this);
+    DBErrors nLoadWalletRet = WalletBatch(*database, DatabaseBatchMode::CREATE).LoadWallet(this);
     if (nLoadWalletRet == DBErrors::NEED_REWRITE)
     {
         if (database->Rewrite("\x04pool"))
@@ -3468,7 +3491,7 @@ DBErrors CWallet::LoadWallet(bool& fFirstRunRet)
 DBErrors CWallet::ZapSelectTx(std::vector<uint256>& vHashIn, std::vector<uint256>& vHashOut)
 {
     AssertLockHeld(cs_wallet);
-    DBErrors nZapSelectTxRet = WalletBatch(*database, "cr+").ZapSelectTx(vHashIn, vHashOut);
+    DBErrors nZapSelectTxRet = WalletBatch(*database, DatabaseBatchMode::CREATE).ZapSelectTx(vHashIn, vHashOut);
     for (const uint256& hash : vHashOut) {
         auto it = mapWallet.find(hash);
         if (it == mapWallet.end())
@@ -3506,7 +3529,7 @@ DBErrors CWallet::ZapSelectTx(std::vector<uint256>& vHashIn, std::vector<uint256
 
 DBErrors CWallet::ZapWalletTx(std::vector<CWalletTx>& vWtx)
 {
-    DBErrors nZapWalletTxRet = WalletBatch(*database,"cr+").ZapWalletTx(vWtx);
+    DBErrors nZapWalletTxRet = WalletBatch(*database, DatabaseBatchMode::CREATE).ZapWalletTx(vWtx);
     if (nZapWalletTxRet == DBErrors::NEED_REWRITE)
     {
         if (database->Rewrite("\x04pool"))
@@ -4314,7 +4337,7 @@ void CWallet::MarkPreSplitKeys()
     }
 }
 
-bool CWallet::Verify(interfaces::Chain& chain, const WalletLocation& location, bool salvage_wallet, std::string& error_string, std::string& warning_string)
+bool CWallet::Verify(interfaces::Chain& chain, const WalletLocation& location, bool salvage_wallet, std::string& error_string, std::string& warning_string, DatabaseFormat format)
 {
     // Do some checking on wallet path. It should be either a:
     //
@@ -4342,11 +4365,21 @@ bool CWallet::Verify(interfaces::Chain& chain, const WalletLocation& location, b
         return false;
     }
 
+    // Detect the backend of an already existing wallet, the requested format is
+    // only used for wallets that do not exist yet.
+    DatabaseFormat effective_format = format;
+    DetectWalletFormat(wallet_path, effective_format);
+
     // Keep same database environment instance across Verify/Recover calls below.
-    std::unique_ptr<WalletDatabase> database = WalletDatabase::Create(wallet_path);
+    // A SQLite wallet is not opened here, the verification opens the file on its
+    // own and the wallet is opened by CreateWalletFromFile afterwards.
+    std::unique_ptr<WalletDatabase> database;
+    if (effective_format != DatabaseFormat::SQLITE) {
+        database = WalletDatabase::Create(wallet_path, effective_format);
+    }
 
     try {
-        if (!WalletBatch::VerifyEnvironment(wallet_path, error_string)) {
+        if (!WalletBatch::VerifyEnvironment(wallet_path, error_string, effective_format)) {
             return false;
         }
     } catch (const fs::filesystem_error& e) {
@@ -4358,15 +4391,15 @@ bool CWallet::Verify(interfaces::Chain& chain, const WalletLocation& location, b
         // Recover readable keypairs:
         CWallet dummyWallet(&chain, WalletLocation(), WalletDatabase::CreateDummy());
         std::string backup_filename;
-        if (!WalletBatch::Recover(wallet_path, (void *)&dummyWallet, WalletBatch::RecoverKeysOnlyFilter, backup_filename)) {
+        if (!WalletBatch::Recover(wallet_path, (void *)&dummyWallet, WalletBatch::RecoverKeysOnlyFilter, backup_filename, effective_format)) {
             return false;
         }
     }
 
-    return WalletBatch::VerifyDatabaseFile(wallet_path, warning_string, error_string);
+    return WalletBatch::VerifyDatabaseFile(wallet_path, warning_string, error_string, effective_format);
 }
 
-std::shared_ptr<CWallet> CWallet::CreateWalletFromFile(interfaces::Chain& chain, const WalletLocation& location, uint64_t wallet_creation_flags)
+std::shared_ptr<CWallet> CWallet::CreateWalletFromFile(interfaces::Chain& chain, const WalletLocation& location, uint64_t wallet_creation_flags, DatabaseFormat format)
 {
     const std::string& walletFile = fs::PathToString(WalletDataFilePath(location.GetPath()));
 
@@ -4376,7 +4409,7 @@ std::shared_ptr<CWallet> CWallet::CreateWalletFromFile(interfaces::Chain& chain,
     if (gArgs.GetBoolArg("-zapwallettxes", false)) {
         chain.initMessage(_("Zapping all transactions from wallet...").translated);
 
-        std::unique_ptr<CWallet> tempWallet = std::make_unique<CWallet>(&chain, location, WalletDatabase::Create(location.GetPath()));
+        std::unique_ptr<CWallet> tempWallet = std::make_unique<CWallet>(&chain, location, WalletDatabase::Create(location.GetPath(), format));
         DBErrors nZapWalletRet = tempWallet->ZapWalletTx(vWtx);
         if (nZapWalletRet != DBErrors::LOAD_OK) {
             chain.initError(strprintf(_("Error loading %s: Wallet corrupted").translated, walletFile));
@@ -4390,7 +4423,7 @@ std::shared_ptr<CWallet> CWallet::CreateWalletFromFile(interfaces::Chain& chain,
     bool fFirstRun = true;
     // TODO: Can't use std::make_shared because we need a custom deleter but
     // should be possible to use std::allocate_shared.
-    std::shared_ptr<CWallet> walletInstance(new CWallet(&chain, location, WalletDatabase::Create(location.GetPath())), ReleaseWallet);
+    std::shared_ptr<CWallet> walletInstance(new CWallet(&chain, location, WalletDatabase::Create(location.GetPath(), format)), ReleaseWallet);
     DBErrors nLoadWalletRet = walletInstance->LoadWallet(fFirstRun);
     if (nLoadWalletRet != DBErrors::LOAD_OK)
     {

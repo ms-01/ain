@@ -44,6 +44,7 @@ Optional dependencies:
  ------------|------------------|----------------------
  miniupnpc   | UPnP Support     | Firewall-jumping support
  libdb4.8    | Berkeley DB      | Wallet storage (only needed when wallet enabled)
+ libsqlite3  | SQLite           | Optional SQLite wallet storage (only needed when wallet enabled)
  protobuf    | Payments in GUI  | Data interchange format used for payment protocol (only needed when GUI enabled)
  univalue    | Utility          | JSON parsing and encoding (bundled version will be used unless --with-system-univalue passed to configure)
  libzmq3     | ZMQ notification | Optional, allows generating ZMQ notifications (requires ZMQ version >= 4.0.0)
@@ -111,6 +112,10 @@ ZMQ dependencies (provides ZMQ API):
 
     sudo apt-get install libzmq3-dev
 
+Optional SQLite wallet support (see `--with-sqlite` and `--without-sqlite`):
+
+    sudo apt-get install libsqlite3-dev
+
 ### Fedora
 
 #### Dependency Build Instructions
@@ -126,6 +131,10 @@ Optional (see `--with-miniupnpc` and `--enable-upnp-default`):
 ZMQ dependencies (provides ZMQ API):
 
     sudo dnf install zeromq-devel
+
+Optional SQLite wallet support (see `--with-sqlite` and `--without-sqlite`):
+
+    sudo dnf install sqlite-devel
 
 Notes
 -----

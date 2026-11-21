@@ -14,10 +14,13 @@
 #include <sync.h>
 #include <util/system.h>
 #include <util/time.h>
+#include <wallet/bdb.h>
+#include <wallet/sqlite.h>
 #include <wallet/wallet.h>
 
 #include <atomic>
 #include <string>
+
 
 namespace DBKeys {
 const std::string ACENTRY{"acentry"};
@@ -128,7 +131,7 @@ bool WalletBatch::WriteCScript(const uint160& hash, const CScript& redeemScript)
 
 bool WalletBatch::ReadCScript(const uint160& hash, CScript& redeemScript)
 {
-    return m_batch.Read(std::make_pair(DBKeys::CSCRIPT, hash), redeemScript);
+    return m_batch->Read(std::make_pair(DBKeys::CSCRIPT, hash), redeemScript);
 }
 
 bool WalletBatch::WriteWatchOnly(const CScript &dest, const CKeyMetadata& keyMeta)
@@ -155,8 +158,8 @@ bool WalletBatch::WriteBestBlock(const CBlockLocator& locator)
 
 bool WalletBatch::ReadBestBlock(CBlockLocator& locator)
 {
-    if (m_batch.Read(DBKeys::BESTBLOCK, locator) && !locator.vHave.empty()) return true;
-    return m_batch.Read(DBKeys::BESTBLOCK_NOMERKLE, locator);
+    if (m_batch->Read(DBKeys::BESTBLOCK, locator) && !locator.vHave.empty()) return true;
+    return m_batch->Read(DBKeys::BESTBLOCK_NOMERKLE, locator);
 }
 
 bool WalletBatch::WriteOrderPosNext(int64_t nOrderPosNext)
@@ -166,7 +169,7 @@ bool WalletBatch::WriteOrderPosNext(int64_t nOrderPosNext)
 
 bool WalletBatch::ReadPool(int64_t nPool, CKeyPool& keypool)
 {
-    return m_batch.Read(std::make_pair(DBKeys::POOL, nPool), keypool);
+    return m_batch->Read(std::make_pair(DBKeys::POOL, nPool), keypool);
 }
 
 bool WalletBatch::WritePool(int64_t nPool, const CKeyPool& keypool)
@@ -452,15 +455,14 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
     LOCK(pwallet->cs_wallet);
     try {
         int nMinVersion = 0;
-        if (m_batch.Read(DBKeys::MINVERSION, nMinVersion)) {
+        if (m_batch->Read(DBKeys::MINVERSION, nMinVersion)) {
             if (nMinVersion > FEATURE_LATEST)
                 return DBErrors::TOO_NEW;
             pwallet->LoadMinVersion(nMinVersion);
         }
 
         // Get cursor
-        Dbc* pcursor = m_batch.GetCursor();
-        if (!pcursor)
+        if (!m_batch->StartCursor())
         {
             pwallet->WalletLogPrintf("Error getting wallet database cursor\n");
             return DBErrors::CORRUPT;
@@ -471,14 +473,14 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
             // Read next record
             CDataStream ssKey(SER_DISK, CLIENT_VERSION);
             CDataStream ssValue(SER_DISK, CLIENT_VERSION);
-            int ret = m_batch.ReadAtCursor(pcursor, ssKey, ssValue);
-            if (ret == DB_NOTFOUND)
-                break;
-            else if (ret != 0)
+            bool complete = false;
+            if (!m_batch->ReadAtCursor(ssKey, ssValue, complete))
             {
                 pwallet->WalletLogPrintf("Error reading next record from wallet database\n");
+                m_batch->CloseCursor();
                 return DBErrors::CORRUPT;
             }
+            if (complete) break;
 
             // Try to be tolerant of single corrupt records:
             std::string strType, strErr;
@@ -502,7 +504,7 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
             if (!strErr.empty())
                 pwallet->WalletLogPrintf("%s\n", strErr);
         }
-        pcursor->close();
+        m_batch->CloseCursor();
     }
     catch (...) {
         result = DBErrors::CORRUPT;
@@ -518,7 +520,7 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
 
     // Last client version to open this wallet, was previously the file version number
     int last_client = CLIENT_VERSION;
-    m_batch.Read(DBKeys::VERSION, last_client);
+    m_batch->Read(DBKeys::VERSION, last_client);
 
     int wallet_version = pwallet->GetVersion();
     pwallet->WalletLogPrintf("Wallet File Version = %d\n", wallet_version > 0 ? wallet_version : last_client);
@@ -538,7 +540,7 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
         return DBErrors::NEED_REWRITE;
 
     if (last_client < CLIENT_VERSION) // Update
-        m_batch.Write(DBKeys::VERSION, CLIENT_VERSION);
+        m_batch->Write(DBKeys::VERSION, CLIENT_VERSION);
 
     if (wss.fAnyUnordered)
         result = pwallet->ReorderTransactions();
@@ -560,14 +562,13 @@ DBErrors WalletBatch::FindWalletTx(std::vector<uint256>& vTxHash, std::vector<CW
 
     try {
         int nMinVersion = 0;
-        if (m_batch.Read(DBKeys::MINVERSION, nMinVersion)) {
+        if (m_batch->Read(DBKeys::MINVERSION, nMinVersion)) {
             if (nMinVersion > FEATURE_LATEST)
                 return DBErrors::TOO_NEW;
         }
 
         // Get cursor
-        Dbc* pcursor = m_batch.GetCursor();
-        if (!pcursor)
+        if (!m_batch->StartCursor())
         {
             LogPrintf("Error getting wallet database cursor\n");
             return DBErrors::CORRUPT;
@@ -578,14 +579,14 @@ DBErrors WalletBatch::FindWalletTx(std::vector<uint256>& vTxHash, std::vector<CW
             // Read next record
             CDataStream ssKey(SER_DISK, CLIENT_VERSION);
             CDataStream ssValue(SER_DISK, CLIENT_VERSION);
-            int ret = m_batch.ReadAtCursor(pcursor, ssKey, ssValue);
-            if (ret == DB_NOTFOUND)
-                break;
-            else if (ret != 0)
+            bool complete = false;
+            if (!m_batch->ReadAtCursor(ssKey, ssValue, complete))
             {
                 LogPrintf("Error reading next record from wallet database\n");
+                m_batch->CloseCursor();
                 return DBErrors::CORRUPT;
             }
+            if (complete) break;
 
             std::string strType;
             ssKey >> strType;
@@ -600,7 +601,7 @@ DBErrors WalletBatch::FindWalletTx(std::vector<uint256>& vTxHash, std::vector<CW
                 vWtx.push_back(wtx);
             }
         }
-        pcursor->close();
+        m_batch->CloseCursor();
     }
     catch (...) {
         result = DBErrors::CORRUPT;
@@ -675,7 +676,7 @@ void MaybeCompactWalletDB()
     }
 
     for (const std::shared_ptr<CWallet>& pwallet : GetWallets()) {
-        BerkeleyBatch::PeriodicFlush(pwallet->GetDBHandle());
+        pwallet->GetDBHandle().PeriodicFlush();
     }
 
     fOneThread = false;
@@ -686,10 +687,10 @@ void AutoBackupWallet() {
         auto locked_chain = pwallet->chain().lock();
         LOCK2(pwallet->cs_wallet, locked_chain->mutex());
 
-        auto env = pwallet->GetDBHandle().env;
+        auto wallet_dir = pwallet->GetDBHandle().Directory();
         std::string walletName = pwallet->GetName().empty() ? "default" : pwallet->GetName();
-        fs::path prevBackup = env->Directory() / strprintf("auto.backup.%s.bak1", walletName);
-        fs::path currentBackup = env->Directory() / strprintf("auto.backup.%s.bak2", walletName);
+        fs::path prevBackup = wallet_dir / strprintf("auto.backup.%s.bak1", walletName);
+        fs::path currentBackup = wallet_dir / strprintf("auto.backup.%s.bak2", walletName);
         if (fs::exists(prevBackup) && !fs::exists(currentBackup)) {
             pwallet->BackupWallet(fs::PathToString(currentBackup));
         } else if (fs::exists(prevBackup) && fs::exists(currentBackup)) {
@@ -718,16 +719,22 @@ void AutoBackupWallet() {
 //
 // Try to (very carefully!) recover wallet file if there is a problem.
 //
-bool WalletBatch::Recover(const fs::path& wallet_path, void *callbackDataIn, bool (*recoverKVcallback)(void* callbackData, CDataStream ssKey, CDataStream ssValue), std::string& out_backup_filename)
+bool WalletBatch::Recover(const fs::path& wallet_path, void *callbackDataIn, bool (*recoverKVcallback)(void* callbackData, CDataStream ssKey, CDataStream ssValue), std::string& out_backup_filename, DatabaseFormat format)
 {
+    if (format == DatabaseFormat::SQLITE) {
+        // SQLite databases are self healing (rollback journal / WAL), there is no
+        // salvage mechanism comparable to the Berkeley DB one.
+        LogPrintf("WalletBatch::Recover: salvage is not supported for SQLite wallets\n");
+        return false;
+    }
     return BerkeleyBatch::Recover(wallet_path, callbackDataIn, recoverKVcallback, out_backup_filename);
 }
 
-bool WalletBatch::Recover(const fs::path& wallet_path, std::string& out_backup_filename)
+bool WalletBatch::Recover(const fs::path& wallet_path, std::string& out_backup_filename, DatabaseFormat format)
 {
     // recover without a key filter callback
     // results in recovering all record types
-    return WalletBatch::Recover(wallet_path, nullptr, nullptr, out_backup_filename);
+    return WalletBatch::Recover(wallet_path, nullptr, nullptr, out_backup_filename, format);
 }
 
 bool WalletBatch::RecoverKeysOnlyFilter(void *callbackData, CDataStream ssKey, CDataStream ssValue)
@@ -754,14 +761,22 @@ bool WalletBatch::RecoverKeysOnlyFilter(void *callbackData, CDataStream ssKey, C
     return true;
 }
 
-bool WalletBatch::VerifyEnvironment(const fs::path& wallet_path, std::string& errorStr)
+bool WalletBatch::VerifyEnvironment(const fs::path& wallet_path, std::string& errorStr, DatabaseFormat format)
 {
+    if (format == DatabaseFormat::SQLITE) {
+        return VerifySQLiteWallet(wallet_path, errorStr);
+    }
     return BerkeleyBatch::VerifyEnvironment(wallet_path, errorStr);
 }
 
-bool WalletBatch::VerifyDatabaseFile(const fs::path& wallet_path, std::string& warningStr, std::string& errorStr)
+bool WalletBatch::VerifyDatabaseFile(const fs::path& wallet_path, std::string& warningStr, std::string& errorStr, DatabaseFormat format)
 {
-    return BerkeleyBatch::VerifyDatabaseFile(wallet_path, warningStr, errorStr, WalletBatch::Recover);
+    if (format == DatabaseFormat::SQLITE) {
+        return VerifySQLiteWallet(wallet_path, errorStr);
+    }
+    return BerkeleyBatch::VerifyDatabaseFile(wallet_path, warningStr, errorStr, [](const fs::path& file_path, std::string& backup_filename) {
+        return WalletBatch::Recover(file_path, backup_filename, DatabaseFormat::BERKELEY);
+    });
 }
 
 bool WalletBatch::WriteDestData(const std::string &address, const std::string &key, const std::string &value)
@@ -787,15 +802,15 @@ bool WalletBatch::WriteWalletFlags(const uint64_t flags)
 
 bool WalletBatch::TxnBegin()
 {
-    return m_batch.TxnBegin();
+    return m_batch->TxnBegin();
 }
 
 bool WalletBatch::TxnCommit()
 {
-    return m_batch.TxnCommit();
+    return m_batch->TxnCommit();
 }
 
 bool WalletBatch::TxnAbort()
 {
-    return m_batch.TxnAbort();
+    return m_batch->TxnAbort();
 }

@@ -963,6 +963,9 @@ if test x$enable_wallet != xno; then
     DEFI_FIND_BDB48
 fi
 
+dnl Check for SQLite, this is an optional additional wallet database backend
+DEFI_FIND_SQLITE
+
 dnl Check for libminiupnpc (optional)
 if test x$use_upnp != xno; then
   AC_CHECK_HEADERS(
