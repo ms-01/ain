@@ -9,6 +9,7 @@
 #include <amount.h>
 #include <consensus/params.h>
 #include <consensus/validation.h>
+#include <policy/packages.h>
 #include <primitives/transaction.h>
 #include <sync.h>
 #include <txmempool.h>
@@ -18,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <string>
 #include <vector>
 
 class BlockContext;
@@ -87,9 +89,29 @@ public:
     };
 
     MemPoolAccept(CTxMemPool &pool, const CTransactionRef &ptx);
+    /**
+     * Constructor for package validation. The given coins view is shared by all transactions of
+     * the package, so that the outputs of a transaction become spendable by the following
+     * transactions of the same package without touching the real mempool.
+     */
+    MemPoolAccept(CTxMemPool &pool, const CTransactionRef &ptx, CCoinsViewMemPool *package_view);
 
     // Single transaction acceptance
     bool AcceptSingleTransaction(ATMPArgs &args) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+    /**
+     * Validate (and optionally submit) a whole package of transactions.
+     *
+     * The package is validated context free first (see CheckPackage()), then the DFI specific
+     * transaction types are rejected and finally every transaction is validated on its own with
+     * the very same checks the single transaction path uses. When `test_accept` is false, the
+     * transactions are submitted to the mempool afterwards; the insertion is all-or-nothing,
+     * a partially inserted package is rolled back.
+     */
+    static PackageMempoolAcceptResult AcceptPackage(CTxMemPool &pool,
+                                                     const Package &package,
+                                                     const std::vector<CAmount> &max_tx_fees,
+                                                     bool test_accept) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 private:
     // All the intermediate state that gets passed between the various levels
@@ -161,11 +183,49 @@ private:
     CCoinsView m_dummy;
     CCoinsViewCache m_view;
     CCoinsViewMemPool m_viewmempool;
+    // When set, the coins view of the package is used instead of the private one.
+    CCoinsViewMemPool *m_package_view{nullptr};
+
+    /** The coins view used for the input lookups (package view if set). */
+    CCoinsViewMemPool &ViewMempool() { return m_package_view != nullptr ? *m_package_view : m_viewmempool; }
 
     // DFI specific state, kept alive for the whole acceptance.
     std::unique_ptr<CCustomCSView> m_mnview;
     std::unique_ptr<BlockContext> m_blockCtx;
     std::unique_ptr<TransactionContext> m_txCtx;
 };
+
+/**
+ * Validate (and optionally submit) a package of transactions to the mempool.
+ *
+ * @param[in]  pool        the mempool the package is validated against / submitted to
+ * @param[in]  package     the transactions of the package, parents before children
+ * @param[in]  max_tx_fees the maximum fee of every transaction of the package, an empty vector
+ *                          means that no fee limit is applied at all
+ * @param[in]  test_accept when true, the package is only validated and never submitted
+ */
+PackageMempoolAcceptResult AcceptToMemoryPoolPackage(CTxMemPool &pool,
+                                                      const Package &package,
+                                                      const std::vector<CAmount> &max_tx_fees,
+                                                      bool test_accept) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+/**
+ * Validate (and optionally submit) a package of transactions.
+ *
+ * This is the common entry point of the package aware RPCs: the package is validated as a whole,
+ * the transactions of the package may spend the outputs of their (still unconfirmed) parents.
+ * When `test_accept` is false, the package is submitted to the mempool afterwards.
+ *
+ * @param[in]  pool        the mempool the package is validated against / submitted to
+ * @param[in]  package     the transactions of the package, parents before children
+ * @param[in]  max_tx_fees the maximum fee of every transaction of the package, an empty vector
+ *                          means that no fee limit is applied at all
+ * @param[in]  test_accept when true, the package is only validated and never submitted
+ * @return the result of the package validation
+ */
+PackageMempoolAcceptResult ProcessNewPackage(CTxMemPool &pool,
+                                              const Package &package,
+                                              const std::vector<CAmount> &max_tx_fees,
+                                              bool test_accept) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 #endif // DEFI_MEMPOOL_ACCEPT_H

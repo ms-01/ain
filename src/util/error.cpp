@@ -31,6 +31,8 @@ std::string TransactionErrorString(const TransactionError err)
             return "Specified sighash value does not match existing value";
         case TransactionError::MAX_FEE_EXCEEDED:
             return "Fee exceeds maximum configured by -maxtxfee";
+        case TransactionError::INVALID_PACKAGE:
+            return "Invalid package";
         // no default case, so the compiler can warn about missing cases
     }
     assert(false);
