@@ -224,6 +224,7 @@ DEFI_CORE_H = \
   memusage.h \
   merkleblock.h \
   miner.h \
+  musig.h \
   net.h \
   net_permissions.h \
   net_processing.h \
@@ -669,6 +670,7 @@ libdefi_common_a_SOURCES = \
   key_io.cpp \
   dfi/customtx.cpp \
   merkleblock.cpp \
+  musig.cpp \
   netaddress.cpp \
   netbase.cpp \
   net_permissions.cpp \

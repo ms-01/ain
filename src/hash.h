@@ -180,6 +180,42 @@ public:
     }
 };
 
+/**
+ * A writer stream (for serialization) that computes a single SHA-256 hash.
+ *
+ * This is an additive helper, mainly used to compute identifiers that have to
+ * be byte-compatible with other implementations (e.g. the MuSig2 session id).
+ * It does not affect any consensus relevant hashing (CHashWriter is untouched).
+ */
+class HashWriter
+{
+private:
+    CSHA256 ctx;
+
+public:
+    void write(const char *pch, size_t size) {
+        ctx.Write((const unsigned char*)pch, size);
+    }
+
+    /**
+     * Compute the SHA256 hash of all data written to this object.
+     *
+     * Invalidates this object.
+     */
+    uint256 GetSHA256() {
+        uint256 result;
+        ctx.Finalize(result.begin());
+        return result;
+    }
+
+    template<typename T>
+    HashWriter& operator<<(const T& obj) {
+        // Serialize to this stream
+        ::Serialize(*this, obj);
+        return (*this);
+    }
+};
+
 /** Reads data from an underlying stream, while hashing the read data. */
 template<typename Source>
 class CHashVerifier : public CHashWriter

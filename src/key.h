@@ -17,6 +17,9 @@
 
 typedef std::array<uint8_t, 20> EvmAddressData;
 
+struct secp256k1_context_struct;
+typedef struct secp256k1_context_struct secp256k1_context;
+
 /**
  * secure_allocator is defined in allocators.h
  * CPrivKey is a serialized private key, with all parameters included
@@ -183,6 +186,9 @@ struct CExtKey {
         Decode(code);
     }
 };
+
+/** Access the secp256k1 context used for signing and MuSig2 nonce generation. */
+secp256k1_context* GetSecp256k1SignContext();
 
 /** Initialize the elliptic curve support. May not be called twice without calling ECC_Stop first. */
 void ECC_Start();
