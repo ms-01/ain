@@ -411,6 +411,7 @@ enum class MemPoolRemovalReason {
     BLOCK,      //!< Removed for block
     CONFLICT,   //!< Removed for conflict with in-block transaction
     REPLACED,   //!< Removed for replacement
+    PACKAGE_ROLLBACK, //!< Removed because the package submission was rolled back
 };
 
 class SaltedTxidHasher {
@@ -882,12 +883,23 @@ private:
  * as long as the conflicting transaction is not yet confirmed.
  */
 class CCoinsViewMemPool : public CCoinsViewBacked {
+    /**
+     * Coins made available by transactions being validated. Tracking these allows for package
+     * validation, since we can access transaction outputs without submitting them to mempool.
+     */
+    std::unordered_map<COutPoint, Coin, SaltedOutpointHasher> m_temp_added;
+
 protected:
     const CTxMemPool &mempool;
 
 public:
     CCoinsViewMemPool(CCoinsView *baseIn, const CTxMemPool &mempoolIn);
     bool GetCoin(const COutPoint &outpoint, Coin &coin) const override;
+    /** Add the coins created by this transaction. These coins are only temporarily stored in
+     * m_temp_added and cannot be flushed to the back end. Only used for package validation. */
+    void PackageAddTransaction(const CTransactionRef &tx);
+    /** Return the coin that was temporarily added by PackageAddTransaction(), if any. */
+    bool GetPackageCoin(const COutPoint &outpoint, Coin &coin) const;
 };
 
 /**

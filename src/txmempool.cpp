@@ -1080,6 +1080,13 @@ CCoinsViewMemPool::CCoinsViewMemPool(CCoinsView *baseIn, const CTxMemPool &mempo
       mempool(mempoolIn) {}
 
 bool CCoinsViewMemPool::GetCoin(const COutPoint &outpoint, Coin &coin) const {
+    // Check to see if the inputs are made available by another tx in the package.
+    // These Coins would not be available in the underlying CoinsView.
+    if (auto it = m_temp_added.find(outpoint); it != m_temp_added.end()) {
+        coin = it->second;
+        return true;
+    }
+
     // If an entry in the mempool exists, always return that one, as it's guaranteed to never
     // conflict with the underlying cache, and it cannot have pruned entries (as it contains full)
     // transactions. First checking the underlying cache risks returning a pruned entry instead.
@@ -1093,6 +1100,23 @@ bool CCoinsViewMemPool::GetCoin(const COutPoint &outpoint, Coin &coin) const {
         }
     }
     return base->GetCoin(outpoint, coin);
+}
+
+void CCoinsViewMemPool::PackageAddTransaction(const CTransactionRef &tx)
+{
+    for (unsigned int n = 0; n < tx->vout.size(); ++n) {
+        m_temp_added.emplace(COutPoint(tx->GetHash(), n), Coin(tx->vout[n], MEMPOOL_HEIGHT, false));
+    }
+}
+
+bool CCoinsViewMemPool::GetPackageCoin(const COutPoint &outpoint, Coin &coin) const
+{
+    auto it = m_temp_added.find(outpoint);
+    if (it == m_temp_added.end()) {
+        return false;
+    }
+    coin = it->second;
+    return true;
 }
 
 size_t CTxMemPool::DynamicMemoryUsage() const {

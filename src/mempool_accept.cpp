@@ -32,6 +32,7 @@
 
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -45,7 +46,8 @@ static bool CheckInputsFromMempoolAndCache(const CTransaction &tx,
                                            const CTxMemPool &pool,
                                            unsigned int flags,
                                            bool cacheSigStore,
-                                           PrecomputedTransactionData &txdata) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+                                           PrecomputedTransactionData &txdata,
+                                           const CCoinsViewMemPool *package_view = nullptr) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
     AssertLockHeld(cs_main);
 
     // pool.cs should be locked already, but go ahead and re-take the lock here
@@ -71,9 +73,16 @@ static bool CheckInputsFromMempoolAndCache(const CTransaction &tx,
             assert(txFrom->vout.size() > txin.prevout.n);
             assert(txFrom->vout[txin.prevout.n] == coin.out);
         } else {
-            const Coin &coinFromDisk = ::ChainstateActive().CoinsTip().AccessCoin(txin.prevout);
-            assert(!coinFromDisk.IsSpent());
-            assert(coinFromDisk.out == coin.out);
+            Coin packageCoin;
+            if (package_view != nullptr && package_view->GetPackageCoin(txin.prevout, packageCoin)) {
+                // The input is spent by another transaction of the same package, which is not
+                // in the mempool yet.
+                assert(packageCoin.out == coin.out);
+            } else {
+                const Coin &coinFromDisk = ::ChainstateActive().CoinsTip().AccessCoin(txin.prevout);
+                assert(!coinFromDisk.IsSpent());
+                assert(coinFromDisk.out == coin.out);
+            }
         }
     }
 
@@ -94,6 +103,58 @@ static bool IsCurrentForFeeEstimation() EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
     return true;
 }
 
+/**
+ * Check the package against the mempool ancestor/descendant limits.
+ *
+ * The chain does not implement the CPFP style package feerate of newer Bitcoin Core releases:
+ * every transaction of a package has to satisfy the regular mempool rules on its own. The
+ * package as a whole may however not exceed the descendant limits, because all its
+ * transactions end up in the mempool as one ancestor chain.
+ */
+static bool PackageMempoolChecks(const Package &package, PackageValidationState &state) {
+    const size_t nLimitDescendants = gArgs.GetArg("-limitdescendantcount", DEFAULT_DESCENDANT_LIMIT);
+    const size_t nLimitDescendantSize = gArgs.GetArg("-limitdescendantsize", DEFAULT_DESCENDANT_SIZE_LIMIT) * 1000;
+
+    if (package.size() > nLimitDescendants) {
+        return state.Invalid(PackageValidationResult::PCKG_POLICY, "package-exceeds-descendant-limit");
+    }
+
+    const int64_t total_size = std::accumulate(package.cbegin(), package.cend(), int64_t{0},
+                               [](int64_t sum, const auto &tx) { return sum + GetVirtualTransactionSize(*tx); });
+    if (total_size > static_cast<int64_t>(nLimitDescendantSize)) {
+        return state.Invalid(PackageValidationResult::PCKG_POLICY, "package-exceeds-descendant-size-limit");
+    }
+
+    return true;
+}
+
+/**
+ * Remove the given transactions (and their descendants) from the mempool again.
+ *
+ * Used to roll back a partially submitted package.
+ */
+static void RemovePackageTransactions(CTxMemPool &pool, const std::vector<uint256> &txids) {
+    if (txids.empty()) {
+        return;
+    }
+    LOCK(pool.cs);
+    CTxMemPool::setEntries to_remove;
+    for (const auto &txid : txids) {
+        const auto it = pool.GetIter(txid);
+        if (!it) {
+            continue;
+        }
+        to_remove.insert(*it);
+        CTxMemPool::setEntries descendants;
+        pool.CalculateDescendants(*it, descendants);
+        to_remove.insert(descendants.begin(), descendants.end());
+    }
+    if (to_remove.empty()) {
+        return;
+    }
+    pool.RemoveStaged(to_remove, false, MemPoolRemovalReason::PACKAGE_ROLLBACK);
+}
+
 } // namespace
 
 MemPoolAccept::MemPoolAccept(CTxMemPool &pool, const CTransactionRef &ptx)
@@ -101,6 +162,14 @@ MemPoolAccept::MemPoolAccept(CTxMemPool &pool, const CTransactionRef &ptx)
       m_ptx(ptx),
       m_view(&m_dummy),
       m_viewmempool(&::ChainstateActive().CoinsTip(), m_pool) {
+}
+
+MemPoolAccept::MemPoolAccept(CTxMemPool &pool, const CTransactionRef &ptx, CCoinsViewMemPool *package_view)
+    : m_pool(pool),
+      m_ptx(ptx),
+      m_view(&m_dummy),
+      m_viewmempool(&::ChainstateActive().CoinsTip(), m_pool),
+      m_package_view(package_view) {
 }
 
 bool MemPoolAccept::AcceptSingleTransaction(ATMPArgs &args) {
@@ -130,6 +199,205 @@ bool MemPoolAccept::AcceptSingleTransaction(ATMPArgs &args) {
         return false;
     }
     return Finalize(args, ws);
+}
+
+PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(CTxMemPool &pool,
+                                                         const Package &package,
+                                                         const std::vector<CAmount> &max_tx_fees,
+                                                         bool test_accept)
+{
+    AssertLockHeld(cs_main);
+
+    // The maximum fee of a transaction, 0 means that no fee limit is applied.
+    const auto maxFeeOf = [&max_tx_fees](size_t index) -> CAmount {
+        return index < max_tx_fees.size() ? max_tx_fees[index] : CAmount{0};
+    };
+
+    PackageMempoolAcceptResult result;
+    result.m_tx_results.reserve(package.size());
+    for (const auto &tx : package) {
+        result.m_tx_results.push_back(PackageTxResult{tx->GetHash(), false, ""});
+    }
+
+    // Reject the whole package with the given reason.
+    const auto rejectPackage = [&result](PackageValidationResult type, const std::string &reason) {
+        result.m_result_type = type;
+        result.m_package_error = reason;
+        for (auto &tx_result : result.m_tx_results) {
+            tx_result.allowed = false;
+            tx_result.reject_reason = reason;
+        }
+        return result;
+    };
+
+    // Context free package checks.
+    PackageValidationState package_state;
+    if (!CheckPackage(package, package_state)) {
+        return rejectPackage(package_state.GetResult(), package_state.GetRejectReason());
+    }
+
+    // The package as a whole has to fit into the mempool limits.
+    if (!PackageMempoolChecks(package, package_state)) {
+        return rejectPackage(package_state.GetResult(), package_state.GetRejectReason());
+    }
+
+    // DFI specific transaction type gate. EVM transactions and DFI custom transactions are not
+    // package safe: they need the account view and the EVM nonce bookkeeping, which are not
+    // available while the package is validated as a whole. They are rejected before any per
+    // transaction validation takes place, so that no transaction is validated partially.
+    for (const auto &tx : package) {
+        std::string reject_reason;
+        if (IsEVMTx(*tx)) {
+            reject_reason = "evm-tx-not-supported-in-package";
+        } else {
+            std::vector<unsigned char> metadata;
+            if (GuessCustomTxType(*tx, metadata) != CustomTxType::None) {
+                reject_reason = "custom-tx-not-supported-in-package";
+            }
+        }
+        if (!reject_reason.empty()) {
+            return rejectPackage(PackageValidationResult::PCKG_POLICY, reject_reason);
+        }
+    }
+
+    // Validate every transaction of the package on its own, with the very same checks the single
+    // transaction path uses. The outputs of an already validated transaction are made available
+    // to the following transactions through the package coins view, so that a child can spend
+    // the outputs of its (still unconfirmed) parent.
+    CCoinsViewMemPool package_view(&::ChainstateActive().CoinsTip(), pool);
+    {
+        LOCK(pool.cs);
+        for (size_t i = 0; i < package.size(); ++i) {
+            const CTransactionRef &tx = package[i];
+            CValidationState state;
+            bool missing_inputs{false};
+            std::list<CTransactionRef> replaced;
+            std::vector<COutPoint> coins_to_uncache;
+            // The maximum fee is stored in a local variable, because ATMPArgs keeps a reference to it.
+            const CAmount max_fee = maxFeeOf(i);
+
+            MemPoolAccept::ATMPArgs args{Params(),
+                                         state,
+                                         &missing_inputs,
+                                         GetTime(),
+                                         &replaced,
+                                         false /* bypass_limits */,
+                                         max_fee,
+                                         coins_to_uncache,
+                                         true /* test_accept */};
+
+            MemPoolAccept accept(pool, tx, &package_view);
+            Workspace ws(tx);
+
+            bool accepted = accept.PreChecks(args, ws);
+            if (accepted && !ws.setConflicts.empty()) {
+                // Replacements are not supported for the transactions of a package.
+                accepted = false;
+                state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "package-replacement-not-supported");
+            }
+            if (accepted) {
+                PrecomputedTransactionData txdata(*ws.ptx);
+                accepted = accept.PolicyScriptChecks(args, ws, txdata) &&
+                           accept.ConsensusScriptChecks(args, ws, txdata) &&
+                           accept.EvmChecks(args, ws);
+            }
+            if (!accepted) {
+                // Remove the coins that were not present in the coins cache before the validation
+                // of this transaction, to prevent the coins cache from being overrun.
+                for (const COutPoint &outpoint : coins_to_uncache) {
+                    ::ChainstateActive().CoinsTip().Uncache(outpoint);
+                }
+                result.m_result_type = PackageValidationResult::PCKG_TX;
+                result.m_tx_results[i].allowed = false;
+                if (state.IsInvalid()) {
+                    result.m_tx_results[i].reject_reason = state.GetRejectReason();
+                } else if (missing_inputs) {
+                    result.m_tx_results[i].reject_reason = "missing-inputs";
+                } else {
+                    result.m_tx_results[i].reject_reason = state.GetRejectReason().empty() ? "mempool-error" : state.GetRejectReason();
+                }
+                // The following transactions were not validated at all.
+                for (size_t j = i + 1; j < package.size(); ++j) {
+                    result.m_tx_results[j].allowed = false;
+                    result.m_tx_results[j].reject_reason = "package-not-validated";
+                }
+                return result;
+            }
+            result.m_tx_results[i].allowed = true;
+            // Make the outputs of this transaction available to the following transactions.
+            package_view.PackageAddTransaction(tx);
+        }
+    }
+
+    if (test_accept) {
+        // The package was only validated, nothing was submitted to the mempool.
+        return result;
+    }
+
+    // Submit the package to the mempool. The transactions are submitted one after another with
+    // the regular single transaction path, so that the mempool state (ancestors, descendants,
+    // account view, ...) stays consistent. If a transaction cannot be submitted, the already
+    // submitted transactions are removed again: the submission is all-or-nothing.
+    std::vector<uint256> inserted;
+    for (size_t i = 0; i < package.size(); ++i) {
+        const CTransactionRef &tx = package[i];
+        CValidationState state;
+        bool missing_inputs{false};
+        std::list<CTransactionRef> replaced;
+        const bool accepted = AcceptToMemoryPoolWithTime(Params(),
+                                                         pool,
+                                                         state,
+                                                         tx,
+                                                         &missing_inputs,
+                                                         GetTime(),
+                                                         &replaced,
+                                                         false /* bypass_limits */,
+                                                         maxFeeOf(i),
+                                                         false /* test_accept */);
+        if (!accepted) {
+            // Roll back the transactions that were already submitted.
+            RemovePackageTransactions(pool, inserted);
+            result.m_result_type = PackageValidationResult::PCKG_TX;
+            result.m_tx_results[i].allowed = false;
+            if (state.IsInvalid()) {
+                result.m_tx_results[i].reject_reason = state.GetRejectReason();
+            } else if (missing_inputs) {
+                result.m_tx_results[i].reject_reason = "missing-inputs";
+            } else {
+                result.m_tx_results[i].reject_reason = state.GetRejectReason().empty() ? "mempool-error" : state.GetRejectReason();
+            }
+            // The transactions that were rolled back are not in the mempool either.
+            for (size_t j = 0; j < i; ++j) {
+                result.m_tx_results[j].allowed = false;
+                result.m_tx_results[j].reject_reason = "package-rolled-back";
+            }
+            for (size_t j = i + 1; j < package.size(); ++j) {
+                result.m_tx_results[j].allowed = false;
+                result.m_tx_results[j].reject_reason = "package-not-validated";
+            }
+            return result;
+        }
+        inserted.push_back(tx->GetHash());
+    }
+
+    return result;
+}
+
+PackageMempoolAcceptResult AcceptToMemoryPoolPackage(CTxMemPool &pool,
+                                                      const Package &package,
+                                                      const std::vector<CAmount> &max_tx_fees,
+                                                      bool test_accept)
+{
+    return MemPoolAccept::AcceptPackage(pool, package, max_tx_fees, test_accept);
+}
+
+PackageMempoolAcceptResult ProcessNewPackage(CTxMemPool &pool,
+                                              const Package &package,
+                                              const std::vector<CAmount> &max_tx_fees,
+                                              bool test_accept)
+{
+    LOCK(cs_main);
+    return AcceptToMemoryPoolPackage(pool, package, max_tx_fees, test_accept);
 }
 
 bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
@@ -224,7 +492,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
 
     LockPoints lp;
     CCoinsViewCache &coins_cache = ::ChainstateActive().CoinsTip();
-    m_view.SetBackend(m_viewmempool);
+    m_view.SetBackend(ViewMempool());
 
     const auto height = GetSpendHeight(m_view);
 
@@ -319,7 +587,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     // be mined yet.
     // Must keep pool.cs for this unless we change CheckSequenceLocks to take a
     // CoinsViewCache instead of create its own
-    if (!ws.isEVMTx && !CheckSequenceLocks(m_pool, tx, STANDARD_LOCKTIME_VERIFY_FLAGS, &lp)) {
+    if (!ws.isEVMTx && !CheckSequenceLocks(m_pool, tx, STANDARD_LOCKTIME_VERIFY_FLAGS, &lp, false, &ViewMempool())) {
         return state.Invalid(ValidationInvalidReason::TX_PREMATURE_SPEND, false, "non-BIP68-final");
     }
 
@@ -553,7 +821,7 @@ bool MemPoolAccept::ConsensusScriptChecks(ATMPArgs &args, Workspace &ws, Precomp
     ws.entry->SetCustomTxType(txType);
 
     if (!isEvmTx &&
-        !CheckInputsFromMempoolAndCache(tx, state, m_view, m_pool, currentBlockScriptVerifyFlags, true, txdata)) {
+        !CheckInputsFromMempoolAndCache(tx, state, m_view, m_pool, currentBlockScriptVerifyFlags, true, txdata, &ViewMempool())) {
         return error(
             "%s: BUG! PLEASE REPORT THIS! CheckInputs failed against latest-block but not STANDARD flags %s, %s",
             __func__,

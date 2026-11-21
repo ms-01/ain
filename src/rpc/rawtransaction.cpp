@@ -15,6 +15,8 @@
 #include <node/coin.h>
 #include <node/psbt.h>
 #include <node/transaction.h>
+#include <mempool_accept.h>
+#include <policy/packages.h>
 #include <policy/rbf.h>
 #include <primitives/transaction.h>
 #include <psbt.h>
@@ -824,10 +826,13 @@ static UniValue testmempoolaccept(const JSONRPCRequest& request)
     RPCHelpMan{"testmempoolaccept",
                 "\nReturns result of mempool acceptance tests indicating if raw transaction (serialized, hex-encoded) would be accepted by mempool.\n"
                 "\nThis checks if the transaction violates the consensus or policy rules.\n"
-                "\nSee sendrawtransaction call.\n",
+                "See sendrawtransaction call.\n"
+                "\nMore than one transaction can be passed to test them as a package. The transactions of\n"
+                "a package have to be sorted (parents before children) and the result contains one entry\n"
+                "per transaction, in the order of the given transactions.\n",
                 {
                     {"rawtxs", RPCArg::Type::ARR, RPCArg::Optional::NO, "An array of hex strings of raw transactions.\n"
-            "                                        Length must be one for now.",
+            "                                        Length must be between 1 and 25.",
                         {
                             {"rawtx", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, ""},
                         },
@@ -836,11 +841,15 @@ static UniValue testmempoolaccept(const JSONRPCRequest& request)
                 },
                 RPCResult{
             "[                   (array) The result of the mempool acceptance test for each raw transaction in the input array.\n"
-            "                            Length is exactly one for now.\n"
+            "                            Length is the number of the given transactions.\n"
             " {\n"
             "  \"txid\"           (string) The transaction hash in hex\n"
             "  \"allowed\"        (boolean) If the mempool allows this tx to be inserted\n"
             "  \"reject-reason\"  (string) Rejection string (only present when 'allowed' is false)\n"
+            " }\n"
+            " {\n"
+            "  \"package-error\"  (string) The reason why the package itself was rejected (only present\n"
+            "                     when the package was rejected as a whole)\n"
             " }\n"
             "]\n"
                 },
@@ -861,23 +870,30 @@ static UniValue testmempoolaccept(const JSONRPCRequest& request)
         UniValueType(), // NUM or BOOL, checked later
     });
 
-    if (request.params[0].get_array().size() != 1) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, "Array must contain exactly one raw transaction for now");
+    const UniValue& rawtxs = request.params[0].get_array();
+    if (rawtxs.empty()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Array must contain at least one raw transaction");
+    }
+    if (rawtxs.size() > MAX_PACKAGE_COUNT) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Array must contain at most %d raw transactions", MAX_PACKAGE_COUNT));
     }
 
-    CMutableTransaction mtx;
-    if (!DecodeHexTx(mtx, request.params[0].get_array()[0].get_str())) {
-        throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "TX decode failed");
+    Package package;
+    package.reserve(rawtxs.size());
+    for (const auto& rawtx : rawtxs.getValues()) {
+        CMutableTransaction mtx;
+        if (!DecodeHexTx(mtx, rawtx.get_str())) {
+            throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "TX decode failed");
+        }
+        package.emplace_back(MakeTransactionRef(std::move(mtx)));
     }
-    CTransactionRef tx(MakeTransactionRef(std::move(mtx)));
-    const uint256& tx_hash = tx->GetHash();
 
     CAmount max_raw_tx_fee = DEFAULT_MAX_RAW_TX_FEE;
     // TODO: temporary migration code for old clients. Remove in v0.20
     if (request.params[1].isBool()) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Second argument must be numeric (maxfeerate) and no longer supports a boolean. To allow a transaction with high fees, set maxfeerate to 0.");
     } else if (!request.params[1].isNull()) {
-        size_t weight = GetTransactionWeight(*tx);
+        size_t weight = GetTransactionWeight(*package[0]);
         CFeeRate fr(AmountFromValue(request.params[1]));
         // the +3/4 part rounds the value up, and is the same formula used when
         // calculating the fee for a transaction
@@ -885,30 +901,71 @@ static UniValue testmempoolaccept(const JSONRPCRequest& request)
         max_raw_tx_fee = fr.GetFee((weight+3)/4);
     }
 
-    UniValue result(UniValue::VARR);
-    UniValue result_0(UniValue::VOBJ);
-    result_0.pushKV("txid", tx_hash.GetHex());
+    if (package.size() == 1) {
+        // A single transaction: the output of this RPC stays unchanged.
+        CTransactionRef tx = package[0];
+        const uint256& tx_hash = tx->GetHash();
 
-    CValidationState state;
-    bool missing_inputs;
-    bool test_accept_res;
-    {
-        LOCK(cs_main);
-        test_accept_res = AcceptToMemoryPool(mempool, state, std::move(tx), &missing_inputs,
-            nullptr /* plTxnReplaced */, false /* bypass_limits */, max_raw_tx_fee, /* test_accept */ true);
-    }
-    result_0.pushKV("allowed", test_accept_res);
-    if (!test_accept_res) {
-        if (state.IsInvalid()) {
-            result_0.pushKV("reject-reason", strprintf("%s", state.GetRejectReason()));
-        } else if (missing_inputs) {
-            result_0.pushKV("reject-reason", "missing-inputs");
-        } else {
-            result_0.pushKV("reject-reason", state.GetRejectReason());
+        UniValue result(UniValue::VARR);
+        UniValue result_0(UniValue::VOBJ);
+        result_0.pushKV("txid", tx_hash.GetHex());
+
+        CValidationState state;
+        bool missing_inputs;
+        bool test_accept_res;
+        {
+            LOCK(cs_main);
+            test_accept_res = AcceptToMemoryPool(mempool, state, std::move(tx), &missing_inputs,
+                nullptr /* plTxnReplaced */, false /* bypass_limits */, max_raw_tx_fee, /* test_accept */ true);
         }
+        result_0.pushKV("allowed", test_accept_res);
+        if (!test_accept_res) {
+            if (state.IsInvalid()) {
+                result_0.pushKV("reject-reason", strprintf("%s", state.GetRejectReason()));
+            } else if (missing_inputs) {
+                result_0.pushKV("reject-reason", "missing-inputs");
+            } else {
+                result_0.pushKV("reject-reason", state.GetRejectReason());
+            }
+        }
+
+        result.push_back(std::move(result_0));
+        return result;
     }
 
-    result.push_back(std::move(result_0));
+    // A package of transactions: every transaction is validated on its own, but the outputs of a
+    // transaction are available to the following transactions of the package. This RPC does not
+    // have any side effects, the package is never submitted to the mempool.
+    std::vector<CAmount> max_tx_fees;
+    max_tx_fees.reserve(package.size());
+    for (const auto& tx : package) {
+        CAmount max_fee = DEFAULT_MAX_RAW_TX_FEE;
+        if (!request.params[1].isNull()) {
+            size_t weight = GetTransactionWeight(*tx);
+            CFeeRate fr(AmountFromValue(request.params[1]));
+            max_fee = fr.GetFee((weight+3)/4);
+        }
+        max_tx_fees.push_back(max_fee);
+    }
+
+    PackageMempoolAcceptResult package_result =
+        ProcessNewPackage(mempool, package, max_tx_fees, /* test_accept */ true);
+
+    UniValue result(UniValue::VARR);
+    for (const auto& tx_result : package_result.m_tx_results) {
+        UniValue entry(UniValue::VOBJ);
+        entry.pushKV("txid", tx_result.txid.GetHex());
+        entry.pushKV("allowed", tx_result.allowed);
+        if (!tx_result.allowed) {
+            entry.pushKV("reject-reason", tx_result.reject_reason);
+        }
+        result.push_back(std::move(entry));
+    }
+    if (!package_result.m_package_error.empty()) {
+        UniValue package_error(UniValue::VOBJ);
+        package_error.pushKV("package-error", package_result.m_package_error);
+        result.push_back(std::move(package_error));
+    }
     return result;
 }
 

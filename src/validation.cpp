@@ -298,7 +298,8 @@ bool CheckSequenceLocks(const CTxMemPool &pool,
                         const CTransaction &tx,
                         int flags,
                         LockPoints *lp,
-                        bool useExistingLockPoints) {
+                        bool useExistingLockPoints,
+                        const CCoinsViewMemPool *coins_view) {
     AssertLockHeld(cs_main);
     AssertLockHeld(pool.cs);
 
@@ -323,12 +324,15 @@ bool CheckSequenceLocks(const CTxMemPool &pool,
     } else {
         // CoinsTip() contains the UTXO set for ::ChainActive().Tip()
         CCoinsViewMemPool viewMemPool(&::ChainstateActive().CoinsTip(), pool);
+        // During package validation the inputs may be spent by another transaction of the same
+        // package, which is not in the mempool yet. Such a coins view is passed in by the caller.
+        const CCoinsViewMemPool &view = coins_view != nullptr ? *coins_view : viewMemPool;
         std::vector<int> prevheights;
         prevheights.resize(tx.vin.size());
         for (size_t txinIndex = 0; txinIndex < tx.vin.size(); txinIndex++) {
             const CTxIn &txin = tx.vin[txinIndex];
             Coin coin;
-            if (!viewMemPool.GetCoin(txin.prevout, coin)) {
+            if (!view.GetCoin(txin.prevout, coin)) {
                 return error("%s: Missing input", __func__);
             }
             if (coin.nHeight == MEMPOOL_HEIGHT) {

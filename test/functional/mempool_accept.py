@@ -68,8 +68,8 @@ class MempoolAcceptanceTest(DefiTestFramework):
             lambda: node.testmempoolaccept(rawtxs="ff00baar"),
         )
         assert_raises_rpc_error(
-            -8,
-            "Array must contain exactly one raw transaction for now",
+            -22,
+            "TX decode failed",
             lambda: node.testmempoolaccept(rawtxs=["ff00baar", "ff22"]),
         )
         assert_raises_rpc_error(

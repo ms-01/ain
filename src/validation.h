@@ -449,12 +449,17 @@ bool TestLockPointValidity(const LockPoints *lp) EXCLUSIVE_LOCKS_REQUIRED(cs_mai
  * The LockPoints should not be considered valid if CheckSequenceLocks returns false.
  *
  * See consensus/consensus.h for flag definitions.
+ *
+ * The optional `coins_view` allows to use a different coins view than the plain mempool view,
+ * e.g. the package view which additionally contains the outputs of the transactions of a
+ * package that are not in the mempool yet.
  */
 bool CheckSequenceLocks(const CTxMemPool &pool,
                         const CTransaction &tx,
                         int flags,
                         LockPoints *lp = nullptr,
-                        bool useExistingLockPoints = false) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+                        bool useExistingLockPoints = false,
+                        const CCoinsViewMemPool *coins_view = nullptr) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /** Used to get the end of block TXN for account history entries */
 uint32_t GetNextAccPosition();

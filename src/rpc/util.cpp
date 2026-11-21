@@ -301,6 +301,7 @@ RPCErrorCode RPCErrorFromTransactionError(TransactionError terr)
             return RPC_CLIENT_P2P_DISABLED;
         case TransactionError::INVALID_PSBT:
         case TransactionError::PSBT_MISMATCH:
+        case TransactionError::INVALID_PACKAGE:
             return RPC_INVALID_PARAMETER;
         case TransactionError::SIGHASH_MISMATCH:
             return RPC_DESERIALIZATION_ERROR;

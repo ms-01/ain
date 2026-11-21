@@ -255,6 +255,7 @@ BASE_SCRIPTS = [
     "rpc_invalidateblock.py",
     "feature_rbf.py",
     "mempool_packages.py",
+    "mempool_package_rpc.py",
     "mempool_package_onemore.py",
     "rpc_createmultisig.py",
     "feature_versionbits_warning.py",
