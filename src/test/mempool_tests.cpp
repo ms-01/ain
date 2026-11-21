@@ -5,6 +5,8 @@
 #include <chainparams.h>
 #include <mempool_accept.h>
 #include <policy/policy.h>
+#include <script/script.h>
+#include <timedata.h>
 #include <txmempool.h>
 #include <util/system.h>
 #include <util/time.h>
@@ -880,6 +882,72 @@ BOOST_AUTO_TEST_CASE(MempoolUseExactRbfFeeIncrementTests)
     BOOST_CHECK(!UseExactRbfFeeIncrement(0, consensus));
     BOOST_CHECK(!UseExactRbfFeeIncrement(100, consensus));
     BOOST_CHECK(!UseExactRbfFeeIncrement(std::numeric_limits<uint32_t>::max(), consensus));
+}
+
+/**
+ * The mempool finality cutoff.
+ *
+ * A time locked transaction is only accepted by the mempool if it can be mined in the next block.
+ * The cutoff of the mempool acceptance rule is evaluated against the median time past of the
+ * chain tip (LOCKTIME_MEDIAN_TIME_PAST), so the peer derived time offset does not influence the
+ * mempool acceptance rule. The node level IsFinalTx() (used by the wallet interface) uses the
+ * applied offset instead, which is the median of the collected peer samples.
+ */
+BOOST_FIXTURE_TEST_CASE(MempoolFinalityCutoffTests, TestChain100Setup)
+{
+    LOCK(cs_main);
+
+    // The time offset tracker is global: make sure that the samples of this test case do not
+    // leak into the other test cases.
+    struct TimeOffsetsGuard {
+        ~TimeOffsetsGuard() { GetTimeOffsets().Clear(); }
+    } guard;
+
+    const int64_t nOffset{60 * 60}; // one hour
+    const int64_t nLockTime{GetTime() + 30 * 60};
+
+    CMutableTransaction tx;
+    tx.nVersion = CTransaction::TX_VERSION_2;
+    tx.nLockTime = nLockTime;
+    tx.vin.resize(1);
+    tx.vout.resize(1);
+    // The sequence is not SEQUENCE_FINAL, so the absolute lock time is enforced.
+    tx.vin[0].nSequence = 0xFFFFFFFE;
+    tx.vin[0].scriptSig = CScript() << OP_11;
+    tx.vin[0].prevout = COutPoint(uint256S("1"), 0);
+    tx.vout[0].nValue = CENT;
+    tx.vout[0].scriptPubKey = CScript() << ToByteVector(coinbaseKey.GetPubKey()) << OP_CHECKSIG;
+
+    // Without any peer sample the applied offset is zero and the transaction is not final yet.
+    GetTimeOffsets().Clear();
+    BOOST_CHECK_EQUAL(GetTimeOffset(), 0);
+    BOOST_CHECK(!CheckFinalTx(CTransaction(tx), 0));
+
+    // The mempool cutoff uses the median time past of the chain tip, so the transaction is not
+    // final either.
+    BOOST_CHECK(!CheckFinalTx(CTransaction(tx), STANDARD_LOCKTIME_VERIFY_FLAGS));
+
+    // With a positive peer derived offset the node level cutoff (adjusted clock) moves forward
+    // and the transaction is final, while the mempool cutoff stays unaffected by the offset.
+    for (int i = 0; i < 5; ++i) {
+        AddTimeOffsetSample(nOffset);
+    }
+    BOOST_CHECK_EQUAL(GetTimeOffset(), nOffset);
+    BOOST_CHECK(CheckFinalTx(CTransaction(tx), 0));
+    BOOST_CHECK(!CheckFinalTx(CTransaction(tx), STANDARD_LOCKTIME_VERIFY_FLAGS));
+
+    // The mempool rejects the time locked transaction as non-final.
+    CValidationState state;
+    BOOST_CHECK(!AcceptToMemoryPool(mempool, state, MakeTransactionRef(tx),
+                                    nullptr /* pfMissingInputs */,
+                                    nullptr /* plTxnReplaced */,
+                                    true /* bypass_limits */,
+                                    0 /* nAbsurdFee */));
+    BOOST_CHECK(state.IsInvalid());
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "non-final");
+    BOOST_CHECK_EQUAL(mempool.size(), 0UL);
+
+    GetTimeOffsets().Clear();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
