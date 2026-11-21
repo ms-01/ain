@@ -695,7 +695,7 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef> &vtx, unsigne
         }
         CTransactionRef ptx{};
 
-        CCoinsView dummy;
+        CCoinsViewEmpty dummy;
         CCoinsViewCache view(&dummy);
         CCoinsViewCache &coins_cache = ::ChainstateActive().CoinsTip();
         CCoinsViewMemPool viewMemPool(&coins_cache, *this);
@@ -713,7 +713,7 @@ void CTxMemPool::rebuildViews() {
         return;
     }
 
-    CCoinsView dummy;
+    CCoinsViewEmpty dummy;
     CCoinsViewCache view(&dummy);
     CCoinsViewCache &coins_cache = ::ChainstateActive().CoinsTip();
     CCoinsViewMemPool viewMemPool(&coins_cache, *this);

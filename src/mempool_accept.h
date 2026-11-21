@@ -180,7 +180,7 @@ private:
 
     // The coins view used for the input lookups. It is switched from the
     // mempool backend to the dummy backend once all inputs are cached.
-    CCoinsView m_dummy;
+    CCoinsViewEmpty m_dummy;
     CCoinsViewCache m_view;
     CCoinsViewMemPool m_viewmempool;
     // When set, the coins view of the package is used instead of the private one.

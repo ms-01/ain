@@ -629,7 +629,7 @@ static UniValue combinerawtransaction(const JSONRPCRequest& request)
     CMutableTransaction mergedTx(txVariants[0]);
 
     // Fetch previous transactions (inputs):
-    CCoinsView viewDummy;
+    CCoinsViewEmpty viewDummy;
     CCoinsViewCache view(&viewDummy);
     {
         LOCK2(cs_main, mempool.cs);
@@ -1578,7 +1578,7 @@ UniValue utxoupdatepsbt(const JSONRPCRequest& request)
     HidingSigningProvider public_provider(&provider, /* nosign */ true, /* nobip32derivs */ false);
 
     // Fetch previous transactions (inputs):
-    CCoinsView viewDummy;
+    CCoinsViewEmpty viewDummy;
     CCoinsViewCache view(&viewDummy);
     {
         LOCK2(cs_main, mempool.cs);
