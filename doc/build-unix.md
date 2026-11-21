@@ -57,6 +57,10 @@ C++ compilers are memory-hungry. It is recommended to have at least 1.5 GB of
 memory available when compiling DeFi Core. On systems with less, gcc can be
 tuned to conserve memory with additional CXXFLAGS:
 
+> Note: The code base requires a C++20 capable compiler, i.e. GCC 10+ or
+> Clang 12+ (see [dependencies.md](dependencies.md)). `configure` selects
+> `-std=c++20` automatically and fails if the compiler does not support it.
+
 
     ./configure CXXFLAGS="--param ggc-min-expand=1 --param ggc-min-heapsize=32768"
 

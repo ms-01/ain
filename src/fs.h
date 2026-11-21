@@ -13,6 +13,7 @@
 #include <ios>
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 /** Filesystem operations and types */
@@ -57,7 +58,30 @@ namespace fs {
         // See https://gcc.gnu.org/git/?p=gcc.git;a=commit;h=96e0367ead5d8dcac3bec2865582e76e2fbab190
         path& make_preferred() { std::filesystem::path::make_preferred(); return *this; }
         path filename() const { return std::filesystem::path::filename(); }
+
+        /**
+         * Return a UTF-8 representation of the path as a std::string, for
+         * compatibility with code using std::string. In C++20
+         * std::filesystem::path::u8string() returns a std::u8string (char8_t)
+         * which does not implicitly convert to std::string anymore, so the
+         * conversion is done explicitly here.
+         */
+        std::string utf8string() const
+        {
+            const std::u8string& utf8_str{std::filesystem::path::u8string()};
+            return std::string{utf8_str.begin(), utf8_str.end()};
+        }
     };
+
+    /**
+     * Create a path from a UTF-8 encoded string. std::filesystem::u8path()
+     * dropped its std::string overload in C++20, therefore provide an
+     * equivalent helper accepting a std::string_view.
+     */
+    static inline path u8path(std::string_view utf8_str)
+    {
+        return std::filesystem::path(std::u8string{utf8_str.begin(), utf8_str.end()});
+    }
 
     // Disallow implicit std::string conversion for absolute to avoid
     // locale-dependent encoding on windows.
@@ -114,7 +138,7 @@ namespace fs {
     static inline std::string PathToString(const path& path)
     {
 #ifdef WIN32
-        return path.u8string();
+        return path.utf8string();
 #else
         static_assert(std::is_same<path::string_type, std::string>::value, "PathToString not implemented on this platform");
         return path.std::filesystem::path::string();
