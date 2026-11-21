@@ -6,6 +6,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 
 enum CustomTxErrCodes : uint32_t {
     NotSpecified = 0,
@@ -23,12 +24,24 @@ enum CustomTxErrCodes : uint32_t {
 };
 
 struct Res {
-    bool ok;
+    bool ok{false};
     std::string msg;
-    uint32_t code;
+    uint32_t code{0};
     std::string dbgMsg;  // CValidationState support
 
-    Res() = delete;
+    // C++20 removed the aggregate initialisation rules that allowed `Res` to be
+    // default constructed via `Res res{};` while the default constructor was
+    // deleted. An explicit default constructor keeps the very same observable
+    // state (ok == false, empty msg/dbgMsg and code == 0) and an explicit
+    // four argument constructor keeps the `Res{ok, msg, code, dbgMsg}` call
+    // sites working.
+    Res() = default;
+
+    Res(bool ok_, std::string msg_, uint32_t code_, std::string dbgMsg_)
+        : ok{ok_},
+          msg{std::move(msg_)},
+          code{code_},
+          dbgMsg{std::move(dbgMsg_)} {}
 
     operator bool() const { return ok; }
 

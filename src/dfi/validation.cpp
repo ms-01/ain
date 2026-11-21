@@ -1612,14 +1612,14 @@ void ConsolidateRewards(CCustomCSView &view,
                 // This entire block is already serialized with single merge worker.
                 // So, relaxed ordering is more than sufficient - don't even need
                 // atomics really.
-                auto itemsCompleted = tasksCompleted.fetch_add(1, std::memory_order::memory_order_relaxed);
+                auto itemsCompleted = tasksCompleted.fetch_add(1, std::memory_order_relaxed);
                 const auto logTimeIntervalMillis = 3 * 1000;
                 if (GetTimeMillis() - reportedTs > logTimeIntervalMillis) {
                     LogPrintf("Reward consolidation: %.2f%% completed (%d/%d)\n",
                               (itemsCompleted * 1.f / owners.size()) * 100.0,
                               itemsCompleted,
                               owners.size());
-                    reportedTs.store(GetTimeMillis(), std::memory_order::memory_order_relaxed);
+                    reportedTs.store(GetTimeMillis(), std::memory_order_relaxed);
                 }
             });
         });

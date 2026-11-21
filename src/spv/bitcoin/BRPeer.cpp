@@ -858,7 +858,10 @@ static int _BRPeerOpenSocket(BRPeer *peer, int domain, double timeout, int *erro
     SOCKET sock = INVALID_SOCKET;
 
     ctx->lock.lock();
-    sock = ctx->socket = socket(domain, SOCK_STREAM, IPPROTO_TCP);
+    // Do not chain the assignment: `ctx->socket` is volatile and using the
+    // result of an assignment to a volatile object is deprecated in C++20.
+    sock = socket(domain, SOCK_STREAM, IPPROTO_TCP);
+    ctx->socket = sock;
     ctx->lock.unlock();
 
     if (sock == INVALID_SOCKET) {

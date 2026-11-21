@@ -14,10 +14,10 @@ DARWIN_SHAREDCC_FLAGS=-target $(host) -mmacosx-version-min=$(OSX_MIN_VERSION) --
 # has been built on Bitcoin. For now, we follow the BTC way
 # until we can resolve the specific blockers
 darwin_CC=clang $(DARWIN_SHAREDCC_FLAGS)
-darwin_CXX=clang++ -stdlib=libc++ -std=c++17 $(DARWIN_SHAREDCC_FLAGS)
+darwin_CXX=clang++ -stdlib=libc++ -std=c++20 $(DARWIN_SHAREDCC_FLAGS)
 
 darwin_CFLAGS=-pipe
-darwin_CXXFLAGS=$(darwin_CFLAGS) -stdlib=libc++ -std=c++17
+darwin_CXXFLAGS=$(darwin_CFLAGS) -stdlib=libc++ -std=c++20
 
 darwin_release_CFLAGS=-O2
 darwin_release_CXXFLAGS=$(darwin_release_CFLAGS)

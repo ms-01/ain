@@ -7,11 +7,11 @@ These are the dependencies currently used by Bitcoin Core. You can find instruct
 | --- | --- | --- | --- | --- | --- |
 | Berkeley DB | [4.8.30](https://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html) | 4.8.x | No |  |  |
 | Boost | [1.86.0](https://www.boost.org/users/download/) | [1.77.0](https://www.boost.org/users/download/) | No |  |  |
-| Clang |  | [5.0+](https://releases.llvm.org/download.html) (C++17 support) |  |  |  |
+| Clang |  | [12+](https://releases.llvm.org/download.html) (C++20 support) |  |  |  |
 | Expat | [2.2.7](https://libexpat.github.io/) |  | No | Yes |  |
 | fontconfig | [2.12.1](https://www.freedesktop.org/software/fontconfig/release/) |  | No | Yes |  |
 | FreeType | [2.7.1](https://download.savannah.gnu.org/releases/freetype) |  | No |  |  |
-| GCC |  | [7+](https://gcc.gnu.org/) (C++17 support) |  |  |  |
+| GCC |  | [10+](https://gcc.gnu.org/) (C++20 support) |  |  |  |
 | HarfBuzz-NG |  |  |  |  |  |
 | libevent | [2.1.8-stable](https://github.com/libevent/libevent/releases) | 2.0.22 | No |  |  |
 | libpng |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk) |
@@ -27,6 +27,13 @@ These are the dependencies currently used by Bitcoin Core. You can find instruct
 | xkbcommon |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk) (Linux only) |
 | ZeroMQ | [4.3.5](https://github.com/zeromq/libzmq/releases) | 4.0.0 | No |  |  |
 | zlib | [1.2.11](https://zlib.net/) |  |  |  | No |
+
+C++ standard
+------------
+The code base is compiled as C++20 (`-std=c++20`, no GNU extensions). The compiler
+must therefore support C++20, which means GCC 10 or newer and Clang 12 or newer.
+GCC 11+ and Clang 14+ are recommended, as they are the versions used by the CI
+builder images. Apple Clang 13 or newer (Xcode 13 or newer) is required on macOS.
 
 Controlling dependencies
 ------------------------

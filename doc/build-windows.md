@@ -17,6 +17,11 @@ Other options which may work, but which have not been extensively tested are (pl
 * On Windows, using a POSIX compatibility layer application such as [cygwin](http://www.cygwin.com/) or [msys2](http://www.msys2.org/).
 * On Windows, using a native compiler tool chain such as [Visual Studio](https://www.visualstudio.com).
 
+> Note: The code base is compiled as C++20. The Mingw-w64 cross compiler
+> tool chain therefore has to provide a C++20 capable GCC (GCC 10+), and a
+> native build requires a C++20 capable Visual Studio installation
+> (Visual Studio 2019 16.11 or newer).
+
 Installing Windows Subsystem for Linux
 ---------------------------------------
 
