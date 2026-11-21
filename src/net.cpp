@@ -390,8 +390,27 @@ static CAddress GetBindAddress(SOCKET sock)
     return addr_bind;
 }
 
+/**
+ * Normalize the port of an I2P address.
+ *
+ * I2P destinations are portless (the SAM v3.1 protocol has no notion of a
+ * destination port), so the port of an I2P CService is always 0. The
+ * normalization has to happen before any CService comparison (FindNode(),
+ * CNode address equality, netgroups), so that "<addr>" and "<addr>:1234"
+ * refer to the same peer.
+ */
+static CAddress NormalizeI2PAddress(const CAddress& addr)
+{
+    if (!addr.IsI2P()) return addr;
+    return CAddress(i2p::NormalizeI2PService(addr), addr.nServices);
+}
+
 CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, bool manual_connection)
 {
+    // I2P destinations are portless: normalize the port before the address is
+    // compared with the addresses of the already connected peers.
+    addrConnect = NormalizeI2PAddress(addrConnect);
+
     if (pszDest == nullptr) {
         if (IsLocal(addrConnect))
             return nullptr;
@@ -435,14 +454,31 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
         }
     }
 
+    // The resolved address may carry the default port of the chain: the I2P
+    // destinations are portless, so the port is normalized here as well.
+    addrConnect = NormalizeI2PAddress(addrConnect);
+
     // Connect
     bool connected = false;
     SOCKET hSocket = INVALID_SOCKET;
     proxyType proxy;
+    i2p::Connection i2p_conn;
     if (addrConnect.IsValid()) {
         bool proxyConnectionFailed = false;
 
-        if (GetProxy(addrConnect.GetNetwork(), proxy)) {
+        if (addrConnect.IsI2P()) {
+            // The I2P transport is not a SOCKS5 proxy: the destination is
+            // reached through the SAM v3 bridge of the I2P session.
+            if (!m_i2p_sam_session) {
+                LogPrint(BCLog::I2P, "Cannot connect to %s: no I2P SAM bridge is configured\n",
+                         addrConnect.ToStringIP());
+                return nullptr;
+            }
+            connected = m_i2p_sam_session->Connect(addrConnect, i2p_conn, proxyConnectionFailed);
+            if (connected) {
+                hSocket = i2p_conn.sock;
+            }
+        } else if (GetProxy(addrConnect.GetNetwork(), proxy)) {
             hSocket = CreateSocket(proxy.proxy);
             if (hSocket == INVALID_SOCKET) {
                 return nullptr;
@@ -479,7 +515,10 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
     // Add node
     NodeId id = GetNewNodeId();
     uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE).Write(id).Finalize();
-    CAddress addr_bind = GetBindAddress(hSocket);
+    // The local address of an I2P connection is our own I2P destination and
+    // not the TCP endpoint of the SAM bridge: the endpoint of the bridge must
+    // not leak into the peer information or into the netgroups.
+    CAddress addr_bind = addrConnect.IsI2P() ? CAddress(i2p_conn.me, NODE_NONE) : GetBindAddress(hSocket);
     // For outbound connections, the port of the bound address is randomly
     // assigned by the OS and would therefore not be useful for seeding.
     const uint64_t network_key = m_addr_response_cache.ComputeKey(addrConnect, addr_bind, false);
@@ -1042,6 +1081,112 @@ void CConnman::AcceptConnection(const ListenSocket& hListenSocket) {
         LOCK(cs_vNodes);
         vNodes.push_back(pnode);
     }
+}
+
+/**
+ * Create a node from an accepted I2P connection.
+ *
+ * The peer address is the I2P destination of the peer, the local address is
+ * our own I2P destination. The TCP endpoint of the SAM bridge is never part
+ * of the node information.
+ */
+void CConnman::AcceptI2PConnection(i2p::Connection& conn)
+{
+    const CService& peer = conn.peer;
+
+    int nInbound = 0;
+    {
+        LOCK(cs_vNodes);
+        for (const CNode* pnode : vNodes) {
+            if (pnode->fInbound) nInbound++;
+        }
+    }
+    const int nMaxInbound = nMaxConnections - (nMaxOutbound + nMaxFeeler);
+
+    if (!fNetworkActive) {
+        LogPrint(BCLog::NET, "connection from %s dropped: not accepting new connections\n", peer.ToStringIP());
+        CloseSocket(conn.sock);
+        conn.sock = INVALID_SOCKET;
+        return;
+    }
+
+    if (!IsSelectableSocket(conn.sock)) {
+        LogPrint(BCLog::NET, "connection from %s dropped: non-selectable socket\n", peer.ToStringIP());
+        CloseSocket(conn.sock);
+        conn.sock = INVALID_SOCKET;
+        return;
+    }
+
+    // According to the internet TCP_NODELAY is not carried into accepted sockets
+    // on all platforms.  Set it again here just to be sure.
+    SetSocketNoDelay(conn.sock);
+
+    // The ban list has no representation for the I2P destinations (they are
+    // not addressable in the legacy format), so an I2P peer can not be banned.
+
+    if (nInbound >= nMaxInbound) {
+        if (!AttemptToEvictConnection()) {
+            // No connection to evict, disconnect the new connection
+            LogPrint(BCLog::NET, "failed to find an eviction candidate - connection dropped (full)\n");
+            CloseSocket(conn.sock);
+            conn.sock = INVALID_SOCKET;
+            return;
+        }
+    }
+
+    NodeId id = GetNewNodeId();
+    uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE).Write(id).Finalize();
+    const CAddress addr_bind = CAddress(conn.me, NODE_NONE);
+    // Inbound connections use the bind address as part of the network key, so
+    // that responses are cached per local listening socket.
+    const uint64_t network_key = m_addr_response_cache.ComputeKey(peer, addr_bind, true);
+
+    const CAddress addr_peer(peer, NODE_NONE);
+    CNode* pnode = new CNode(id, nLocalServices, GetBestHeight(), conn.sock, addr_peer, CalculateKeyedNetGroup(addr_peer), nonce, addr_bind, network_key, "", true);
+    pnode->AddRef();
+    m_msgproc->InitializeNode(pnode);
+
+    LogPrint(BCLog::NET, "connection from %s accepted\n", peer.ToStringIP());
+
+    {
+        LOCK(cs_vNodes);
+        vNodes.push_back(pnode);
+    }
+    // The ownership of the socket was transferred to the node.
+    conn.sock = INVALID_SOCKET;
+}
+
+/**
+ * Accept the inbound I2P connections through the SAM bridge.
+ */
+void CConnman::ThreadI2PAcceptIncoming()
+{
+    LogPrint(BCLog::I2P, "Starting the I2P accept thread\n");
+
+    i2p::Connection conn;
+
+    while (!interruptNet) {
+        if (!m_i2p_sam_session) break;
+
+        if (!m_i2p_sam_session->Listen(conn)) {
+            if (!interruptNet.sleep_for(std::chrono::seconds(5))) break;
+            continue;
+        }
+
+        if (!m_i2p_sam_session->Accept(conn)) {
+            // The accept socket is not used anymore.
+            if (conn.sock != INVALID_SOCKET) {
+                CloseSocket(conn.sock);
+                conn.sock = INVALID_SOCKET;
+            }
+            if (!interruptNet.sleep_for(std::chrono::seconds(5))) break;
+            continue;
+        }
+
+        AcceptI2PConnection(conn);
+    }
+
+    LogPrint(BCLog::I2P, "Stopping the I2P accept thread\n");
 }
 
 void CConnman::DisconnectNodes()
@@ -2306,6 +2451,14 @@ bool CConnman::Start(CScheduler& scheduler, const Options& connOptions)
     interruptNet.reset();
     flagInterruptMsgProc = false;
 
+    // The I2P SAM session is created lazily (on the first I2P connection
+    // attempt): an unreachable SAM bridge must not prevent the node from
+    // starting.
+    if (connOptions.m_i2p_sam.IsValid()) {
+        m_i2p_sam_session = std::make_unique<i2p::sam::Session>(connOptions.m_i2p_private_key_path, connOptions.m_i2p_sam, &interruptNet);
+        LogPrint(BCLog::I2P, "Using the I2P SAM bridge %s\n", connOptions.m_i2p_sam.ToStringIPPort());
+    }
+
     {
         LOCK(mutexMsgProc);
         fMsgProcWake = false;
@@ -2313,6 +2466,11 @@ bool CConnman::Start(CScheduler& scheduler, const Options& connOptions)
 
     // Send and receive from sockets, accept connections
     threadSocketHandler = std::thread(&TraceThread<std::function<void()> >, "net", std::function<void()>(std::bind(&CConnman::ThreadSocketHandler, this)));
+
+    // Accept the inbound I2P connections through the SAM bridge
+    if (m_i2p_sam_session && connOptions.m_i2p_accept_incoming) {
+        threadI2PAcceptIncoming = std::thread(&TraceThread<std::function<void()> >, "i2paccept", std::function<void()>(std::bind(&CConnman::ThreadI2PAcceptIncoming, this)));
+    }
 
     if (!gArgs.GetBoolArg("-dnsseed", true))
         LogPrintf("DNS seeding disabled\n");
@@ -2383,6 +2541,11 @@ void CConnman::Interrupt()
 
 void CConnman::Stop()
 {
+    if (threadI2PAcceptIncoming.joinable())
+        threadI2PAcceptIncoming.join();
+    // The destructor of the session closes the control socket.
+    m_i2p_sam_session.reset();
+
     if (threadMessageHandler.joinable())
         threadMessageHandler.join();
     if (threadOpenConnections.joinable())

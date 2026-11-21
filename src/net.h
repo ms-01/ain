@@ -14,6 +14,7 @@
 #include <compat.h>
 #include <crypto/siphash.h>
 #include <hash.h>
+#include <i2p.h>
 #include <limitedmap.h>
 #include <netaddress.h>
 #include <net_permissions.h>
@@ -69,6 +70,10 @@ static const int MAX_OUTBOUND_CONNECTIONS = 8;
 static const int MAX_ADDNODE_CONNECTIONS = 8;
 /** -listen default */
 static const bool DEFAULT_LISTEN = true;
+/** -i2pacceptincoming default */
+static const bool DEFAULT_I2P_ACCEPT_INCOMING = false;
+/** The default port of an I2P SAM v3 bridge. */
+static const int DEFAULT_I2P_SAM_PORT = 7656;
 /** -upnp default */
 #ifdef USE_UPNP
 static const bool DEFAULT_UPNP = USE_UPNP;
@@ -152,6 +157,12 @@ public:
         bool m_use_addrman_outgoing = true;
         std::vector<std::string> m_specified_outgoing;
         std::vector<std::string> m_added_nodes;
+        //! The I2P SAM v3 bridge (empty if the I2P transport is not used).
+        CService m_i2p_sam;
+        //! Whether to accept inbound I2P connections through the SAM bridge.
+        bool m_i2p_accept_incoming = false;
+        //! The file the I2P private key is stored in.
+        fs::path m_i2p_private_key_path;
     };
 
     void Init(const Options& connOptions) {
@@ -366,6 +377,8 @@ private:
     void SocketHandler();
     void ThreadSocketHandler();
     void ThreadDNSAddressSeed();
+    void ThreadI2PAcceptIncoming();
+    void AcceptI2PConnection(i2p::Connection& conn);
 
     uint64_t CalculateKeyedNetGroup(const CAddress& ad) const;
 
@@ -470,6 +483,15 @@ private:
     std::thread threadOpenAddedConnections;
     std::thread threadOpenConnections;
     std::thread threadMessageHandler;
+    std::thread threadI2PAcceptIncoming;
+
+    /**
+     * The I2P SAM v3 session (if the I2P transport is used).
+     *
+     * The session is created lazily (on the first I2P connection attempt) and
+     * re-created after a failure. It is guarded by its own mutex.
+     */
+    std::unique_ptr<i2p::sam::Session> m_i2p_sam_session;
 
     /** flag for deciding to connect to an extra outbound peer,
      *  in excess of nMaxOutbound

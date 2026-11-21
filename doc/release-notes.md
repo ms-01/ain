@@ -1,6 +1,34 @@
 DeFiChain release notes (unreleased)
 ====================================
 
+I2P SAM v3 transport
+--------------------
+
+- The node can now connect to peers over I2P through a SAM v3.1 bridge
+  (upstream Bitcoin Core v22.0). The new options are:
+
+  - `-i2psam=<host:port>` selects the SAM bridge (default port: 7656),
+  - `-i2p=<host:port>` is an alias of `-i2psam`,
+  - `-i2pacceptincoming` accepts the inbound I2P connections through the bridge
+    (disabled by default, requires `-i2psam`).
+
+  The bridge is not a SOCKS5 proxy: it is not registered with `-proxy` and it
+  is not used for the `.onion` addresses. An invalid value is a startup error,
+  an unreachable bridge is not: the SAM session is created lazily and is
+  re-created after a failure.
+
+  The I2P destinations are portless (the SAM v3.1 protocol has no notion of a
+  destination port): a port in the configuration string is accepted but
+  ignored, the node always uses the port 0 for the I2P peers.
+
+  The private key of the node (its I2P destination) is stored in
+  `<datadir>/i2p_private_key` with the permissions 0600. It is never logged.
+
+  The transport does not change how the addresses are represented, persisted
+  or relayed: the I2P addresses are neither stored in `peers.dat` nor
+  advertised to the other peers, so the I2P peers have to be configured
+  locally. See `doc/i2p.md` for the operator documentation.
+
 EVM replace-by-fee fee increment
 -------------------------------
 

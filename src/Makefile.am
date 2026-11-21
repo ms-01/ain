@@ -477,6 +477,7 @@ libdefi_server_a_SOURCES = \
   dfi/validation.cpp \
   dfi/vault.cpp \
   dfi/vaulthistory.cpp \
+  i2p.cpp \
   mempool_accept.cpp \
   miner.cpp \
   net.cpp \
