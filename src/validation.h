@@ -731,6 +731,46 @@ public:
                            CBlockIndex **ppindex) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /**
+     * Headers that are stored in the block index but that do not extend the best
+     * header chain ("side chain" headers). On a proof of stake chain such headers
+     * are cheap to create: a peer only needs a key pair to produce an arbitrary
+     * number of headers that pass all header level checks. Every header that is
+     * added to the block index costs memory (the index entry) and disk space (the
+     * block index database), so the amount of side chain headers that a peer may
+     * add is bounded.
+     *
+     * The map holds the peer that introduced the header, so that the accounting
+     * can be given back to that peer once the header becomes anchored (the chain
+     * of the header contains a validated block).
+     */
+    std::unordered_map<const CBlockIndex *, int64_t> m_unanchored_headers GUARDED_BY(cs_main);
+
+    //! Number of headers that are accounted in m_unanchored_headers.
+    int64_t m_unanchored_header_count GUARDED_BY(cs_main){0};
+
+    /**
+     * The number of side chain headers that are currently accounted for. This is
+     * the global budget that backstops the per peer budget: a peer that spreads
+     * its headers over many connections does not get more than the global budget.
+     */
+    int64_t GetUnanchoredHeaderCount() const EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return m_unanchored_header_count; }
+
+    /**
+     * Account a header that was added to the block index as side chain material.
+     */
+    void NoteUnanchoredHeader(const CBlockIndex *pindex, int64_t peer_id) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+    /**
+     * Give the accounting of the headers of the given chain back: the headers
+     * between the last validated block and the given tip are anchored now, they
+     * are part of a chain that contains a validated block.
+     *
+     * @param[in] tip The tip of the chain that just became anchored.
+     * @return The number of headers per peer id that became anchored.
+     */
+    std::map<int64_t, int64_t> UnanchorHeaders(const CBlockIndex *tip) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+    /**
      * Register (or update) the prune lock of the index with the given name.
      */
     void UpdatePruneLock(const std::string& name, const PruneLockInfo& lock_info) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
@@ -744,6 +784,38 @@ public:
 
 /** The global block manager (tree of blocks, prune locks, ...). */
 extern BlockManager g_blockman;
+
+/**
+ * Default maximum number of side chain headers (headers that do not extend the
+ * best header chain) that a single peer may add to the block index.
+ */
+static constexpr int64_t DEFAULT_MAX_UNANCHORED_HEADERS_PER_PEER = 20000;
+
+/**
+ * Default maximum number of side chain headers that all peers together may add
+ * to the block index. This is the backstop for an attacker that spreads its
+ * headers over many connections.
+ */
+static constexpr int64_t DEFAULT_MAX_UNANCHORED_HEADERS = 200000;
+
+/**
+ * Compute how many of the given new side chain headers may be added to the block
+ * index without exceeding the per peer and the global budget.
+ *
+ * A negative limit means that the limit is not applied.
+ *
+ * @param[in] peer_count   The number of side chain headers of the peer already.
+ * @param[in] global_count The number of side chain headers of all peers already.
+ * @param[in] n_new        The number of new side chain headers of the peer.
+ * @param[in] max_per_peer The maximum number of side chain headers of the peer.
+ * @param[in] max_global   The maximum number of side chain headers of all peers.
+ * @return The number of headers that may be added to the block index.
+ */
+int64_t GetUnanchoredHeaderAllowance(int64_t peer_count,
+                                     int64_t global_count,
+                                     int64_t n_new,
+                                     int64_t max_per_peer,
+                                     int64_t max_global);
 
 /**
  * Compute the highest height which may be pruned, taking the currently active

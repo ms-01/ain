@@ -314,6 +314,15 @@ struct CNodeState {
     const CBlockIndex *pindexBestHeaderSent;
     //! Length of current-streak of unconnecting headers announcements
     int nUnconnectingHeaders;
+    /**
+     * Number of headers that this peer added to the block index as side chain
+     * material, i.e. headers that do not extend the best header chain. Such
+     * headers are cheap to create on a proof of stake chain, so the amount of
+     * them is bounded per peer and globally. The counter is given back when the
+     * headers of the peer become anchored, i.e. when the chain of the headers
+     * contains a validated block.
+     */
+    int64_t nUnanchoredHeaders{0};
     //! Whether we've started headers synchronization with this peer.
     bool fSyncStarted;
     //! When to potentially disconnect peer for stalling headers download
@@ -2265,7 +2274,43 @@ inline void static SendBlockTransactions(const CBlock& block, const BlockTransac
     connman->PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::BLOCKTXN, resp));
 }
 
-bool static ProcessHeadersMessage(CNode *pfrom, CConnman *connman, const std::vector<CBlockHeader>& headers, const CChainParams& chainparams, bool via_compact_block)
+/**
+ * Give the side chain header accounting of the headers of a chain back when the
+ * chain becomes anchored: the headers between the last validated block and the
+ * tip of the chain are part of a chain that contains a validated block now.
+ *
+ * The headers of a peer are counted against the peer that introduced them. The
+ * counter of the peer is given back here, so that a peer is never punished
+ * cumulatively for headers that it delivered honestly.
+ */
+static void UnanchorConnectedHeaders(const uint256& block_hash)
+{
+    LOCK_PEER();
+    LOCK_CHAIN();
+    const CBlockIndex *pindex = LookupBlockIndex(block_hash);
+    if (pindex == nullptr || !::ChainActive().Contains(pindex)) {
+        // The block is not part of the active chain: the headers of its chain
+        // stay unanchored.
+        return;
+    }
+    const std::map<int64_t, int64_t> unanchored = g_blockman.UnanchorHeaders(pindex);
+    for (const auto& entry : unanchored) {
+        CNodeState *nodestate = State(entry.first);
+        if (nodestate == nullptr) {
+            // The peer is gone: its headers stay in the block index, so they stay
+            // accounted for in the global budget.
+            continue;
+        }
+        nodestate->nUnanchoredHeaders -= entry.second;
+        if (nodestate->nUnanchoredHeaders < 0) {
+            nodestate->nUnanchoredHeaders = 0;
+        }
+        LogPrint(BCLog::NET, "peer=%d: %d side chain headers are anchored now (peer=%d)\n",
+                 entry.first, entry.second, nodestate->nUnanchoredHeaders);
+    }
+}
+
+bool static ProcessHeadersMessage(CNode *pfrom, CConnman *connman, std::vector<CBlockHeader>& headers, const CChainParams& chainparams, bool via_compact_block)
 {
     const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
     size_t nCount = headers.size();
@@ -2281,6 +2326,15 @@ bool static ProcessHeadersMessage(CNode *pfrom, CConnman *connman, const std::ve
     bool fDisconnect = false;
     int nMisbehavior = 0;
     std::string strMisbehaviorMessage;
+    // Index of the first header of the batch that is not known yet. The headers
+    // of a batch are continuous, so all headers after the first unknown header
+    // are unknown as well. Both are needed for the side chain header budget
+    // below.
+    size_t nFirstNewHeader = 0;
+    size_t nNewHeaders = 0;
+    // Whether the new headers of the batch continue the current best header
+    // chain. Headers that do not continue it are side chain material.
+    bool fExtendsBestHeaderChain = true;
     {
         LOCK_PEER();
         LOCK_CHAIN();
@@ -2328,6 +2382,73 @@ bool static ProcessHeadersMessage(CNode *pfrom, CConnman *connman, const std::ve
             if (!fDisconnect && !LookupBlockIndex(hashLastBlock)) {
                 received_new_header = true;
             }
+
+            if (!fDisconnect) {
+                // Find the first header of the batch that is not known yet. The
+                // headers of a batch are continuous, so all headers after the
+                // first unknown header are unknown as well.
+                nFirstNewHeader = 0;
+                while (nFirstNewHeader < nCount && LookupBlockIndex(headers[nFirstNewHeader].GetHash()) != nullptr) {
+                    ++nFirstNewHeader;
+                }
+                nNewHeaders = nCount - nFirstNewHeader;
+
+                if (nNewHeaders > 0) {
+                    // The base of the new headers is the last header of the batch
+                    // that is known already or, if the batch starts with unknown
+                    // headers, the parent of the first header of the batch.
+                    const CBlockIndex *pindexBase = nullptr;
+                    if (nFirstNewHeader > 0) {
+                        pindexBase = LookupBlockIndex(headers[nFirstNewHeader - 1].GetHash());
+                    } else {
+                        pindexBase = LookupBlockIndex(headers[0].hashPrevBlock);
+                    }
+                    // Headers that continue the current best header chain are
+                    // not side chain material: they are the headers of the chain
+                    // that the node downloads the blocks of. Everything else is
+                    // side chain material and is bounded by a budget, because on
+                    // a proof of stake chain such headers are cheap to create:
+                    // a peer only needs a key pair to produce an arbitrary
+                    // number of headers that pass all header level checks.
+                    //
+                    // Residual risk: the budget does not cover the headers of a
+                    // chain that a peer makes the best header chain of the node.
+                    // On a proof of stake chain the claimed chain work of a
+                    // header chain is cheap to inflate, so a peer can take over
+                    // the header tip of the node with a forged chain. The
+                    // headers of such a chain continue the best header chain and
+                    // are therefore not counted. The memory that the block index
+                    // of the node uses is bounded by the headers of the peers
+                    // that do not take over the header tip only.
+                    fExtendsBestHeaderChain = (pindexBase != nullptr && pindexBase == pindexBestHeader);
+
+                    if (!fExtendsBestHeaderChain) {
+                        const int64_t maxPerPeer = gArgs.GetArg("-maxunanchoredheadersperpeer", DEFAULT_MAX_UNANCHORED_HEADERS_PER_PEER);
+                        const int64_t maxGlobal = gArgs.GetArg("-maxunanchoredheaders", DEFAULT_MAX_UNANCHORED_HEADERS);
+                        const int64_t allowance = GetUnanchoredHeaderAllowance(nodestate->nUnanchoredHeaders,
+                                                                              g_blockman.GetUnanchoredHeaderCount(),
+                                                                              nNewHeaders,
+                                                                              maxPerPeer,
+                                                                              maxGlobal);
+                        if (allowance < static_cast<int64_t>(nNewHeaders)) {
+                            // Only the offending excess headers are dropped, the
+                            // peer is punished with a small misbehaviour score
+                            // only: a peer that runs into the budget is not
+                            // necessarily malicious.
+                            const size_t nDropped = static_cast<size_t>(nNewHeaders) - static_cast<size_t>(allowance);
+                            LogPrint(BCLog::NET,
+                                     "peer=%d: dropping %d side chain headers, the side chain header budget is exhausted "
+                                     "(peer=%d/%d, global=%d/%d). Note that the headers of a chain that takes over the "
+                                     "header tip of the node are not covered by this budget\n",
+                                     pfrom->GetId(), nDropped, nodestate->nUnanchoredHeaders, maxPerPeer,
+                                     g_blockman.GetUnanchoredHeaderCount(), maxGlobal);
+                            headers.resize(nFirstNewHeader + static_cast<size_t>(allowance));
+                            strMisbehaviorMessage = "too many side chain headers";
+                            nMisbehavior = 10;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2342,14 +2463,42 @@ bool static ProcessHeadersMessage(CNode *pfrom, CConnman *connman, const std::ve
     if (fUnconnectingHeaders) {
         return true;
     }
+    if (headers.empty()) {
+        // All headers of the batch were dropped: the peer exceeded its side chain
+        // header budget. There is nothing left to process.
+        return true;
+    }
 
     CValidationState state;
     CBlockHeader first_invalid_header;
-    if (!ProcessNewBlockHeaders(headers, state, chainparams, &pindexLast, &first_invalid_header)) {
-        if (state.IsInvalid()) {
-            MaybePunishNode(pfrom->GetId(), state.GetReason(), via_compact_block, "invalid header received");
-            return false;
+    const bool fHeadersAccepted = ProcessNewBlockHeaders(headers, state, chainparams, &pindexLast, &first_invalid_header);
+
+    if (nNewHeaders > 0 && !fExtendsBestHeaderChain) {
+        // Account the side chain headers that were added to the block index. The
+        // headers are counted once, when they are inserted, and are given back
+        // when they become anchored, i.e. when the chain of the headers contains
+        // a validated block.
+        LOCK_PEER();
+        LOCK_CHAIN();
+        CNodeState *nodestate = State(pfrom->GetId());
+        size_t nInserted = 0;
+        for (size_t i = nFirstNewHeader; i < headers.size(); ++i) {
+            const CBlockIndex *pindex = LookupBlockIndex(headers[i].GetHash());
+            if (pindex == nullptr) {
+                // The insertion stopped at an invalid header.
+                break;
+            }
+            g_blockman.NoteUnanchoredHeader(pindex, pfrom->GetId());
+            ++nInserted;
         }
+        nodestate->nUnanchoredHeaders += nInserted;
+        LogPrint(BCLog::NET, "peer=%d: %d side chain headers added to the block index (peer=%d, global=%d)\n",
+                 pfrom->GetId(), nInserted, nodestate->nUnanchoredHeaders, g_blockman.GetUnanchoredHeaderCount());
+    }
+
+    if (!fHeadersAccepted && state.IsInvalid()) {
+        MaybePunishNode(pfrom->GetId(), state.GetReason(), via_compact_block, "invalid header received");
+        return false;
     }
 
     {
@@ -3818,7 +3967,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             // the peer if the header turns out to be for an invalid block.
             // Note that if a peer tries to build on an invalid chain, that
             // will be detected and the peer will be banned.
-            return ProcessHeadersMessage(pfrom, connman, {cmpctblock.header}, chainparams, /*via_compact_block=*/true);
+            std::vector<CBlockHeader> cmpct_headers{cmpctblock.header};
+            return ProcessHeadersMessage(pfrom, connman, cmpct_headers, chainparams, /*via_compact_block=*/true);
         }
 
         if (fBlockReconstructed) {
@@ -3839,6 +3989,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             // compact blocks with less work than our tip, it is safe to treat
             // reconstructed compact blocks as having been requested.
             ProcessNewBlock(chainparams, pblock, /*fForceProcessing=*/true, &fNewBlock);
+            UnanchorConnectedHeaders(pblock->GetHash());
             if (fNewBlock) {
                 pfrom->nLastBlockTime = GetTime();
             } else {
@@ -3944,6 +4095,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             // protections in the compact block handler -- see related comment
             // in compact block optimistic reconstruction handling.
             ProcessNewBlock(chainparams, pblock, /*fForceProcessing=*/true, &fNewBlock);
+            UnanchorConnectedHeaders(pblock->GetHash());
             if (fNewBlock) {
                 pfrom->nLastBlockTime = GetTime();
             } else {
@@ -4008,6 +4160,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         }
         bool fNewBlock = false;
         ProcessNewBlock(chainparams, pblock, forceProcessing, &fNewBlock);
+        UnanchorConnectedHeaders(pblock->GetHash());
         if (fNewBlock) {
             pfrom->nLastBlockTime = GetTime();
         } else {
