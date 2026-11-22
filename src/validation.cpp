@@ -213,6 +213,26 @@ CBlockIndex *LookupBlockIndex(const uint256 &hash) {
     return it == g_blockman.m_block_index.end() ? nullptr : it->second;
 }
 
+int64_t GetUnanchoredHeaderAllowance(int64_t peer_count,
+                                     int64_t global_count,
+                                     int64_t n_new,
+                                     int64_t max_per_peer,
+                                     int64_t max_global) {
+    if (n_new <= 0) {
+        return 0;
+    }
+    int64_t allowed = n_new;
+    if (max_per_peer >= 0) {
+        const int64_t remaining = max_per_peer - peer_count;
+        allowed = std::min(allowed, std::max<int64_t>(remaining, 0));
+    }
+    if (max_global >= 0) {
+        const int64_t remaining = max_global - global_count;
+        allowed = std::min(allowed, std::max<int64_t>(remaining, 0));
+    }
+    return allowed;
+}
+
 CBlockIndex *FindForkInGlobalIndex(const CChain &chain, const CBlockLocator &locator) {
     AssertLockHeld(cs_main);
 
@@ -4087,6 +4107,36 @@ void CChainState::ResetBlockFailureFlags(CBlockIndex *pindex) {
 
 void ResetBlockFailureFlags(CBlockIndex *pindex) {
     return ::ChainstateActive().ResetBlockFailureFlags(pindex);
+}
+
+void BlockManager::NoteUnanchoredHeader(const CBlockIndex *pindex, int64_t peer_id) {
+    AssertLockHeld(cs_main);
+    if (m_unanchored_headers.emplace(pindex, peer_id).second) {
+        ++m_unanchored_header_count;
+    }
+}
+
+std::map<int64_t, int64_t> BlockManager::UnanchorHeaders(const CBlockIndex *tip) {
+    AssertLockHeld(cs_main);
+    std::map<int64_t, int64_t> unanchored;
+    const CBlockIndex *pindex = tip;
+    while (pindex != nullptr && pindex->nHeight > 0) {
+        auto it = m_unanchored_headers.find(pindex);
+        if (it != m_unanchored_headers.end()) {
+            // The header is part of a chain that contains a validated block now,
+            // it is not side chain material any more.
+            ++unanchored[it->second];
+            m_unanchored_headers.erase(it);
+            --m_unanchored_header_count;
+        }
+        const CBlockIndex *pprev = pindex->pprev;
+        // Everything below the last validated block is anchored already.
+        if (pprev == nullptr || (pprev->nStatus & BLOCK_VALID_SCRIPTS)) {
+            break;
+        }
+        pindex = pprev;
+    }
+    return unanchored;
 }
 
 CBlockIndex *BlockManager::AddToBlockIndex(const CBlockHeader &block) {
