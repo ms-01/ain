@@ -45,9 +45,6 @@ TX_GAS = 1_000_000
 # The hash of a block that does not exist.
 UNKNOWN_HASH = "0x" + "11" * 32
 
-# A block hash that is not the hash of a block.
-INVALID_HASH = "0x" + "22" * 32
-
 
 class EVMRpcBlocksTest(DefiTestFramework):
     def set_test_params(self):
