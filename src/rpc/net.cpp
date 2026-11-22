@@ -90,6 +90,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
             "    \"addrbind\":\"ip:port\",    (string) Bind address of the connection to the peer\n"
             "    \"addrlocal\":\"ip:port\",   (string) Local address as reported by the peer\n"
             "    \"network\":\"ipv4\",        (string) The network the peer connected over (ipv4, ipv6 or onion)\n"
+            "    \"mapped_as\": n,            (numeric) The autonomous system the peer address is mapped to (0 if unmapped or if no ASMap is used)\n"
             "    \"services\":\"xxxxxxxxxxxxxxxx\",   (string) The services offered\n"
             "    \"relaytxes\":true|false,    (boolean) Whether peer has asked us to relay transactions to it\n"
             "    \"lastsend\": ttt,           (numeric) The time in seconds since epoch (Jan 1 1970 GMT) of the last send\n"
@@ -159,6 +160,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
         if (stats.addrBind.IsValid())
             obj.pushKV("addrbind", stats.addrBind.ToString());
         obj.pushKV("network", GetNetworkName(stats.addr.GetNetClass()));
+        obj.pushKV("mapped_as", (uint64_t)g_connman->GetNetgroupManager()->GetMappedAS(stats.addr));
         obj.pushKV("services", strprintf("%016x", stats.nServices));
         obj.pushKV("relaytxes", stats.fRelayTxes);
         obj.pushKV("lastsend", stats.nLastSend);
@@ -526,6 +528,7 @@ static UniValue getnetworkinfo(const JSONRPCRequest& request)
             "  \"connections\": xxxxx,                  (numeric) the number of connections\n"
             "  \"networkactive\": true|false,           (bool) whether p2p networking is enabled\n"
             "  \"networks\": [                          (array) information per network\n"
+            "  \"asmap_version\": \"xxxx\",              (string) the version of the ASMap that is used for the address bucketing (only present if -asmap is used)\n"
             "  {\n"
             "    \"name\": \"xxx\",                     (string) network (ipv4, ipv6 or onion)\n"
             "    \"limited\": true|false,               (boolean) is the network limited using -onlynet?\n"
@@ -568,6 +571,9 @@ static UniValue getnetworkinfo(const JSONRPCRequest& request)
         obj.pushKV("connections",   (int)g_connman->GetNodeCount(CConnman::CONNECTIONS_ALL));
     }
     obj.pushKV("networks",      GetNetworksInfo());
+    if (g_connman && g_connman->GetNetgroupManager()->UsingASMap()) {
+        obj.pushKV("asmap_version", g_connman->GetNetgroupManager()->GetAsmapVersion().ToString());
+    }
     obj.pushKV("relayfee",      ValueFromAmount(::minRelayTxFee.GetFeePerK()));
     obj.pushKV("incrementalfee", ValueFromAmount(::incrementalRelayFee.GetFeePerK()));
     UniValue localAddresses(UniValue::VARR);

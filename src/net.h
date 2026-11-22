@@ -18,6 +18,7 @@
 #include <limitedmap.h>
 #include <netaddress.h>
 #include <net_permissions.h>
+#include <netgroup.h>
 #include <policy/feerate.h>
 #include <protocol.h>
 #include <random.h>
@@ -191,7 +192,7 @@ public:
         }
     }
 
-    CConnman(uint64_t seed0, uint64_t seed1);
+    CConnman(uint64_t seed0, uint64_t seed1, std::shared_ptr<const NetgroupManager> netgroupman = DefaultNetgroupManager());
     ~CConnman();
     bool Start(CScheduler& scheduler, const Options& options);
 
@@ -303,6 +304,12 @@ public:
 
     size_t GetNodeCount(NumConnections num);
     void GetNodeStats(std::vector<CNodeStats>& vstats);
+
+    /**
+     * The netgroup manager that is used for the bucketing of the addresses
+     * and for the diversity of the outbound connections.
+     */
+    const std::shared_ptr<const NetgroupManager>& GetNetgroupManager() const { return m_netgroupman; }
     bool DisconnectNode(const std::string& node);
     bool DisconnectNode(const CSubNet& subnet);
     bool DisconnectNode(const CNetAddr& addr);
@@ -430,6 +437,13 @@ private:
     std::vector<ListenSocket> vhListenSocket;
     std::atomic<bool> fNetworkActive{true};
     bool fAddressesInitialized{false};
+    /**
+     * The netgroup manager that is used for the bucketing of the addresses
+     * and for the diversity of the outbound connections.
+     *
+     * It has to be declared before the address manager, which uses it.
+     */
+    std::shared_ptr<const NetgroupManager> m_netgroupman;
     CAddrMan addrman;
     std::deque<std::string> vOneShots GUARDED_BY(cs_vOneShots);
     CCriticalSection cs_vOneShots;
