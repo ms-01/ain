@@ -33,6 +33,7 @@
 #include <dfi/threadpool.h>
 #include <miner.h>
 #include <net.h>
+#include <netgroup.h>
 #include <node/mempool_persist.h>
 #include <net_permissions.h>
 #include <net_processing.h>
@@ -58,6 +59,7 @@
 #include <txdb.h>
 #include <txmempool.h>
 #include <ui_interface.h>
+#include <util/asmap.h>
 #include <util/moneystr.h>
 #include <util/system.h>
 #include <util/threadnames.h>
@@ -505,6 +507,7 @@ void SetupServerArgs()
                  ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 
     gArgs.AddArg("-addnode=<ip>", "Add a node to connect to and attempt to keep the connection open (see the `addnode` RPC command help for more info). This option can be specified multiple times to add multiple nodes.", ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-asmap=<file>", "Specify the ASMap file to use for ASN based address bucketing. Without it the classic /16 based grouping is used. Relative paths are resolved against the network specific data directory.", ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-banscore=<n>", strprintf("Threshold for disconnecting misbehaving peers (default: %u)", DEFAULT_BANSCORE_THRESHOLD), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-bantime=<n>", strprintf("Number of seconds to keep misbehaving peers from reconnecting (default: %u)", DEFAULT_MISBEHAVING_BANTIME), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-bind=<addr>", "Bind to given address and always listen on it. Use [host]:port notation for IPv6", ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::CONNECTION);
@@ -1560,11 +1563,46 @@ void SetupScriptCheckThreads() {
     g_script_check_queue = std::make_unique<CScriptCheckQueue>(script_threads);
 }
 
+/**
+ * Create the netgroup manager that is used for the bucketing of the addresses
+ * and for the diversity of the outbound connections.
+ *
+ * The ASMap is optional: without the -asmap option the classic (prefix based)
+ * grouping is used. A missing or malformed ASMap file is a hard start-up
+ * error, because silently bucketing with a half parsed map would weaken the
+ * diversity guarantee in a way the operator cannot observe.
+ *
+ * @return the netgroup manager, or nullptr if the ASMap could not be loaded.
+ */
+static std::shared_ptr<const NetgroupManager> InitNetgroupManager()
+{
+    const std::string asmap_arg = gArgs.GetArg("-asmap", "");
+    if (asmap_arg.empty()) {
+        return DefaultNetgroupManager();
+    }
+    fs::path path = fs::PathFromString(asmap_arg);
+    if (!path.is_absolute()) {
+        path = GetDataDir() / path;
+    }
+    std::vector<unsigned char> asmap = DecodeAsmap(path);
+    if (asmap.empty()) {
+        InitError(strprintf(_("Failed to load the ASMap file '%s'. The file must exist and be a valid ASMap in the upstream binary format.").translated, fs::PathToString(path)));
+        return nullptr;
+    }
+    auto manager = std::make_shared<const NetgroupManager>(NetgroupManager::WithLoadedAsmap(std::move(asmap)));
+    LogPrintf("Using ASMap %s (version %s) for the address bucketing\n", fs::PathToString(path), manager->GetAsmapVersion().ToString());
+    return manager;
+}
+
 bool SetupNetwork() {
     assert(!g_banman);
     g_banman = std::make_unique<BanMan>(GetDataDir() / "banlist", &uiInterface, gArgs.GetArg("-bantime", DEFAULT_MISBEHAVING_BANTIME));
     assert(!g_connman);
-    g_connman = std::unique_ptr<CConnman>(new CConnman(GetRand(std::numeric_limits<uint64_t>::max()), GetRand(std::numeric_limits<uint64_t>::max())));
+    std::shared_ptr<const NetgroupManager> netgroupman = InitNetgroupManager();
+    if (!netgroupman) {
+        return false;
+    }
+    g_connman = std::unique_ptr<CConnman>(new CConnman(GetRand(std::numeric_limits<uint64_t>::max()), GetRand(std::numeric_limits<uint64_t>::max()), netgroupman));
 
     peerLogic.reset(new PeerLogicValidation(g_connman.get(), g_banman.get(), scheduler));
     RegisterValidationInterface(peerLogic.get());

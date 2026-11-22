@@ -1922,7 +1922,7 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect)
                     // but inbound and addnode peers do not use our outbound slots.  Inbound peers
                     // also have the added issue that they're attacker controlled and could be used
                     // to prevent us from connecting to particular hosts if we used them here.
-                    setConnected.insert(pnode->addr.GetGroup());
+                    setConnected.insert(m_netgroupman->GetGroup(pnode->addr));
                     nOutbound++;
                 }
             }
@@ -1966,7 +1966,7 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect)
             }
 
             // Require outbound connections, other than feelers, to be to distinct network groups
-            if (!fFeeler && setConnected.count(addr.GetGroup())) {
+            if (!fFeeler && setConnected.count(m_netgroupman->GetGroup(addr))) {
                 break;
             }
 
@@ -2331,7 +2331,12 @@ void CConnman::SetNetworkActive(bool active)
     uiInterface.NotifyNetworkActiveChanged(fNetworkActive);
 }
 
-CConnman::CConnman(uint64_t nSeed0In, uint64_t nSeed1In) : nSeed0(nSeed0In), nSeed1(nSeed1In), m_addr_response_cache(nSeed0In, nSeed1In)
+CConnman::CConnman(uint64_t nSeed0In, uint64_t nSeed1In, std::shared_ptr<const NetgroupManager> netgroupman)
+    : m_netgroupman(netgroupman ? netgroupman : DefaultNetgroupManager()),
+      addrman(m_netgroupman),
+      nSeed0(nSeed0In),
+      nSeed1(nSeed1In),
+      m_addr_response_cache(nSeed0In, nSeed1In)
 {
     SetTryNewOutboundPeer(false);
 
@@ -2973,7 +2978,7 @@ CSipHasher CConnman::GetDeterministicRandomizer(uint64_t id) const
 
 uint64_t CConnman::CalculateKeyedNetGroup(const CAddress& ad) const
 {
-    std::vector<unsigned char> vchNetGroup(ad.GetGroup());
+    std::vector<unsigned char> vchNetGroup(m_netgroupman->GetGroup(ad));
 
     return GetDeterministicRandomizer(RANDOMIZER_ID_NETGROUP).Write(vchNetGroup.data(), vchNetGroup.size()).Finalize();
 }

@@ -9,14 +9,47 @@
 #include <clientversion.h>
 #include <hash.h>
 #include <map>
+#include <memory>
 #include <netbase.h>
+#include <netgroup.h>
 #include <random.h>
 #include <streams.h>
+#include <test/data/asmap.raw.h>
+#include <test/data/asmap2.raw.h>
+
+/**
+ * The test fixtures are generated with the upstream tool
+ * contrib/asmap/asmap-tool.py encode.
+ *
+ * asmap.raw maps:
+ *   1.0.0.0/8 AS64500
+ *   2.0.0.0/8 AS64500
+ *   3.0.0.0/8 AS64501
+ *   2a01:4f8::/32 AS64500
+ *
+ * asmap2.raw maps:
+ *   1.0.0.0/8 AS64500
+ *   2.0.0.0/8 AS64501
+ *   3.0.0.0/8 AS64502
+ *   2a01:4f8::/32 AS64500
+ */
+static std::shared_ptr<const NetgroupManager> AsmapManager1()
+{
+    return std::make_shared<const NetgroupManager>(NetgroupManager::WithLoadedAsmap(
+        std::vector<unsigned char>(raw_tests::asmap_raw, raw_tests::asmap_raw + sizeof(raw_tests::asmap_raw))));
+}
+
+static std::shared_ptr<const NetgroupManager> AsmapManager2()
+{
+    return std::make_shared<const NetgroupManager>(NetgroupManager::WithLoadedAsmap(
+        std::vector<unsigned char>(raw_tests::asmap2_raw, raw_tests::asmap2_raw + sizeof(raw_tests::asmap2_raw))));
+}
 
 class CAddrManTest : public CAddrMan
 {
 public:
-    explicit CAddrManTest(bool makeDeterministic = true)
+    explicit CAddrManTest(bool makeDeterministic = true, std::shared_ptr<const NetgroupManager> netgroupman = DefaultNetgroupManager())
+        : CAddrMan(netgroupman)
     {
         if (makeDeterministic) {
             //  Set addrman addr placement to be deterministic.
@@ -327,7 +360,7 @@ BOOST_AUTO_TEST_CASE(addrman_invalid_files)
     // A file with an unknown format byte is rejected.
     {
         std::vector<unsigned char> vInvalid = vBytes;
-        vInvalid[0] = 3;
+        vInvalid[0] = 4;
         CDataStream ssIn(vInvalid, SER_DISK, CLIENT_VERSION);
         CAddrMan addrman2;
         BOOST_CHECK_THROW(ssIn >> addrman2, InvalidAddrManVersionError);
@@ -374,10 +407,183 @@ BOOST_AUTO_TEST_CASE(addrman_invalid_files)
     }
 }
 
+BOOST_AUTO_TEST_CASE(addrman_asmap_bucketing)
+{
+    const CNetAddr source = ResolveIP("252.2.2.2");
+    const CService addr1 = ResolveService("1.2.3.4", 8555);
+    const CService addr2 = ResolveService("2.3.4.5", 8555);
+
+    // An addrman that uses an ASMap writes the format with the bucketing
+    // fingerprint.
+    CAddrManTest addrman(true, AsmapManager1());
+    BOOST_CHECK_EQUAL(addrman.GetFileFormat(), ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP);
+    BOOST_CHECK(addrman.Add(CAddress(addr1, NODE_NONE), source));
+    BOOST_CHECK(addrman.Add(CAddress(addr2, NODE_NONE), source));
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << addrman;
+    const std::vector<unsigned char> vBytes(std::begin(ss), std::end(ss));
+    BOOST_CHECK_EQUAL(vBytes[0], ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP);
+
+    // Without an ASMap the classic format is written.
+    CAddrManTest classic(true);
+    BOOST_CHECK_EQUAL(classic.GetFileFormat(), ADDRMAN_FILE_FORMAT_LEGACY);
+    BOOST_CHECK(classic.Add(CAddress(addr1, NODE_NONE), source));
+    CDataStream ssClassic(SER_DISK, CLIENT_VERSION);
+    ssClassic << classic;
+    const std::vector<unsigned char> vClassic(std::begin(ssClassic), std::end(ssClassic));
+    BOOST_CHECK_EQUAL(vClassic[0], ADDRMAN_FILE_FORMAT_LEGACY);
+
+    // Loading a file that was written with the same ASMap restores the
+    // bucketing: the file is written back identically.
+    {
+        CAddrManTest restored(true, AsmapManager1());
+        CDataStream ssIn(vBytes, SER_DISK, CLIENT_VERSION);
+        ssIn >> restored;
+        BOOST_CHECK_EQUAL(restored.size(), 2U);
+        CDataStream ssOut(SER_DISK, CLIENT_VERSION);
+        ssOut << restored;
+        const std::vector<unsigned char> vOut(std::begin(ssOut), std::end(ssOut));
+        BOOST_CHECK(vOut == vBytes);
+    }
+
+    // Loading the file with a different ASMap re-buckets the entries: the
+    // entries are preserved, but the buckets (and the fingerprint) change.
+    {
+        CAddrManTest restored(true, AsmapManager2());
+        CDataStream ssIn(vBytes, SER_DISK, CLIENT_VERSION);
+        ssIn >> restored;
+        BOOST_CHECK_EQUAL(restored.size(), 2U);
+        CDataStream ssOut(SER_DISK, CLIENT_VERSION);
+        ssOut << restored;
+        const std::vector<unsigned char> vOut(std::begin(ssOut), std::end(ssOut));
+        BOOST_CHECK(vOut != vBytes);
+        BOOST_CHECK_EQUAL(vOut[0], ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP);
+    }
+
+    // Loading the file without an ASMap re-buckets the entries back to the
+    // classic grouping; the file is written in one of the classic formats
+    // again.
+    {
+        CAddrManTest restored(true);
+        CDataStream ssIn(vBytes, SER_DISK, CLIENT_VERSION);
+        ssIn >> restored;
+        BOOST_CHECK_EQUAL(restored.size(), 2U);
+        CDataStream ssOut(SER_DISK, CLIENT_VERSION);
+        ssOut << restored;
+        const std::vector<unsigned char> vOut(std::begin(ssOut), std::end(ssOut));
+        BOOST_CHECK(vOut != vBytes);
+        BOOST_CHECK(vOut[0] == ADDRMAN_FILE_FORMAT_LEGACY || vOut[0] == ADDRMAN_FILE_FORMAT_ADDRV2);
+    }
+
+    // Loading a file that was written without an ASMap with an ASMap
+    // configured re-buckets the entries as well.
+    {
+        CAddrManTest restored(true, AsmapManager1());
+        CDataStream ssIn(vClassic, SER_DISK, CLIENT_VERSION);
+        ssIn >> restored;
+        BOOST_CHECK_EQUAL(restored.size(), 1U);
+        CDataStream ssOut(SER_DISK, CLIENT_VERSION);
+        ssOut << restored;
+        const std::vector<unsigned char> vOut(std::begin(ssOut), std::end(ssOut));
+        BOOST_CHECK_EQUAL(vOut[0], ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP);
+        BOOST_CHECK(vOut != vClassic);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(addrman_asmap_tried_table)
+{
+    const CNetAddr source = ResolveIP("252.2.2.2");
+    const CService addr1 = ResolveService("1.2.3.4", 8555);
+
+    CAddrManTest addrman(true, AsmapManager1());
+    BOOST_CHECK(addrman.Add(CAddress(addr1, NODE_NONE), source));
+    addrman.Good(CAddress(addr1, NODE_NONE));
+    // The entry is in the tried table.
+    BOOST_CHECK_EQUAL(addrman.Select(false).ToString(), "1.2.3.4:8555");
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << addrman;
+
+    // The tried table is recomputed on load (with the current grouping), so
+    // the entry is still there.
+    CAddrManTest restored(true, AsmapManager1());
+    CDataStream ssIn(std::vector<unsigned char>(std::begin(ss), std::end(ss)), SER_DISK, CLIENT_VERSION);
+    ssIn >> restored;
+    BOOST_CHECK_EQUAL(restored.size(), 1U);
+    BOOST_CHECK_EQUAL(restored.Select(false).ToString(), "1.2.3.4:8555");
+}
+
+BOOST_AUTO_TEST_CASE(addrman_asmap_rebucket_collision)
+{
+    // The bucket of a new entry is a function of its netgroup and the netgroup
+    // of its source, so all the addresses of one AS that are announced by one
+    // source end up in the same bucket. If there are more of them than the
+    // bucket has positions, their positions collide.
+    //
+    // The fixture maps 1.0.0.0/8 to AS64500, so all the addresses below share
+    // one netgroup.
+    const CNetAddr source = ResolveIP("252.2.2.2");
+    CAddrManTest addrman(true, AsmapManager1());
+    for (int i = 1; i <= 255; ++i) {
+        const std::string addr = "1.0.0." + std::to_string(i);
+        BOOST_CHECK(addrman.Add(CAddress(ResolveService(addr, 8555), NODE_NONE), source));
+    }
+    // Only the addresses that got a bucket position are kept.
+    BOOST_CHECK(addrman.size() > 0);
+    BOOST_CHECK(addrman.size() <= 255U);
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << addrman;
+    const std::vector<unsigned char> vBytes(std::begin(ss), std::end(ss));
+    BOOST_CHECK_EQUAL(vBytes[0], ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP);
+
+    // Read the file with a different ASMap: the bucketing method changed, so
+    // the new table is re-bucketed. The re-bucketing assigns one bucket per
+    // entry, so the entries of one netgroup collide on the bucket positions.
+    // The entries that get no bucket must be pruned, so that the number of the
+    // written entries matches the number of the entries of the address
+    // manager (otherwise the file cannot be read back).
+    CAddrManTest rebucketed(true, AsmapManager2());
+    CDataStream ssIn(vBytes, SER_DISK, CLIENT_VERSION);
+    BOOST_CHECK_NO_THROW(ssIn >> rebucketed);
+    BOOST_CHECK(rebucketed.size() > 0);
+    // The entries that got no bucket during the re-bucketing were pruned.
+    BOOST_CHECK(rebucketed.size() <= addrman.size());
+
+    // The re-bucketed address manager must be written consistently and the
+    // written file must be readable again.
+    CDataStream ssOut(SER_DISK, CLIENT_VERSION);
+    ssOut << rebucketed;
+    const std::vector<unsigned char> vOut(std::begin(ssOut), std::end(ssOut));
+    BOOST_CHECK_EQUAL(vOut[0], ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP);
+
+    CAddrManTest restored(true, AsmapManager2());
+    CDataStream ssIn2(vOut, SER_DISK, CLIENT_VERSION);
+    BOOST_CHECK_NO_THROW(ssIn2 >> restored);
+    BOOST_CHECK_EQUAL(restored.size(), rebucketed.size());
+    BOOST_CHECK(restored.size() > 0);
+
+    // The same for the removal of the ASMap: the entries are re-bucketed with
+    // the classic grouping, the file is written in a classic format and it
+    // must be readable again.
+    CAddrManTest classic(true);
+    CDataStream ssIn3(vBytes, SER_DISK, CLIENT_VERSION);
+    BOOST_CHECK_NO_THROW(ssIn3 >> classic);
+    CDataStream ssOut3(SER_DISK, CLIENT_VERSION);
+    ssOut3 << classic;
+    const std::vector<unsigned char> vOut3(std::begin(ssOut3), std::end(ssOut3));
+    BOOST_CHECK(vOut3[0] == ADDRMAN_FILE_FORMAT_LEGACY || vOut3[0] == ADDRMAN_FILE_FORMAT_ADDRV2);
+
+    CAddrManTest restored_classic(true);
+    CDataStream ssIn4(vOut3, SER_DISK, CLIENT_VERSION);
+    BOOST_CHECK_NO_THROW(ssIn4 >> restored_classic);
+    BOOST_CHECK_EQUAL(restored_classic.size(), classic.size());
+}
+
 BOOST_AUTO_TEST_CASE(addrman_ports)
 {
     CAddrManTest addrman;
-
     CNetAddr source = ResolveIP("252.2.2.2");
 
     BOOST_CHECK_EQUAL(addrman.size(), 0U);

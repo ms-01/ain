@@ -7,6 +7,7 @@
 #define DEFI_ADDRMAN_H
 
 #include <netaddress.h>
+#include <netgroup.h>
 #include <protocol.h>
 #include <random.h>
 #include <sync.h>
@@ -15,10 +16,12 @@
 
 #include <ios>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <stdint.h>
 #include <string>
+#include <utility>
 #include <vector>
 
 /**
@@ -31,12 +34,17 @@
  *  - 2: the BIP155-capable format. The addresses that have no legacy
  *    representation (Tor v3 onion addresses and I2P destinations) are encoded
  *    in the BIP155 (ADDRv2) format.
+ *  - 3: the BIP155-capable format with a bucketing fingerprint. The entries
+ *    are encoded like in format 2 and a 32 byte fingerprint of the bucketing
+ *    method (the version of the ASMap that was used) is appended after the
+ *    bucket section. This format is only written when an ASMap is in use.
  *
- * The layout of the file is identical in both formats; only the encoding of
- * the entries differs.
+ * The layout of the file is identical in formats 1, 2 and 3; only the encoding
+ * of the entries and the presence of the trailing fingerprint differ.
  */
 static constexpr uint8_t ADDRMAN_FILE_FORMAT_LEGACY{1};
 static constexpr uint8_t ADDRMAN_FILE_FORMAT_ADDRV2{2};
+static constexpr uint8_t ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP{3};
 
 /**
  * The bit in the per-address disk version word that marks an address that is
@@ -260,13 +268,36 @@ public:
     {
     }
 
-    //! Calculate in which "tried" bucket this entry belongs
-    int GetTriedBucket(const uint256 &nKey) const;
+    /**
+     * Calculate in which "tried" bucket this entry belongs.
+     *
+     * The netgroup of the entry is passed in, so that the bucketing can be
+     * based on the ASN (when an ASMap is in use) instead of the classic
+     * prefix based grouping.
+     */
+    int GetTriedBucket(const uint256 &nKey, const std::vector<unsigned char>& group) const;
 
-    //! Calculate in which "new" bucket this entry belongs, given a certain source
-    int GetNewBucket(const uint256 &nKey, const CNetAddr& src) const;
+    //! Calculate in which "tried" bucket this entry belongs (classic grouping)
+    int GetTriedBucket(const uint256 &nKey) const
+    {
+        return GetTriedBucket(nKey, GetGroup());
+    }
 
-    //! Calculate in which "new" bucket this entry belongs, using its default source
+    /**
+     * Calculate in which "new" bucket this entry belongs, given a certain source.
+     *
+     * Both the netgroup of the entry itself and the netgroup of its source are
+     * passed in.
+     */
+    int GetNewBucket(const uint256 &nKey, const std::vector<unsigned char>& group, const std::vector<unsigned char>& source_group) const;
+
+    //! Calculate in which "new" bucket this entry belongs, given a certain source (classic grouping)
+    int GetNewBucket(const uint256 &nKey, const CNetAddr& src) const
+    {
+        return GetNewBucket(nKey, GetGroup(), src.GetGroup());
+    }
+
+    //! Calculate in which "new" bucket this entry belongs, using its default source (classic grouping)
     int GetNewBucket(const uint256 &nKey) const
     {
         return GetNewBucket(nKey, source);
@@ -395,6 +426,14 @@ private:
     //! last time Good was called (memory only)
     int64_t nLastGood GUARDED_BY(cs);
 
+    /**
+     * The netgroup manager that is used for the bucketing.
+     *
+     * Without an ASMap the manager returns the classic (prefix based) netgroup
+     * of an address, so the bucketing is unchanged.
+     */
+    std::shared_ptr<const NetgroupManager> m_netgroupman;
+
     //! Holds addrs inserted into tried table that collide with existing entries. Test-before-evict discipline used to resolve these collisions.
     std::set<int> m_tried_collisions;
 
@@ -475,7 +514,7 @@ protected:
     template<typename Stream>
     static void SerializeEntry(Stream& s, const CAddrInfo& info, uint8_t nFormat)
     {
-        if (nFormat == ADDRMAN_FILE_FORMAT_ADDRV2) {
+        if (nFormat == ADDRMAN_FILE_FORMAT_ADDRV2 || nFormat == ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP) {
             info.SerializeAddrV2(s);
         } else {
             s << info;
@@ -486,7 +525,7 @@ protected:
     template<typename Stream>
     static void UnserializeEntry(Stream& s, CAddrInfo& info, uint8_t nFormat)
     {
-        if (nFormat == ADDRMAN_FILE_FORMAT_ADDRV2) {
+        if (nFormat == ADDRMAN_FILE_FORMAT_ADDRV2 || nFormat == ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP) {
             info.UnserializeAddrV2(s);
         } else {
             s >> info;
@@ -495,19 +534,42 @@ protected:
 
 public:
     /**
-     * The format the addrman is written in: the legacy format as long as it
-     * contains no address (and no source) that needs the BIP155 encoding, the
-     * BIP155-capable format as soon as it does.
+     * The format the addrman is written in: the BIP155-capable format with a
+     * bucketing fingerprint when an ASMap is in use, the BIP155-capable format
+     * as soon as the addrman contains an address (or a source) that needs the
+     * BIP155 encoding and the legacy format otherwise.
      */
     uint8_t GetFileFormat() const
     {
         LOCK(cs);
+        if (m_netgroupman && m_netgroupman->UsingASMap()) {
+            return ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP;
+        }
         return HasAddrV2Entries_() ? ADDRMAN_FILE_FORMAT_ADDRV2 : ADDRMAN_FILE_FORMAT_LEGACY;
     }
 
     /**
+     * The netgroup of an address, as used for the bucketing and for the
+     * connection diversity.
+     */
+    std::vector<unsigned char> GetNetGroup(const CNetAddr& addr) const
+    {
+        if (m_netgroupman) return m_netgroupman->GetGroup(addr);
+        return addr.GetGroup();
+    }
+
+    /**
+     * The netgroup manager of this address manager.
+     */
+    const std::shared_ptr<const NetgroupManager>& GetNetgroupManager() const
+    {
+        return m_netgroupman;
+    }
+
+    /**
      * serialized format:
-     * * format byte (1: legacy, 2: BIP155-capable)
+     * * format byte (1: legacy, 2: BIP155-capable, 3: BIP155-capable with a
+     *   bucketing fingerprint)
      * * 0x20 + nKey (serialized as if it were a vector, for backward compatibility)
      * * nNew
      * * nTried
@@ -517,6 +579,7 @@ public:
      * * for each bucket:
      *   * number of elements
      *   * for each element: index
+     * * (format 3 only) the 32 byte fingerprint of the bucketing method
      *
      * 2**30 is xorred with the number of buckets to make addrman deserializer v0 detect it
      * as incompatible. This is necessary because it did not check the version number on
@@ -524,10 +587,17 @@ public:
      *
      * The format byte selects the encoding of the entries: in the legacy
      * format (1) every address is encoded in the legacy (pre-BIP155) format,
-     * in the BIP155-capable format (2) the addresses that have no legacy
+     * in the BIP155-capable formats (2 and 3) the addresses that have no legacy
      * representation (Tor v3 onion addresses and I2P destinations) are encoded
-     * in the BIP155 (ADDRv2) format. The layout of the file is the same in
-     * both formats.
+     * in the BIP155 (ADDRv2) format. The layout of the file is the same in all
+     * formats.
+     *
+     * Format 3 is used when an ASMap is in use: it stores the fingerprint of
+     * the bucketing method (the version of the ASMap) after the bucket
+     * section, so that a change of the ASMap can be detected on load and the
+     * entries can be re-bucketed. A node that does not know format 3 rejects
+     * the file (the file is then backed up and the node continues with an
+     * empty address manager).
      *
      * Notice that vvTried, mapAddr and vVector are never encoded explicitly;
      * they are instead reconstructed from the other information.
@@ -548,8 +618,9 @@ public:
 
         // The legacy format is used as long as the addrman contains no
         // address that needs the BIP155 encoding, so that the file stays
-        // readable by the nodes that do not support it.
-        const uint8_t nFormat = HasAddrV2Entries_() ? ADDRMAN_FILE_FORMAT_ADDRV2 : ADDRMAN_FILE_FORMAT_LEGACY;
+        // readable by the nodes that do not support it. When an ASMap is in
+        // use, the format with the bucketing fingerprint is written.
+        const uint8_t nFormat = GetFileFormat();
         s << nFormat;
         s << ((unsigned char)32);
         s << nKey;
@@ -569,6 +640,13 @@ public:
                 nIds++;
             }
         }
+        // Every entry of the new table must be referenced by at least one
+        // bucket. If an entry had no reference, it would not be written, but
+        // it would still be counted in nNew, and the file would declare more
+        // entries than it contains: the file could then not be read back.
+        // The entries without a reference are pruned when the address manager
+        // is loaded (see Unserialize()), so this must never happen.
+        assert(nIds == nNew);
         nIds = 0;
         for (const auto& entry : mapInfo) {
             const CAddrInfo &info = entry.second;
@@ -592,6 +670,11 @@ public:
                 }
             }
         }
+        // Store the fingerprint of the bucketing method after the bucket
+        // entries, so that a change of the ASMap can be detected on load.
+        if (nFormat == ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP && m_netgroupman) {
+            s << m_netgroupman->GetAsmapVersion();
+        }
     }
 
     template<typename Stream>
@@ -603,7 +686,7 @@ public:
 
         unsigned char nVersion;
         s >> nVersion;
-        if (nVersion != ADDRMAN_FILE_FORMAT_LEGACY && nVersion != ADDRMAN_FILE_FORMAT_ADDRV2) {
+        if (nVersion != ADDRMAN_FILE_FORMAT_LEGACY && nVersion != ADDRMAN_FILE_FORMAT_ADDRV2 && nVersion != ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP) {
             throw InvalidAddrManVersionError("Unsupported format of the addrman database: " + std::to_string(nVersion));
         }
         unsigned char nKeySize;
@@ -633,16 +716,6 @@ public:
             mapAddr[info] = n;
             info.nRandomPos = vRandom.size();
             vRandom.push_back(n);
-            if (nUBuckets != ADDRMAN_NEW_BUCKET_COUNT) {
-                // In case the new table data cannot be used (bucket count wrong),
-                // immediately try to give them a reference based on their primary source address.
-                int nUBucket = info.GetNewBucket(nKey);
-                int nUBucketPos = info.GetBucketPosition(nKey, true, nUBucket);
-                if (vvNew[nUBucket][nUBucketPos] == -1) {
-                    vvNew[nUBucket][nUBucketPos] = n;
-                    info.nRefCount++;
-                }
-            }
         }
         nIdCount = nNew;
 
@@ -651,7 +724,7 @@ public:
         for (int n = 0; n < nTried; n++) {
             CAddrInfo info;
             UnserializeEntry(s, info, nVersion);
-            int nKBucket = info.GetTriedBucket(nKey);
+            int nKBucket = info.GetTriedBucket(nKey, GetNetGroup(info));
             int nKBucketPos = info.GetBucketPosition(nKey, false, nKBucket);
             if (vvTried[nKBucket][nKBucketPos] == -1) {
                 info.nRandomPos = vRandom.size();
@@ -668,6 +741,10 @@ public:
         nTried -= nLost;
 
         // Deserialize positions in the new table (if possible).
+        // The bucket entries are collected first: the fingerprint of the
+        // bucketing method is stored after the bucket section, so it is only
+        // known once the whole file has been read.
+        std::vector<std::pair<int, int>> bucket_entries;
         for (int bucket = 0; bucket < nUBuckets; bucket++) {
             int nSize = 0;
             s >> nSize;
@@ -675,17 +752,68 @@ public:
                 int nIndex = 0;
                 s >> nIndex;
                 if (nIndex >= 0 && nIndex < nNew) {
-                    CAddrInfo &info = mapInfo[nIndex];
-                    int nUBucketPos = info.GetBucketPosition(nKey, true, bucket);
-                    if (nUBuckets == ADDRMAN_NEW_BUCKET_COUNT && vvNew[bucket][nUBucketPos] == -1 && info.nRefCount < ADDRMAN_NEW_BUCKETS_PER_ADDRESS) {
-                        info.nRefCount++;
-                        vvNew[bucket][nUBucketPos] = nIndex;
-                    }
+                    bucket_entries.emplace_back(bucket, nIndex);
+                }
+            }
+        }
+
+        // The fingerprint of the bucketing method (the version of the ASMap
+        // that was used when the file was written). It is only present in the
+        // format with the fingerprint; for the other formats the stored
+        // fingerprint is the all-zero value, i.e. the classic grouping.
+        uint256 stored_fingerprint;
+        if (nVersion == ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP) {
+            s >> stored_fingerprint;
+        }
+        const uint256 effective_fingerprint = m_netgroupman ? m_netgroupman->GetAsmapVersion() : uint256{};
+        const bool restore_bucketing{nUBuckets == ADDRMAN_NEW_BUCKET_COUNT &&
+                                     stored_fingerprint == effective_fingerprint};
+
+        if (restore_bucketing) {
+            // The bucketing method did not change: restore the bucket positions
+            // of the new table as they were stored.
+            for (const auto& bucket_entry : bucket_entries) {
+                const int bucket = bucket_entry.first;
+                const int nIndex = bucket_entry.second;
+                CAddrInfo &info = mapInfo[nIndex];
+                if (info.nRefCount >= ADDRMAN_NEW_BUCKETS_PER_ADDRESS) continue;
+                int nUBucketPos = info.GetBucketPosition(nKey, true, bucket);
+                if (vvNew[bucket][nUBucketPos] == -1) {
+                    info.nRefCount++;
+                    vvNew[bucket][nUBucketPos] = nIndex;
+                }
+            }
+        } else {
+            // The bucketing method changed (a different ASMap was configured,
+            // the ASMap was added or removed, or the bucket count changed):
+            // re-bucket every new entry with the current grouping.
+            //
+            // The bucket of an entry is a function of its netgroup and the
+            // netgroup of its source, so all the addresses of one AS that
+            // were announced by one source end up in the same bucket. If there
+            // are more of them than the bucket has positions, their positions
+            // collide and the entries that get no position have no reference.
+            // Such entries are pruned below (like upstream v22 does), so that
+            // the number of the written entries always matches nNew.
+            LogPrint(BCLog::ADDRMAN, "Bucketing method was updated, re-bucketing addrman entries from disk\n");
+            for (auto& entry : mapInfo) {
+                CAddrInfo& info = entry.second;
+                if (info.fInTried) continue;
+                int nUBucket = info.GetNewBucket(nKey, GetNetGroup(info), GetNetGroup(info.source));
+                int nUBucketPos = info.GetBucketPosition(nKey, true, nUBucket);
+                if (vvNew[nUBucket][nUBucketPos] == -1) {
+                    vvNew[nUBucket][nUBucketPos] = entry.first;
+                    info.nRefCount++;
                 }
             }
         }
 
         // Prune new entries with refcount 0 (as a result of collisions).
+        // This is the step of upstream v22 (v22.0:src/addrman.h:429-441): the
+        // entries that got no bucket (e.g. because their bucket position was
+        // taken by another entry of the same netgroup) are removed from the
+        // address manager, so that nNew and the number of the written entries
+        // stay consistent and the file remains readable.
         int nLostUnk = 0;
         for (std::map<int, CAddrInfo>::const_iterator it = mapInfo.begin(); it != mapInfo.end(); ) {
             if (it->second.fInTried == false && it->second.nRefCount == 0) {
@@ -728,7 +856,17 @@ public:
     }
 
     CAddrMan()
+        : CAddrMan(DefaultNetgroupManager())
     {
+    }
+
+    /**
+     * Create an address manager that uses the given netgroup manager for its
+     * bucketing.
+     */
+    explicit CAddrMan(std::shared_ptr<const NetgroupManager> netgroupman)
+    {
+        m_netgroupman = netgroupman ? netgroupman : DefaultNetgroupManager();
         Clear();
     }
 

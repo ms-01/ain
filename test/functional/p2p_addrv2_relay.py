@@ -64,6 +64,9 @@ ADDR_TIMEOUT = 300
 # The format bytes of the address manager file.
 FILE_FORMAT_LEGACY = 1
 FILE_FORMAT_ADDRV2 = 2
+# A format byte that no version of the node knows (the format 3 is the
+# BIP155-capable format with a bucketing fingerprint).
+FILE_FORMAT_UNKNOWN = 4
 
 
 def onion_address(pubkey):
@@ -423,7 +426,7 @@ class AddrV2RelayTest(DefiTestFramework):
         with open(peers_dat, "r+b") as f:
             # The file starts with the network magic, the format byte follows.
             f.seek(4)
-            f.write(bytes([3]))
+            f.write(bytes([FILE_FORMAT_UNKNOWN]))
         self.start_node(0)
         assert os.path.exists(peers_dat + ".bak")
         assert_equal(len(node.getnodeaddresses(1000, "onion")), 0)

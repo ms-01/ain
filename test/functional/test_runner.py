@@ -286,6 +286,8 @@ BASE_SCRIPTS = [
     "p2p_leak.py",
     "p2p_addr_relay_cache.py",
     "p2p_addrv2.py",
+    "feature_asmap.py",
+    "feature_asmap_peersdat.py",
     "p2p_addrv2_relay.py",
     "feature_higher_collateral_factor.py",
     "feature_skip_collateral_factor_check.py",

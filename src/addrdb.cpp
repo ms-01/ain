@@ -341,7 +341,9 @@ bool CAddrDB::Write(const CAddrMan& addr)
                 LogPrintf("The format of peers.dat changed from %u to %u%s\n", nOldFormat, nNewFormat,
                           nNewFormat == ADDRMAN_FILE_FORMAT_ADDRV2
                               ? " (the address manager contains addresses that need the BIP155 format; the file is not readable by the versions of the node that do not support it)"
-                              : "");
+                              : (nNewFormat == ADDRMAN_FILE_FORMAT_ADDRV2_ASMAP
+                                     ? " (the address manager uses an ASMap for the address bucketing; the file is not readable by the versions of the node that do not support it)"
+                                     : ""));
             }
         }
     }

@@ -48,7 +48,9 @@ JSON_TEST_FILES = \
   test/data/tx_invalid.json \
   test/data/tx_valid.json
 
-RAW_TEST_FILES =
+RAW_TEST_FILES = \
+  test/data/asmap.raw \
+  test/data/asmap2.raw
 
 GENERATED_TEST_FILES = $(JSON_TEST_FILES:.json=.json.h) $(RAW_TEST_FILES:.raw=.raw.h)
 
@@ -86,6 +88,7 @@ DEFI_TESTS =\
   test/scriptnum10.h \
   test/addrman_tests.cpp \
   test/addr_response_cache_tests.cpp \
+  test/asmap_tests.cpp \
   test/amount_tests.cpp \
   test/allocator_tests.cpp \
   test/anchor_tests.cpp \
@@ -136,6 +139,7 @@ DEFI_TESTS =\
   test/musig_tests.cpp \
   test/net_tests.cpp \
   test/net_processing_tests.cpp \
+  test/netgroup_tests.cpp \
   test/netbase_tests.cpp \
   test/mn_blocktime_tests.cpp \
   test/oracles_tests.cpp \
@@ -450,6 +454,16 @@ endif
 	@{ \
 	 echo "namespace json_tests{" && \
 	 echo "static unsigned const char $(*F)[] = {" && \
+	 $(HEXDUMP) -v -e '8/1 "0x%02x, "' -e '"\n"' $< | $(SED) -e 's/0x  ,//g' && \
+	 echo "};};"; \
+	} > "$@.new" && mv -f "$@.new" "$@"
+	@echo "Generated $@"
+
+%.raw.h: %.raw
+	@$(MKDIR_P) $(@D)
+	@{ \
+	 echo "namespace raw_tests{" && \
+	 echo "static unsigned const char $(*F)_raw[] = {" && \
 	 $(HEXDUMP) -v -e '8/1 "0x%02x, "' -e '"\n"' $< | $(SED) -e 's/0x  ,//g' && \
 	 echo "};};"; \
 	} > "$@.new" && mv -f "$@.new" "$@"

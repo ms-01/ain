@@ -230,6 +230,7 @@ DEFI_CORE_H = \
   net_processing.h \
   netaddress.h \
   netbase.h \
+  netgroup.h \
   netmessagemaker.h \
   node/coin.h \
   node/coinstats.h \
@@ -287,6 +288,7 @@ DEFI_CORE_H = \
   undo.h \
   util/bip32.h \
   util/bytevectorhash.h \
+  util/asmap.h \
   util/error.h \
   util/fees.h \
   util/tokenpipe.h \
@@ -682,6 +684,7 @@ libdefi_common_a_SOURCES = \
   merkleblock.cpp \
   musig.cpp \
   netaddress.cpp \
+  netgroup.cpp \
   netbase.cpp \
   net_permissions.cpp \
   outputtype.cpp \
@@ -723,6 +726,7 @@ libdefi_util_a_SOURCES = \
   threadinterrupt.cpp \
   util/bip32.cpp \
   util/bytevectorhash.cpp \
+  util/asmap.cpp \
   util/error.cpp \
   util/fees.cpp \
   util/tokenpipe.cpp \
