@@ -1,5 +1,5 @@
 package=protobuf
-$(package)_version=23.3
+$(package)_version=27.3
 $(package)_download_path=https://github.com/protocolbuffers/protobuf/releases/download/v$($(package)_version)/
 
 # NOTE: protoc gets invoked on the BUILD OS during compile. So, we don't
@@ -9,15 +9,15 @@ $(package)_download_path=https://github.com/protocolbuffers/protobuf/releases/do
 
 ifeq ($(build_os)-$(build_arch),linux-x86_64)
   $(package)_file_name=protoc-$($(package)_version)-linux-x86_64.zip
-  $(package)_sha256_hash=8f5abeb19c0403a7bf6e48f4fa1bb8b97724d8701f6823a327922df8cc1da4f5
+  $(package)_sha256_hash=6dab2adab83f915126cab53540d48957c40e9e9023969c3e84d44bfb936c7741
 endif
 ifeq ($(build_os)-$(build_arch),linux-aarch64)
   $(package)_file_name=protoc-$($(package)_version)-linux-aarch_64.zip
-  $(package)_sha256_hash=4e5154e51744c288ca1362f9cca942188003fc7b860431a984a30cb1e73aed9e
+  $(package)_sha256_hash=bdad36f3ad7472281d90568c4956ea2e203c216e0de005c6bd486f1920f2751c
 endif
 ifeq ($(build_os),darwin)
   $(package)_file_name=protoc-$($(package)_version)-osx-universal_binary.zip
-  $(package)_sha256_hash=2783d50e35cbb546c0d75fbc2a46f76e2c620fb66c9f6bfc5ff70f5dda234100
+  $(package)_sha256_hash=414f95a8629e5e79c6e2f2aab476b0502c4e50e374657b6a7f880e54c11ed973
 endif
 
 ifeq ($($(package)_file_name),)

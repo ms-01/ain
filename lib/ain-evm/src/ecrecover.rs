@@ -1,27 +1,36 @@
 use ethereum_types::{H160, H256};
-use libsecp256k1::{Error, PublicKey, RecoveryId, Signature};
+use secp256k1::{
+    ecdsa::{RecoverableSignature, RecoveryId},
+    Message,
+};
 use sha3::Digest;
 
+/// Recovers the public key of the signer of a signature.
+///
+/// The `recovery_id` selects the recovery branch (0..=3) and is the same value that
+/// is encoded in the `v` component of an Ethereum signature.
 pub fn recover_public_key(
     hash: &H256,
     r: &H256,
     s: &H256,
     recovery_id: u8,
-) -> Result<PublicKey, Error> {
-    let msg = libsecp256k1::Message::parse(hash.as_fixed_bytes());
+) -> Result<secp256k1::PublicKey, secp256k1::Error> {
+    let msg = Message::from_digest(*hash.as_fixed_bytes());
 
-    let mut standard_slice = [0u8; 64];
-    standard_slice[..32].copy_from_slice(r.as_fixed_bytes());
-    standard_slice[32..].copy_from_slice(s.as_fixed_bytes());
-    let signature = Signature::parse_standard_slice(&standard_slice)?;
+    let mut compact = [0u8; 64];
+    compact[..32].copy_from_slice(r.as_fixed_bytes());
+    compact[32..].copy_from_slice(s.as_fixed_bytes());
 
-    let recovery_id = RecoveryId::parse(recovery_id)?;
-    libsecp256k1::recover(&msg, &signature, &recovery_id)
+    let recovery_id = RecoveryId::try_from(i32::from(recovery_id))?;
+    let signature = RecoverableSignature::from_compact(&compact, recovery_id)?;
+
+    signature.recover_ecdsa(msg)
 }
 
-pub fn public_key_to_address(pubkey: &PublicKey) -> H160 {
+pub fn public_key_to_address(pubkey: &secp256k1::PublicKey) -> H160 {
     let mut output = [0u8; 32];
-    output.copy_from_slice(sha3::Keccak256::digest(&pubkey.serialize()[1..]).as_slice());
+    output
+        .copy_from_slice(sha3::Keccak256::digest(&pubkey.serialize_uncompressed()[1..]).as_slice());
     let mut ret = H160::zero();
     ret.as_bytes_mut().copy_from_slice(&output[12..]);
     ret

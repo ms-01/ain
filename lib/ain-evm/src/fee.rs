@@ -152,12 +152,13 @@ mod tests {
     const RBF_FLOOR_FEE: u64 = GAS_LIMIT * 1_000_000_000;
 
     fn sign_hash(hash: H256) -> (bool, H256, H256) {
-        let message = libsecp256k1::Message::parse(hash.as_fixed_bytes());
-        let secret_key = libsecp256k1::SecretKey::parse_slice(&TEST_SECRET_KEY).unwrap();
-        let signature = libsecp256k1::sign(&message, &secret_key);
-        let serialized = signature.0.serialize();
+        let message = secp256k1::Message::from_digest(*hash.as_fixed_bytes());
+        let secret_key = secp256k1::SecretKey::from_secret_bytes(TEST_SECRET_KEY).unwrap();
+        let signature =
+            secp256k1::ecdsa::RecoverableSignature::sign_ecdsa_recoverable(message, &secret_key);
+        let (recovery_id, serialized) = signature.serialize_compact();
         (
-            signature.1.serialize() == 1,
+            recovery_id.to_u8() & 1 == 1,
             H256::from_slice(&serialized[0..32]),
             H256::from_slice(&serialized[32..64]),
         )

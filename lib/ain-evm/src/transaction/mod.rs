@@ -11,6 +11,7 @@ use ethereum::{
 };
 use ethereum_types::{H160, H256, U256};
 use rlp::RlpStream;
+use secp256k1::{ecdsa::RecoverableSignature, Message, SecretKey};
 use sha3::Digest;
 
 use crate::{
@@ -57,22 +58,27 @@ impl LegacyUnsignedTransaction {
         H256::from(output)
     }
 
-    pub fn sign(&self, key: &[u8], chain_id: u64) -> Result<LegacyTransaction, TransactionError> {
+    pub fn sign(
+        &self,
+        key: &[u8; 32],
+        chain_id: u64,
+    ) -> Result<LegacyTransaction, TransactionError> {
         self.sign_with_chain_id(key, chain_id)
     }
 
     pub fn sign_with_chain_id(
         &self,
-        key: &[u8],
+        key: &[u8; 32],
         chain_id: u64,
     ) -> Result<LegacyTransaction, TransactionError> {
         let hash = self.signing_hash(chain_id);
-        let msg = libsecp256k1::Message::parse(hash.as_fixed_bytes());
-        let s = libsecp256k1::sign(&msg, &libsecp256k1::SecretKey::parse_slice(key)?);
-        let sig = s.0.serialize();
+        let msg = Message::from_digest(*hash.as_fixed_bytes());
+        let sk = SecretKey::from_secret_bytes(*key)?;
+        let signature = RecoverableSignature::sign_ecdsa_recoverable(msg, &sk);
+        let (recovery_id, sig) = signature.serialize_compact();
 
         let sig = TransactionSignature::new(
-            u64::from(s.1.serialize()) % 2 + chain_id * 2 + 35,
+            u64::from(recovery_id.to_u8() % 2) + chain_id * 2 + 35,
             H256::from_slice(&sig[0..32]),
             H256::from_slice(&sig[32..64]),
         )
@@ -145,8 +151,7 @@ impl TryFrom<TransactionV2> for SignedTx {
                     input: tx.input.clone(),
                     chain_id: tx.signature.chain_id(),
                 };
-                let signing_message = libsecp256k1::Message::parse_slice(&msg.hash()[..])?;
-                let hash = H256::from(signing_message.serialize());
+                let hash = msg.hash();
                 recover_public_key(
                     &hash,
                     tx.signature.r(),
@@ -165,8 +170,7 @@ impl TryFrom<TransactionV2> for SignedTx {
                     input: tx.input.clone(),
                     access_list: tx.access_list.clone(),
                 };
-                let signing_message = libsecp256k1::Message::parse_slice(&msg.hash()[..])?;
-                let hash = H256::from(signing_message.serialize());
+                let hash = msg.hash();
                 recover_public_key(&hash, &tx.r, &tx.s, u8::from(tx.odd_y_parity))
             }
             TransactionV2::EIP1559(tx) => {
@@ -181,8 +185,7 @@ impl TryFrom<TransactionV2> for SignedTx {
                     input: tx.input.clone(),
                     access_list: tx.access_list.clone(),
                 };
-                let signing_message = libsecp256k1::Message::parse_slice(&msg.hash()[..])?;
-                let hash = H256::from(signing_message.serialize());
+                let hash = msg.hash();
                 recover_public_key(&hash, &tx.r, &tx.s, u8::from(tx.odd_y_parity))
             }
         }?;
@@ -370,7 +373,7 @@ use std::{
 
 #[derive(Debug)]
 pub enum TransactionError {
-    Secp256k1Error(libsecp256k1::Error),
+    Secp256k1Error(secp256k1::Error),
     DecodingError,
     SignatureError,
     FromHexError(hex::FromHexError),
@@ -401,8 +404,8 @@ impl std::error::Error for TransactionError {}
 
 use std::convert::From;
 
-impl From<libsecp256k1::Error> for TransactionError {
-    fn from(e: libsecp256k1::Error) -> Self {
+impl From<secp256k1::Error> for TransactionError {
+    fn from(e: secp256k1::Error) -> Self {
         TransactionError::Secp256k1Error(e)
     }
 }
@@ -1129,8 +1132,8 @@ mod tests {
     #[test]
     fn transaction_error_display_messages_are_stable() {
         assert_eq!(
-            TransactionError::Secp256k1Error(libsecp256k1::Error::InvalidMessage).to_string(),
-            "Secp256k1 error: Invalid message"
+            TransactionError::Secp256k1Error(secp256k1::Error::InvalidMessage).to_string(),
+            "Secp256k1 error: message was not 32 bytes (do you need to hash?)"
         );
         assert_eq!(
             TransactionError::DecodingError.to_string(),
@@ -1152,7 +1155,7 @@ mod tests {
 
     #[test]
     fn transaction_error_conversions_are_available() {
-        let error: TransactionError = libsecp256k1::Error::InvalidSecretKey.into();
+        let error: TransactionError = secp256k1::Error::InvalidSecretKey.into();
         assert!(matches!(error, TransactionError::Secp256k1Error(_)));
 
         let error: TransactionError = hex::FromHexError::OddLength.into();
@@ -1186,6 +1189,97 @@ mod tests {
         let raw_tx = "01f86382046780648252089400000000000000000000000000000000000000008080c080a0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa00100000000000000000000000000000000000000000000000000000000000000";
         let error = SignedTx::try_from(raw_tx).unwrap_err();
         assert!(matches!(error, TransactionError::Secp256k1Error(_)));
-        assert_eq!(error.to_string(), "Secp256k1 error: Invalid signature");
+        assert_eq!(error.to_string(), "Secp256k1 error: malformed signature");
+    }
+}
+
+#[cfg(test)]
+mod secp256k1_tests {
+    use ethereum::TransactionAction;
+    use ethereum_types::{H160, H256, U256};
+    use hex_literal::hex;
+    use secp256k1::{ecdsa::RecoverableSignature, Message, SecretKey};
+
+    use crate::{
+        ecrecover::public_key_to_address,
+        transaction::{
+            test_helpers::{TEST_CHAIN_ID, TEST_SECRET_KEY},
+            LegacyUnsignedTransaction,
+        },
+    };
+
+    /// Message hash used by the `ecrecover` recovery test.
+    const MESSAGE_HASH: [u8; 32] =
+        hex!("6091be99153563845f8af2ff710a9854a70551a5a6b914a296931444fa360d40");
+
+    /// Independent RFC6979 (HMAC-SHA256) reference vector.
+    ///
+    /// The expected values were computed with a self-contained RFC6979 implementation
+    /// (not with the `secp256k1` crate) that was cross-checked against the well-known
+    /// Bitcoin test vector (private key `1`, `SHA256("Satoshi Nakamoto")` -> `r = 934b1ea1…3d8`,
+    /// `s = 2442ce9d…9e5`), which the same implementation reproduces exactly. The test is
+    /// therefore an *independent* regression test of the deterministic nonce derivation
+    /// (RFC6979) and not a self-fulfilling snapshot of the current implementation.
+    ///
+    /// Note that the test secret key is `0x0101…01` (32 bytes of `0x01`), *not* the scalar
+    /// `1`; its address is `0x1a642f0e3c3af545e7acbd38b07251b3990914f1`.
+    #[test]
+    fn signature_matches_the_independent_rfc6979_reference_vector() {
+        let secret_key = SecretKey::from_secret_bytes(TEST_SECRET_KEY).unwrap();
+        let message = Message::from_digest(MESSAGE_HASH);
+        let signature = RecoverableSignature::sign_ecdsa_recoverable(message, &secret_key);
+        let (recovery_id, compact) = signature.serialize_compact();
+
+        assert_eq!(
+            compact[0..32],
+            hex!("380ccd9da90774f73a1edf736ae54c182a4814f03b11df5f0af1038da7396f2f")
+        );
+        assert_eq!(
+            compact[32..64],
+            hex!("16715bd0dd9b58102f9f8ecfec0aaed326e623abff06217311bc22084e0d58e5")
+        );
+        assert_eq!(recovery_id.to_u8(), 0);
+
+        // The signature must recover the public key of the test secret key.
+        let public_key = signature.recover_ecdsa(message).unwrap();
+        assert_eq!(
+            public_key_to_address(&public_key),
+            H160::from_slice(&hex!("1a642f0e3c3af545e7acbd38b07251b3990914f1"))
+        );
+    }
+
+    /// The legacy (EIP-155) `v` component is derived from the recovery id as
+    /// `v = 2 * chain_id + 35 + (recid & 1)`.
+    #[test]
+    fn legacy_v_encoding_follows_the_recovery_id() {
+        let unsigned = LegacyUnsignedTransaction {
+            nonce: U256::zero(),
+            gas_price: U256::from(100),
+            gas_limit: U256::from(21_000),
+            action: TransactionAction::Call(H160::zero()),
+            value: U256::zero(),
+            input: Vec::new(),
+            sig: ethereum::TransactionSignature::new(
+                27,
+                H256::from_low_u64_be(1),
+                H256::from_low_u64_be(1),
+            )
+            .unwrap(),
+        };
+
+        let message = Message::from_digest(*unsigned.signing_hash(TEST_CHAIN_ID).as_fixed_bytes());
+        let secret_key = SecretKey::from_secret_bytes(TEST_SECRET_KEY).unwrap();
+        let signature = RecoverableSignature::sign_ecdsa_recoverable(message, &secret_key);
+        let (recovery_id, compact) = signature.serialize_compact();
+
+        let signed = unsigned
+            .sign_with_chain_id(&TEST_SECRET_KEY, TEST_CHAIN_ID)
+            .unwrap();
+        assert_eq!(
+            signed.signature.v(),
+            TEST_CHAIN_ID * 2 + 35 + u64::from(recovery_id.to_u8() & 1)
+        );
+        assert_eq!(*signed.signature.r(), H256::from_slice(&compact[0..32]));
+        assert_eq!(*signed.signature.s(), H256::from_slice(&compact[32..64]));
     }
 }

@@ -47,10 +47,9 @@ proc-macro2 = "1.0"
 cxx = "1.0"
 cxx-build = "1.0"
 cxx-gen = "0.7"
-tonic = "0.9"
-tonic-build = "0.9"
-prost = "0.11"
-prost-build = "0.11"
+tonic-build = "0.13"
+prost = "0.13"
+prost-build = "0.13"
 
 quote = "1.0"
 syn = { version = "2.0", default-features = false, features = ["parsing", "printing"] }
@@ -58,7 +57,7 @@ prettyplease = "0.2.4"
 
 ## crypto
 
-libsecp256k1 = "0.7"
+secp256k1 = { version = "0.33", features = ["recovery"] }
 ripemd = { version = "0.1", default-features = false }
 sha3 = "0.10"
 sha2 = { version = "0.10", default-features = false }
