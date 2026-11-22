@@ -986,8 +986,52 @@ bool CCustomCSView::CalculateOwnerRewards(const CScript &owner, const uint32_t t
         if (!height || *height >= targetHeight) {
             return true;  // no share or target height is before a pool share' one
         }
-        auto onLiquidity = [&]() -> CAmount { return GetBalance(owner, poolId).nValue; };
         const auto beginHeight = std::max(*height, balanceHeight);
+
+        // The pool rewards are credited in memory and are written back to the
+        // storage once the pool is done. This keeps the number of storage
+        // accesses independent of the number of rewarded heights.
+        struct BalanceState {
+            CAmount original;
+            CAmount current;
+            bool modified{false};
+        };
+        std::map<DCT_ID, BalanceState> balances;
+
+        auto getBalance = [&](DCT_ID tokenId) -> BalanceState & {
+            auto it = balances.find(tokenId);
+            if (it == balances.end()) {
+                const auto value = GetBalance(owner, tokenId).nValue;
+                it = balances.emplace(tokenId, BalanceState{value, value, false}).first;
+            }
+            return it->second;
+        };
+
+        // Writes the credited balances back to the storage
+        auto flushBalances = [&]() {
+            for (const auto &[tokenId, state] : balances) {
+                if (!state.modified) {
+                    continue;
+                }
+                const auto delta = state.current - state.original;
+                if (delta == 0) {
+                    continue;
+                }
+                if (auto res = AddBalance(owner, {tokenId, delta}); !res) {
+                    LogPrintf("Pool rewards: can't update balance of %s: %s\n", owner.GetHex(), res.msg);
+                }
+            }
+        };
+
+        auto onLiquidity = [&]() -> CAmount {
+            const auto it = balances.find(poolId);
+            if (it != balances.end()) {
+                // the liquidity might have been changed by a reward
+                return it->second.current;
+            }
+            return GetBalance(owner, poolId).nValue;
+        };
+
         auto onReward = [&](RewardType, const CTokenAmount &amount, const uint32_t height) {
             if (auto res = AddBalance(owner, amount); !res) {
                 LogPrintf(
@@ -995,9 +1039,101 @@ bool CCustomCSView::CalculateOwnerRewards(const CScript &owner, const uint32_t t
             }
         };
 
+        // Credits the rewards of a whole segment at once. The rewards of a
+        // segment are identical for every height it covers, so they can be
+        // summed up. The very same balance checks as AddBalance() are applied
+        // to keep the result bit-identical to the per-height implementation.
+        auto onSegment = [&](const std::vector<PoolRewardEntry> &rewards, const uint32_t segHeight,
+                             const uint32_t count) {
+            // Group the rewards by token. The order of the rewards of a single
+            // token is kept, the order between different tokens does not matter
+            // as every token has its own balance.
+            std::map<DCT_ID, std::vector<CAmount>> perToken;
+            for (const auto &reward : rewards) {
+                if (reward.amount.nValue == 0) {
+                    continue;  // a zero amount does not change the balance
+                }
+                perToken[reward.amount.nTokenId].push_back(reward.amount.nValue);
+            }
+
+            // Fast path: every single reward of the segment can be credited
+            std::map<DCT_ID, CAmount> newBalances;
+            bool fast{true};
+            for (const auto &[tokenId, values] : perToken) {
+                const auto &state = getBalance(tokenId);
+                CAmount heightSum{0};
+                for (const auto value : values) {
+                    auto sumRes = SafeAdd(heightSum, value);
+                    if (!sumRes) {
+                        fast = false;
+                        break;
+                    }
+                    heightSum = *sumRes;
+                }
+                if (!fast) {
+                    break;
+                }
+                CAmount segmentSum{0};
+                if (count != 0 && heightSum > std::numeric_limits<CAmount>::max() / count) {
+                    fast = false;
+                    break;
+                }
+                segmentSum = heightSum * count;
+                CTokenAmount balance{tokenId, state.current};
+                if (!balance.Add(segmentSum)) {
+                    fast = false;
+                    break;
+                }
+                if (tokenId == DCT_ID{0} && GetEnforceAccountMaxMoney() && !MoneyRange(balance.nValue)) {
+                    fast = false;
+                    break;
+                }
+                newBalances[tokenId] = balance.nValue;
+            }
+
+            if (fast) {
+                for (const auto &[tokenId, value] : newBalances) {
+                    auto &state = getBalance(tokenId);
+                    state.current = value;
+                    state.modified = true;
+                }
+                return;
+            }
+
+            // Slow path: the balance limit is reached within the segment, so
+            // every single reward has to be applied on its own to keep the
+            // very same behaviour as the per-height implementation.
+            for (uint32_t i = 0; i < count; ++i) {
+                const auto rewardHeight = segHeight + i;
+                for (const auto &reward : rewards) {
+                    if (reward.amount.nValue == 0) {
+                        continue;
+                    }
+                    auto &state = getBalance(reward.amount.nTokenId);
+                    CTokenAmount balance{reward.amount.nTokenId, state.current};
+                    if (auto res = balance.Add(reward.amount.nValue); !res) {
+                        LogPrintf("Pool rewards: can't update balance of %s: %s, height %ld\n", owner.GetHex(),
+                                  res.msg, rewardHeight);
+                        continue;
+                    }
+                    if (reward.amount.nTokenId == DCT_ID{0} && GetEnforceAccountMaxMoney() &&
+                        !MoneyRange(balance.nValue)) {
+                        auto res = Res::ErrCode(CustomTxErrCodes::AccountBalanceOutOfRange,
+                                                "account balance out of range: %s", balance.ToString());
+                        LogPrintf("Pool rewards: can't update balance of %s: %s, height %ld\n", owner.GetHex(),
+                                  res.msg, rewardHeight);
+                        continue;
+                    }
+                    state.current = balance.nValue;
+                    state.modified = true;
+                }
+            }
+        };
+
         if (beginHeight < Params().GetConsensus().DF24Height) {
             perBlockUpdated = true;
-            CalculatePoolRewards(poolId, onLiquidity, beginHeight, targetPerBlockHeight, onReward);
+            CalculatePoolRewardsSegmented(poolId, onLiquidity, beginHeight, targetPerBlockHeight, onSegment);
+            flushBalances();
         }
 
         if (!skipStatic && targetHeight >= Params().GetConsensus().DF24Height) {

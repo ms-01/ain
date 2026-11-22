@@ -197,6 +197,12 @@ void ReadValueMoveToNext(TIterator &it, DCT_ID poolId, ValueType &value, uint32_
     }
 }
 
+/// The reward history of a pool starts at the grand central height at the earliest
+static uint32_t PoolRewardsStartHeight() {
+    static const uint32_t startHeight = Params().GetConsensus().DF20GrandCentralHeight;
+    return startHeight;
+}
+
 template <typename By, typename Value>
 auto InitPoolVars(CPoolPairView &view, PoolHeightKey poolKey, uint32_t end) {
     auto poolId = poolKey.poolID;
@@ -215,6 +221,49 @@ auto InitPoolVars(CPoolPairView &view, PoolHeightKey poolKey, uint32_t end) {
     Value value = MatchPoolId(it, poolId) ? it.Value() : Value{};
 
     return std::make_tuple(std::move(value), std::move(it), height);
+}
+
+/// Same as InitPoolVars, but without searching the height range step by step.
+/// The entries of a pool are stored in descending height order, so the entry
+/// which is effective at a given height can be found with a single seek.
+template <typename By, typename Value>
+auto InitPoolVarsFast(CPoolPairView &view, PoolHeightKey poolKey, uint32_t end) {
+    const auto poolId = poolKey.poolID;
+    const auto begin = poolKey.height;
+    const auto searchHeight = std::max(begin, PoolRewardsStartHeight());
+
+    // the entry which is effective at the begin height
+    auto itBegin = view.LowerBound<By>(PoolHeightKey{poolId, begin});
+    if (MatchPoolId(itBegin, poolId)) {
+        return std::make_tuple(Value{itBegin.Value()}, std::move(itBegin), begin);
+    }
+
+    // there is no entry at or below the begin height, the reward history starts
+    // at the grand central height at the earliest
+    auto it = view.LowerBound<By>(PoolHeightKey{poolId, searchHeight});
+    if (MatchPoolId(it, poolId)) {
+        // the entry which is effective at the search height
+        return std::make_tuple(Value{it.Value()}, std::move(it), searchHeight);
+    }
+
+    // the smallest entry above the search height: the entries of a pool are
+    // stored in descending height order, so it is the last entry of the pool
+    auto itFirst = view.LowerBound<By>(PoolHeightKey{poolId, std::numeric_limits<uint32_t>::max()});
+    if (!MatchPoolId(itFirst, poolId)) {
+        // the pool has no entries at all
+        return std::make_tuple(Value{}, std::move(itFirst), end - 1);
+    }
+    uint32_t foundHeight{0};
+    while (MatchPoolId(itFirst, poolId) && itFirst.Key().height > searchHeight) {
+        foundHeight = itFirst.Key().height;
+        itFirst.Next();
+    }
+    if (foundHeight == 0) {
+        // cannot happen, the pool has entries but none of them is above the search height
+        return std::make_tuple(Value{}, std::move(itFirst), end - 1);
+    }
+    auto itFound = view.LowerBound<By>(PoolHeightKey{poolId, foundHeight});
+    return std::make_tuple(Value{itFound.Value()}, std::move(itFound), foundHeight);
 }
 
 static auto GetRewardPerShares(const CPoolPairView &view, const TotalRewardPerShareKey &key) {
@@ -370,6 +419,199 @@ void CPoolPairView::CalculatePoolRewards(DCT_ID const &poolId,
             }
         }
         ++height;
+    }
+}
+
+void CPoolPairView::CalculatePoolRewardsSegmented(
+    DCT_ID const &poolId,
+    std::function<CAmount()> onLiquidity,
+    uint32_t begin,
+    uint32_t end,
+    std::function<void(const std::vector<PoolRewardEntry> &, uint32_t, uint32_t)> onReward) {
+    if (begin >= end) {
+        return;
+    }
+    constexpr const uint32_t PRECISION = 10000;
+    const auto newCalcHeight = uint32_t(Params().GetConsensus().DF4BayfrontGardensHeight);
+
+    auto tokenIds = ReadBy<ByIDPair, ByPairKey>(poolId);
+    assert(tokenIds);  // contract to verify pool data
+
+    PoolHeightKey poolKey = {poolId, begin};
+
+    auto [poolRewardInit, itPoolRewardInit, startPoolRewardInit] =
+        InitPoolVarsFast<ByPoolReward, CAmount>(*this, poolKey, end);
+    CAmount poolReward = poolRewardInit;
+    auto itPoolReward = std::move(itPoolRewardInit);
+    const auto startPoolReward = startPoolRewardInit;
+    auto nextPoolReward = startPoolReward;
+
+    auto [poolLoanRewardInit, itPoolLoanRewardInit, startPoolLoanRewardInit] =
+        InitPoolVarsFast<ByPoolLoanReward, CAmount>(*this, poolKey, end);
+    CAmount poolLoanReward = poolLoanRewardInit;
+    auto itPoolLoanReward = std::move(itPoolLoanRewardInit);
+    const auto startPoolLoanReward = startPoolLoanRewardInit;
+    auto nextPoolLoanReward = startPoolLoanReward;
+
+    auto [totalLiquidityInit, itTotalLiquidityInit, nextTotalLiquidityInit] =
+        InitPoolVarsFast<ByTotalLiquidity, CAmount>(*this, poolKey, end);
+    CAmount totalLiquidity = totalLiquidityInit;
+    auto itTotalLiquidity = std::move(itTotalLiquidityInit);
+    auto nextTotalLiquidity = nextTotalLiquidityInit;
+
+    auto [customRewardsInit, itCustomRewardsInit, startCustomRewardsInit] =
+        InitPoolVarsFast<ByCustomReward, CBalances>(*this, poolKey, end);
+    CBalances customRewards = customRewardsInit;
+    auto itCustomRewards = std::move(itCustomRewardsInit);
+    const auto startCustomRewards = startCustomRewardsInit;
+    auto nextCustomRewards = startCustomRewards;
+
+    auto poolSwapHeight = std::numeric_limits<uint32_t>::max();
+    auto nextPoolSwap = std::numeric_limits<uint32_t>::max();
+    auto [poolSwapInit, itPoolSwapInit, discard] = InitPoolVarsFast<ByPoolSwap, PoolSwapValue>(*this, poolKey, end);
+    PoolSwapValue poolSwap = poolSwapInit;
+    auto itPoolSwap = std::move(itPoolSwapInit);
+    if (itPoolSwap.Valid() && itPoolSwap.Key().poolID == poolId) {
+        nextPoolSwap = itPoolSwap.Key().height;
+    }
+
+    // The rewards of a single height. The order is important as the balances
+    // are updated in exactly this order.
+    auto getRewards = [&](uint32_t height, CAmount liquidity) {
+        std::vector<PoolRewardEntry> rewards;
+        // daily rewards
+        if (height >= startPoolReward && poolReward != 0) {
+            CAmount providerReward = 0;
+            if (height < newCalcHeight) {  // old calculation
+                uint32_t liqWeight = liquidity * PRECISION / totalLiquidity;
+                providerReward = poolReward * liqWeight / PRECISION;
+            } else {  // new calculation
+                providerReward = liquidityReward(poolReward, liquidity, totalLiquidity);
+            }
+            rewards.push_back({RewardType::Coinbase, {DCT_ID{0}, providerReward}});
+        }
+        if (height >= startPoolLoanReward && poolLoanReward != 0) {
+            CAmount providerReward = liquidityReward(poolLoanReward, liquidity, totalLiquidity);
+            rewards.push_back({RewardType::LoanTokenDEXReward, {DCT_ID{0}, providerReward}});
+        }
+        // commissions
+        if (poolSwapHeight == height && poolSwap.swapEvent) {
+            CAmount feeA{}, feeB{};
+            if (height < newCalcHeight) {
+                uint32_t liqWeight = liquidity * PRECISION / totalLiquidity;
+                if (poolSwap.blockCommissionA) {
+                    feeA = poolSwap.blockCommissionA * liqWeight / PRECISION;
+                }
+                if (poolSwap.blockCommissionB) {
+                    feeB = poolSwap.blockCommissionB * liqWeight / PRECISION;
+                }
+            } else {
+                if (poolSwap.blockCommissionA) {
+                    feeA = liquidityReward(poolSwap.blockCommissionA, liquidity, totalLiquidity);
+                }
+                if (poolSwap.blockCommissionB) {
+                    feeB = liquidityReward(poolSwap.blockCommissionB, liquidity, totalLiquidity);
+                }
+            }
+            if (feeA) {
+                rewards.push_back({RewardType::Commission, {tokenIds->idTokenA, feeA}});
+            }
+            if (feeB) {
+                rewards.push_back({RewardType::Commission, {tokenIds->idTokenB, feeB}});
+            }
+        }
+        // custom rewards
+        if (height >= startCustomRewards) {
+            for (const auto &[id, poolCustomReward] : customRewards.balances) {
+                if (auto providerReward = liquidityReward(poolCustomReward, liquidity, totalLiquidity)) {
+                    rewards.push_back({RewardType::Pool, {id, providerReward}});
+                }
+            }
+        }
+        return rewards;
+    };
+
+    auto height = begin;
+    while (height < end) {
+        // find suitable pool liquidity, the very same way as the per-height
+        // implementation does. Heights without any total liquidity are skipped.
+        if (height == nextTotalLiquidity || totalLiquidity == 0) {
+            for (;;) {
+                const auto newHeight = nextTotalLiquidity;
+                ReadValueMoveToNext(itTotalLiquidity, poolId, totalLiquidity, nextTotalLiquidity);
+                height = newHeight;
+                if (height >= end) {
+                    break;  // no more heights to process
+                }
+                if (!(height == nextTotalLiquidity || totalLiquidity == 0)) {
+                    break;  // rewards can be credited at this height
+                }
+            }
+            if (height >= end) {
+                break;
+            }
+        }
+        // adjust iterators to working height
+        while (height >= nextPoolReward) {
+            ReadValueMoveToNext(itPoolReward, poolId, poolReward, nextPoolReward);
+        }
+        while (height >= nextPoolLoanReward) {
+            ReadValueMoveToNext(itPoolLoanReward, poolId, poolLoanReward, nextPoolLoanReward);
+        }
+        while (height >= nextPoolSwap) {
+            poolSwapHeight = nextPoolSwap;
+            ReadValueMoveToNext(itPoolSwap, poolId, poolSwap, nextPoolSwap);
+        }
+        while (height >= nextCustomRewards) {
+            ReadValueMoveToNext(itCustomRewards, poolId, customRewards, nextCustomRewards);
+        }
+        // All the tracked values are constant until the next change, so the
+        // rewards are identical for every height of the segment.
+        auto segEnd = end;
+        segEnd = std::min(segEnd, nextPoolReward);
+        segEnd = std::min(segEnd, nextPoolLoanReward);
+        segEnd = std::min(segEnd, nextCustomRewards);
+        segEnd = std::min(segEnd, nextPoolSwap);
+        segEnd = std::min(segEnd, nextTotalLiquidity);
+        if (newCalcHeight > height) {
+            // the calculation changes at the fork height
+            segEnd = std::min(segEnd, newCalcHeight);
+        }
+        if (segEnd <= height) {
+            // should never happen, but never loop forever either
+            segEnd = height + 1;
+        }
+        // A custom reward can be denominated in the pool's own LP token. The
+        // owner's liquidity would then change with every credited reward and
+        // the rewards of a segment would not be identical.
+        bool liquidityChanges{false};
+        if (height >= startCustomRewards) {
+            for (const auto &[id, poolCustomReward] : customRewards.balances) {
+                if (id.v == poolId.v) {
+                    liquidityChanges = true;
+                    break;
+                }
+            }
+        }
+        if (liquidityChanges) {
+            // fall back to the per-height behaviour
+            for (auto h = height; h < segEnd; ++h) {
+                const auto liquidity = onLiquidity();
+                onReward(getRewards(h, liquidity), h, 1);
+            }
+        } else if (poolSwapHeight == height && poolSwap.swapEvent) {
+            // the commission is a one-off event and is credited at its exact height
+            const auto liquidity = onLiquidity();
+            onReward(getRewards(height, liquidity), height, 1);
+            if (segEnd > height + 1) {
+                const auto nextLiquidity = onLiquidity();
+                onReward(getRewards(height + 1, nextLiquidity), height + 1, segEnd - height - 1);
+            }
+        } else {
+            const auto liquidity = onLiquidity();
+            onReward(getRewards(height, liquidity), height, segEnd - height);
+        }
+        height = segEnd;
     }
 }
 

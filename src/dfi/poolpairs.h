@@ -336,6 +336,12 @@ enum RewardType {
 std::string RewardToString(RewardType type);
 std::string RewardTypeToString(RewardType type);
 
+/// A single reward of a single height
+struct PoolRewardEntry {
+    RewardType type;
+    CTokenAmount amount;
+};
+
 class CPoolPairView : public virtual CStorageView {
 public:
     Res SetPoolPair(const DCT_ID &poolId, uint32_t height, const CPoolPair &pool);
@@ -364,6 +370,18 @@ public:
                               uint32_t begin,
                               uint32_t end,
                               std::function<void(RewardType, CTokenAmount, uint32_t)> onReward);
+
+    /// Calculates the very same rewards as CalculatePoolRewards, but grouped
+    /// into segments of heights with constant reward values. The callback is
+    /// called once per segment with the rewards of a single height and the
+    /// number of heights the segment covers. The rewards of a segment are
+    /// identical for every height it covers, so they can be credited at once.
+    void CalculatePoolRewardsSegmented(
+        DCT_ID const &poolId,
+        std::function<CAmount()> onLiquidity,
+        uint32_t begin,
+        uint32_t end,
+        std::function<void(const std::vector<PoolRewardEntry> &, uint32_t, uint32_t)> onReward);
 
     void CalculateStaticPoolRewards(std::function<CAmount()> onLiquidity,
                                     std::function<void(RewardType, CTokenAmount, uint32_t)> onReward,

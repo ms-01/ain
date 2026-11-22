@@ -521,4 +521,245 @@ BOOST_AUTO_TEST_CASE(owner_rewards)
     });
 }
 
+namespace {
+
+struct RewardRecord {
+    uint32_t height;
+    RewardType type;
+    uint32_t tokenId;
+    CAmount value;
+
+    bool operator==(const RewardRecord &other) const {
+        return height == other.height && type == other.type && tokenId == other.tokenId && value == other.value;
+    }
+};
+
+using RewardRecords = std::vector<RewardRecord>;
+
+// The rewards of a single height, calculated by the per-height implementation
+static RewardRecords CollectPerHeightRewards(CCustomCSView &view,
+                                             DCT_ID idPool,
+                                             const CScript &owner,
+                                             uint32_t begin,
+                                             uint32_t end) {
+    RewardRecords records;
+    auto onLiquidity = [&]() -> CAmount { return view.GetBalance(owner, idPool).nValue; };
+    view.CalculatePoolRewards(idPool, onLiquidity, begin, end, [&](RewardType type, CTokenAmount amount, uint32_t height) {
+        records.push_back({height, type, amount.nTokenId.v, amount.nValue});
+    });
+    return records;
+}
+
+// The very same rewards, calculated by the segmented implementation
+static RewardRecords CollectSegmentedRewards(CCustomCSView &view,
+                                             DCT_ID idPool,
+                                             const CScript &owner,
+                                             uint32_t begin,
+                                             uint32_t end) {
+    RewardRecords records;
+    auto onLiquidity = [&]() -> CAmount { return view.GetBalance(owner, idPool).nValue; };
+    view.CalculatePoolRewardsSegmented(
+        idPool, onLiquidity, begin, end, [&](const std::vector<PoolRewardEntry> &rewards, uint32_t height, uint32_t count) {
+            for (uint32_t i = 0; i < count; ++i) {
+                for (const auto &reward : rewards) {
+                    records.push_back({height + i, reward.type, reward.amount.nTokenId.v, reward.amount.nValue});
+                }
+            }
+        });
+    return records;
+}
+
+// The owner rewards as they were calculated before the segmentation: every
+// single reward of every single height is credited on its own.
+static void CalculateOwnerRewardsReference(CCustomCSView &view, const CScript &owner, const uint32_t targetHeight) {
+    const auto balanceHeight = view.GetBalancesHeight(owner);
+    if (balanceHeight >= targetHeight) {
+        return;
+    }
+    const auto targetPerBlockHeight =
+        targetHeight >= Params().GetConsensus().DF24Height ? Params().GetConsensus().DF24Height : targetHeight;
+
+    view.ForEachPoolId([&](DCT_ID const &poolId) {
+        const auto height = view.GetShare(poolId, owner);
+        if (!height || *height >= targetHeight) {
+            return true;
+        }
+        auto onLiquidity = [&]() -> CAmount { return view.GetBalance(owner, poolId).nValue; };
+        const auto beginHeight = std::max(*height, balanceHeight);
+        auto onReward = [&](RewardType, const CTokenAmount &amount, const uint32_t) {
+            if (auto res = view.AddBalance(owner, amount); !res) {
+                // the very same behaviour as the segmented implementation
+            }
+        };
+        if (beginHeight < Params().GetConsensus().DF24Height) {
+            view.CalculatePoolRewards(poolId, onLiquidity, beginHeight, targetPerBlockHeight, onReward);
+        }
+        return true;
+    });
+
+    view.UpdateBalancesHeight(owner, targetHeight);
+}
+
+void CompareViews(CCustomCSView &reference, CCustomCSView &segmented, const std::vector<DCT_ID> &tokens,
+                  const CScript &owner) {
+    for (const auto &tokenId : tokens) {
+        BOOST_CHECK_EQUAL(reference.GetBalance(owner, tokenId).nValue, segmented.GetBalance(owner, tokenId).nValue);
+    }
+    // the raw changes have to be identical as well, they are part of the merkle root
+    const auto &referenceRaw = reference.GetStorage().GetRaw();
+    const auto &segmentedRaw = segmented.GetStorage().GetRaw();
+    BOOST_CHECK_EQUAL(referenceRaw.size(), segmentedRaw.size());
+    for (const auto &[key, value] : referenceRaw) {
+        const auto it = segmentedRaw.find(key);
+        BOOST_REQUIRE(it != segmentedRaw.end());
+        BOOST_CHECK(value == it->second);
+    }
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(pool_rewards_segmented)
+{
+    CCustomCSView mnview(*pcustomcsview);
+
+    // The reward history of a pool starts at the grand central height, so the
+    // test is placed right above it. The calculation changes at the bayfront
+    // gardens height, which is moved into the middle of the tested range.
+    const auto grandCentralHeight = static_cast<uint32_t>(Params().GetConsensus().DF20GrandCentralHeight);
+    auto &df4Height = const_cast<int&>(Params().GetConsensus().DF4BayfrontGardensHeight);
+    const auto oldDf4Height = df4Height;
+    const auto forkHeight = grandCentralHeight + 10;
+    df4Height = forkHeight;
+
+    constexpr const uint32_t startHeightOffset = 0;
+    constexpr const uint32_t targetHeightOffset = 20;
+    const auto startHeight = grandCentralHeight + startHeightOffset;
+    const auto targetHeight = grandCentralHeight + targetHeightOffset;
+
+    // ---------------------------------------------------------------------
+    // a pool with a changing total liquidity (including a period without any
+    // liquidity), changing rewards, a loan reward, a custom reward and swaps
+    // with a commission
+    // ---------------------------------------------------------------------
+    DCT_ID idA, idB, idPool;
+    std::tie(idA, idB, idPool) = CreatePoolNTokens(mnview, "RA", "RB");
+    const CScript owner = CScript(idPool.v * 100 + 1);
+    BOOST_REQUIRE(mnview.AddBalance(owner, {idPool, 500 * COIN}).ok);
+    BOOST_REQUIRE(mnview.SetShare(idPool, owner, startHeight).ok);
+
+    mnview.WriteBy<CPoolPairView::ByTotalLiquidity>(PoolHeightKey{idPool, startHeight}, 1000 * COIN);
+    mnview.WriteBy<CPoolPairView::ByTotalLiquidity>(PoolHeightKey{idPool, startHeight + 3}, 0);  // no liquidity
+    mnview.WriteBy<CPoolPairView::ByTotalLiquidity>(PoolHeightKey{idPool, startHeight + 8}, 2000 * COIN);
+    mnview.WriteBy<CPoolPairView::ByPoolReward>(PoolHeightKey{idPool, startHeight + 1}, 100 * COIN);
+    mnview.WriteBy<CPoolPairView::ByPoolReward>(PoolHeightKey{idPool, startHeight + 7}, 300 * COIN);
+    mnview.WriteBy<CPoolPairView::ByPoolLoanReward>(PoolHeightKey{idPool, startHeight + 2}, 50 * COIN);
+    mnview.WriteBy<CPoolPairView::ByCustomReward>(PoolHeightKey{idPool, startHeight + 5},
+                                                 CBalances{TAmounts{{idA, 10 * COIN}}});
+    // the first swap is skipped as there is no liquidity at its height
+    mnview.WriteBy<CPoolPairView::ByPoolSwap>(PoolHeightKey{idPool, startHeight + 6},
+                                              PoolSwapValue{true, 3 * COIN, 4 * COIN});
+    // the second swap is credited with a commission
+    mnview.WriteBy<CPoolPairView::ByPoolSwap>(PoolHeightKey{idPool, startHeight + 12},
+                                              PoolSwapValue{true, 5 * COIN, 6 * COIN});
+    mnview.Flush();
+
+    // the per-height and the segmented implementation have to return exactly
+    // the same rewards
+    {
+        CCustomCSView reference(*pcustomcsview);
+        CCustomCSView segmented(*pcustomcsview);
+        const auto referenceRewards = CollectPerHeightRewards(reference, idPool, owner, startHeight, targetHeight);
+        const auto segmentedRewards = CollectSegmentedRewards(segmented, idPool, owner, startHeight, targetHeight);
+        BOOST_REQUIRE(!referenceRewards.empty());
+        BOOST_CHECK_EQUAL(referenceRewards.size(), segmentedRewards.size());
+        for (size_t i = 0; i < referenceRewards.size() && i < segmentedRewards.size(); ++i) {
+            BOOST_CHECK(referenceRewards[i] == segmentedRewards[i]);
+        }
+    }
+
+    // the owner rewards have to be identical as well
+    {
+        CCustomCSView reference(*pcustomcsview);
+        CCustomCSView segmented(*pcustomcsview);
+        CalculateOwnerRewardsReference(reference, owner, targetHeight);
+        segmented.CalculateOwnerRewards(owner, targetHeight);
+        CompareViews(reference, segmented, {DCT_ID{0}, idA, idB, idPool}, owner);
+    }
+
+    // ---------------------------------------------------------------------
+    // a custom reward which is denominated in the pool's own LP token: the
+    // liquidity of the owner changes with every single reward
+    // ---------------------------------------------------------------------
+    {
+        DCT_ID idC, idD, idPoolLp;
+        std::tie(idC, idD, idPoolLp) = CreatePoolNTokens(mnview, "RC", "RD");
+        const CScript lpOwner = CScript(idPoolLp.v * 100 + 2);
+        BOOST_REQUIRE(mnview.AddBalance(lpOwner, {idPoolLp, 500 * COIN}).ok);
+        BOOST_REQUIRE(mnview.SetShare(idPoolLp, lpOwner, startHeight).ok);
+
+        mnview.WriteBy<CPoolPairView::ByTotalLiquidity>(PoolHeightKey{idPoolLp, startHeight}, 1000 * COIN);
+        mnview.WriteBy<CPoolPairView::ByPoolReward>(PoolHeightKey{idPoolLp, startHeight}, 100 * COIN);
+        mnview.WriteBy<CPoolPairView::ByCustomReward>(PoolHeightKey{idPoolLp, startHeight},
+                                                      CBalances{TAmounts{{idPoolLp, 10 * COIN}}});
+        mnview.Flush();
+
+        CCustomCSView reference(*pcustomcsview);
+        CCustomCSView segmented(*pcustomcsview);
+        CalculateOwnerRewardsReference(reference, lpOwner, targetHeight);
+        segmented.CalculateOwnerRewards(lpOwner, targetHeight);
+        CompareViews(reference, segmented, {DCT_ID{0}, idC, idD, idPoolLp}, lpOwner);
+    }
+
+    // ---------------------------------------------------------------------
+    // the account balance limit is reached within the segment: every single
+    // reward has to be applied on its own
+    // ---------------------------------------------------------------------
+    {
+        DCT_ID idE, idF, idPoolLimit;
+        std::tie(idE, idF, idPoolLimit) = CreatePoolNTokens(mnview, "RE", "RF");
+        const CScript limitOwner = CScript(idPoolLimit.v * 100 + 3);
+        BOOST_REQUIRE(mnview.AddBalance(limitOwner, {idPoolLimit, 500 * COIN}).ok);
+        BOOST_REQUIRE(mnview.AddBalance(limitOwner, {DCT_ID{0}, MAX_MONEY - 50 * COIN}).ok);
+        BOOST_REQUIRE(mnview.SetShare(idPoolLimit, limitOwner, startHeight).ok);
+
+        mnview.WriteBy<CPoolPairView::ByTotalLiquidity>(PoolHeightKey{idPoolLimit, startHeight}, 1000 * COIN);
+        mnview.WriteBy<CPoolPairView::ByPoolReward>(PoolHeightKey{idPoolLimit, startHeight}, 100 * COIN);
+        mnview.Flush();
+
+        CCustomCSView reference(*pcustomcsview);
+        CCustomCSView segmented(*pcustomcsview);
+        reference.SetEnforceAccountMaxMoney(true);
+        segmented.SetEnforceAccountMaxMoney(true);
+        CalculateOwnerRewardsReference(reference, limitOwner, targetHeight);
+        segmented.CalculateOwnerRewards(limitOwner, targetHeight);
+        CompareViews(reference, segmented, {DCT_ID{0}, idE, idF, idPoolLimit}, limitOwner);
+    }
+
+    // ---------------------------------------------------------------------
+    // a range without any reward and without any liquidity must not change
+    // any balance at all
+    // ---------------------------------------------------------------------
+    {
+        DCT_ID idG, idH, idPoolEmpty;
+        std::tie(idG, idH, idPoolEmpty) = CreatePoolNTokens(mnview, "RG", "RH");
+        const CScript emptyOwner = CScript(idPoolEmpty.v * 100 + 4);
+        BOOST_REQUIRE(mnview.AddBalance(emptyOwner, {idPoolEmpty, 500 * COIN}).ok);
+        BOOST_REQUIRE(mnview.SetShare(idPoolEmpty, emptyOwner, startHeight).ok);
+
+        mnview.WriteBy<CPoolPairView::ByTotalLiquidity>(PoolHeightKey{idPoolEmpty, startHeight}, 0);
+        mnview.Flush();
+
+        CCustomCSView reference(*pcustomcsview);
+        CCustomCSView segmented(*pcustomcsview);
+        CalculateOwnerRewardsReference(reference, emptyOwner, targetHeight);
+        segmented.CalculateOwnerRewards(emptyOwner, targetHeight);
+        CompareViews(reference, segmented, {DCT_ID{0}, idG, idH, idPoolEmpty}, emptyOwner);
+        // no balance has been changed at all, only the balances height is updated
+        BOOST_CHECK_EQUAL(reference.GetStorage().GetRaw().size(), 1UL);
+        BOOST_CHECK_EQUAL(segmented.GetStorage().GetRaw().size(), 1UL);
+    }
+
+    df4Height = oldDf4Height;
+}
+
 BOOST_AUTO_TEST_SUITE_END()
