@@ -465,6 +465,21 @@ typedef std::shared_ptr<const CTransaction> CTransactionRef;
 static inline CTransactionRef MakeTransactionRef() { return std::make_shared<const CTransaction>(); }
 template <typename Tx> static inline CTransactionRef MakeTransactionRef(Tx&& txIn) { return std::make_shared<const CTransaction>(std::forward<Tx>(txIn)); }
 
+/**
+ * A witness transaction id (wtxid), i.e. the hash of a transaction that includes
+ * its witness data (BIP 339). It is a distinct type from uint256 so that it
+ * cannot be mixed up with a txid by accident.
+ */
+class Wtxid : public uint256
+{
+public:
+    Wtxid() : uint256() {}
+    explicit Wtxid(const uint256& hash) : uint256(hash) {}
+
+    /** Construct a wtxid from a raw uint256 hash. */
+    static Wtxid FromUint256(const uint256& hash) { return Wtxid(hash); }
+};
+
 /** A generic identifier for a transaction, either by txid or wtxid. */
 class GenTxid
 {
