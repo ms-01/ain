@@ -7,6 +7,7 @@
 #define DEFI_WALLET_WALLETDB_H
 
 #include <amount.h>
+#include <hash.h>
 #include <key.h>
 #include <primitives/transaction.h>
 #include <script/sign.h>
@@ -54,6 +55,7 @@ extern const std::string BESTBLOCK_NOMERKLE;
 extern const std::string CRYPTED_KEY;
 extern const std::string CSCRIPT;
 extern const std::string DEFAULTKEY;
+extern const std::string DESC;
 extern const std::string DESTDATA;
 extern const std::string FLAGS;
 extern const std::string HDCHAIN;
@@ -150,6 +152,62 @@ public:
     }
 };
 
+/**
+ * A descriptor record of the wallet.
+ *
+ * The record keeps the canonical public descriptor together with the wallet
+ * metadata that is required to restore the descriptor set of a wallet:
+ * the (optional) private descriptor, the active/internal flags, the imported
+ * range, the next index used for address derivation and the creation time.
+ *
+ * The record is written through WalletBatch and is therefore available on both
+ * the Berkeley DB and the SQLite wallet backend.
+ */
+struct WalletDescriptor {
+    //! Canonical public descriptor, including the descriptor checksum.
+    std::string desc;
+    //! Private descriptor, if the descriptor carries private key material.
+    //! Encrypted with the wallet master key when the wallet is encrypted.
+    std::string desc_private;
+    //! Whether desc_private is encrypted with the wallet master key.
+    bool encrypted{false};
+    //! Whether the descriptor is used to derive new addresses.
+    bool active{false};
+    //! Whether the descriptor is used for change (internal) addresses.
+    bool internal{false};
+    //! First index of the imported range, -1 if the descriptor is not ranged.
+    int64_t range_begin{-1};
+    //! Last index of the imported range (inclusive), -1 if the descriptor is not ranged.
+    int64_t range_end{-1};
+    //! Next index that is used to derive a new address.
+    int64_t next_index{0};
+    //! Creation timestamp of the descriptor.
+    int64_t timestamp{0};
+    //! Address book label (external descriptors only).
+    std::string label;
+    //! Output type of the descriptor (-1 if the descriptor has no DFI address type).
+    int8_t output_type{-1};
+
+    ADD_SERIALIZE_METHODS;
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream &s, Operation ser_action) {
+        READWRITE(this->desc);
+        READWRITE(this->desc_private);
+        READWRITE(this->encrypted);
+        READWRITE(this->active);
+        READWRITE(this->internal);
+        READWRITE(this->range_begin);
+        READWRITE(this->range_end);
+        READWRITE(this->next_index);
+        READWRITE(this->timestamp);
+        READWRITE(this->label);
+        READWRITE(this->output_type);
+    }
+};
+
+//! Database identifier of a descriptor record.
+uint256 DescriptorID(const std::string& desc);
+
 class CKeyData {
 public:
     CPrivKey pubKey;
@@ -222,6 +280,13 @@ public:
 
     bool WriteCScript(const uint160 &hash, const CScript &redeemScript);
     bool ReadCScript(const uint160 &hash, CScript &redeemScript);
+
+    //! Write a descriptor record, the record is keyed by the descriptor identifier.
+    bool WriteDescriptor(const WalletDescriptor &descriptor);
+    //! Read a descriptor record.
+    bool ReadDescriptor(const uint256 &desc_id, WalletDescriptor &descriptor);
+    //! Erase a descriptor record.
+    bool EraseDescriptor(const uint256 &desc_id);
 
     bool WriteWatchOnly(const CScript &script, const CKeyMetadata &keymeta);
     bool EraseWatchOnly(const CScript &script);

@@ -695,6 +695,14 @@ bool CWallet::ChangeWalletPassphrase(const SecureString& strOldWalletPassphrase,
 
                 WalletLogPrintf("Wallet passphrase changed to an nDeriveIterations of %i\n", pMasterKey.second.nDeriveIterations);
 
+                // The master key material itself is not changed by a passphrase
+                // change, the encrypted private descriptors therefore stay valid.
+                // The records are still processed in the same pass so that a record
+                // that was stored in plaintext is never left unencrypted.
+                if (!EncryptDescriptors(_vMasterKey)) {
+                    return false;
+                }
+
                 if (!crypter.SetKeyFromPassphrase(strNewWalletPassphrase, pMasterKey.second.vchSalt, pMasterKey.second.nDeriveIterations, pMasterKey.second.nDerivationMethod))
                     return false;
                 if (!crypter.Encrypt(_vMasterKey, pMasterKey.second.vchCryptedKey))
@@ -940,6 +948,15 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
             encrypted_batch = nullptr;
             // We now probably have half of our keys encrypted in memory, and half not...
             // die and let the user reload the unencrypted wallet.
+            assert(false);
+        }
+
+        // Encrypt the private descriptors of the wallet with the master key.
+        if (!EncryptDescriptors(_vMasterKey, encrypted_batch))
+        {
+            encrypted_batch->TxnAbort();
+            delete encrypted_batch;
+            encrypted_batch = nullptr;
             assert(false);
         }
 
@@ -1689,6 +1706,10 @@ CPubKey CWallet::DeriveNewSeed(const CKey& key)
 void CWallet::SetHDSeed(const CPubKey& seed)
 {
     LOCK(cs_wallet);
+    // Note: a wallet with an active descriptor derives its addresses from the
+    // descriptor and not from the HD keypool. The `sethdseed` RPC rejects the
+    // request for such a wallet, the internal replacement of the HD seed (for
+    // example during `encryptwallet`) does not change the descriptor records.
     // store the keyid (hash160) together with
     // the child index counter in the database
     // as a hdchain object
@@ -1919,6 +1940,246 @@ bool CWallet::ImportScriptPubKeys(const std::string& label, const std::set<CScri
             SetAddressBookWithDB(batch, dest, label, "receive");
         }
     }
+    return true;
+}
+
+void CWallet::LoadDescriptor(const WalletDescriptor& descriptor)
+{
+    AssertLockHeld(cs_wallet);
+    m_descriptors[descriptor.desc] = descriptor;
+}
+
+bool CWallet::AddDescriptor(WalletDescriptor& descriptor)
+{
+    AssertLockHeld(cs_wallet);
+    WalletBatch batch(*database);
+    if (!batch.WriteDescriptor(descriptor)) {
+        return false;
+    }
+    m_descriptors[descriptor.desc] = descriptor;
+    if (!IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS)) {
+        SetWalletFlag(WALLET_FLAG_DESCRIPTORS);
+    }
+    return true;
+}
+
+bool CWallet::RemoveDescriptor(const std::string& desc)
+{
+    AssertLockHeld(cs_wallet);
+    auto it = m_descriptors.find(desc);
+    if (it == m_descriptors.end()) {
+        return false;
+    }
+    WalletBatch batch(*database);
+    if (!batch.EraseDescriptor(DescriptorID(desc))) {
+        return false;
+    }
+    m_descriptors.erase(it);
+    if (m_descriptors.empty() && IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS)) {
+        UnsetWalletFlag(WALLET_FLAG_DESCRIPTORS);
+    }
+    return true;
+}
+
+std::map<std::string, WalletDescriptor> CWallet::GetDescriptors() const
+{
+    LOCK(cs_wallet);
+    return m_descriptors;
+}
+
+bool CWallet::HasDescriptors() const
+{
+    LOCK(cs_wallet);
+    return !m_descriptors.empty();
+}
+
+bool CWallet::HasActiveDescriptors() const
+{
+    LOCK(cs_wallet);
+    for (const auto& entry : m_descriptors) {
+        if (entry.second.active) return true;
+    }
+    return false;
+}
+
+bool CWallet::GetActiveDescriptor(const OutputType type, const bool internal, WalletDescriptor& descriptor) const
+{
+    LOCK(cs_wallet);
+    for (const auto& entry : m_descriptors) {
+        const WalletDescriptor& record = entry.second;
+        if (!record.active) continue;
+        if (record.internal != internal) continue;
+        if (record.output_type != static_cast<int8_t>(type)) continue;
+        descriptor = record;
+        return true;
+    }
+    return false;
+}
+
+bool CWallet::DeriveNewDescriptorDestination(WalletDescriptor& descriptor, const OutputType type, CTxDestination& dest, std::string& error)
+{
+    AssertLockHeld(cs_wallet);
+    error.clear();
+
+    FlatSigningProvider keys;
+    std::string parse_error;
+    auto parsed_desc = Parse(descriptor.desc, keys, parse_error, /* require_checksum = */ true);
+    if (!parsed_desc) {
+        error = parse_error;
+        return false;
+    }
+
+    int64_t position = 0;
+    if (parsed_desc->IsRange()) {
+        if (descriptor.next_index < descriptor.range_begin || descriptor.next_index > descriptor.range_end) {
+            error = "No more addresses available in the descriptor range";
+            return false;
+        }
+        position = descriptor.next_index;
+    }
+
+    FlatSigningProvider expanded;
+    std::vector<CScript> scripts;
+    if (!parsed_desc->Expand(position, keys, scripts, expanded)) {
+        error = "Cannot expand descriptor";
+        return false;
+    }
+    if (scripts.empty()) {
+        error = "Descriptor does not expand to a script";
+        return false;
+    }
+
+    CTxDestination derived;
+    if (!ExtractDestination(scripts[0], derived)) {
+        error = "Descriptor does not expand to a standard address";
+        return false;
+    }
+    if (descriptor.output_type >= 0 && descriptor.output_type != static_cast<int8_t>(type)) {
+        error = "Descriptor does not match the requested address type";
+        return false;
+    }
+
+    // The scripts of the descriptor are imported together with the descriptor,
+    // but make sure that the derived script is known to the wallet.
+    {
+        WalletBatch batch(*database);
+        for (const auto& script_entry : expanded.scripts) {
+            if (HaveCScript(script_entry.first)) continue;
+            if (!AddCScriptWithDB(batch, script_entry.second)) {
+                error = "Error adding script to wallet";
+                return false;
+            }
+        }
+    }
+
+    dest = derived;
+
+    if (parsed_desc->IsRange()) {
+        descriptor.next_index++;
+        if (!AddDescriptor(descriptor)) {
+            error = "Error writing descriptor to wallet";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CWallet::EncryptDescriptors(const CKeyingMaterial& master_key, WalletBatch* batch)
+{
+    AssertLockHeld(cs_wallet);
+    bool success = true;
+    std::unique_ptr<WalletBatch> own_batch;
+    if (!batch) {
+        own_batch = std::make_unique<WalletBatch>(*database);
+        batch = own_batch.get();
+    }
+    for (auto& entry : m_descriptors) {
+        WalletDescriptor& record = entry.second;
+        if (record.desc_private.empty() || record.encrypted) continue;
+        const uint256 iv = Hash(record.desc.begin(), record.desc.end());
+        const CKeyingMaterial plaintext(record.desc_private.begin(), record.desc_private.end());
+        std::vector<unsigned char> ciphertext;
+        if (!EncryptSecret(master_key, plaintext, iv, ciphertext)) {
+            success = false;
+            continue;
+        }
+        record.desc_private.assign(ciphertext.begin(), ciphertext.end());
+        record.encrypted = true;
+        if (!batch->WriteDescriptor(record)) {
+            success = false;
+        }
+    }
+    return success;
+}
+
+bool CWallet::DecryptDescriptors(const CKeyingMaterial& master_key)
+{
+    AssertLockHeld(cs_wallet);
+    bool success = true;
+    for (auto& entry : m_descriptors) {
+        WalletDescriptor& record = entry.second;
+        if (record.desc_private.empty() || !record.encrypted) continue;
+        const uint256 iv = Hash(record.desc.begin(), record.desc.end());
+        const std::vector<unsigned char> ciphertext(record.desc_private.begin(), record.desc_private.end());
+        CKeyingMaterial plaintext;
+        if (!DecryptSecret(master_key, ciphertext, iv, plaintext)) {
+            success = false;
+            continue;
+        }
+        record.desc_private.assign(plaintext.begin(), plaintext.end());
+        record.encrypted = false;
+    }
+    return success;
+}
+
+bool CWallet::GetPrivateDescriptorString(const WalletDescriptor& descriptor, std::string& out) const
+{
+    LOCK2(cs_wallet, cs_KeyStore);
+    out.clear();
+    if (descriptor.desc_private.empty()) {
+        return false;
+    }
+    if (!descriptor.encrypted) {
+        out = descriptor.desc_private;
+        return true;
+    }
+    if (vMasterKey.empty()) {
+        return false;
+    }
+    const uint256 iv = Hash(descriptor.desc.begin(), descriptor.desc.end());
+    const std::vector<unsigned char> ciphertext(descriptor.desc_private.begin(), descriptor.desc_private.end());
+    CKeyingMaterial plaintext;
+    if (!DecryptSecret(vMasterKey, ciphertext, iv, plaintext)) {
+        return false;
+    }
+    out.assign(plaintext.begin(), plaintext.end());
+    return true;
+}
+
+bool CWallet::EncryptDescriptorString(const std::string& desc, const std::string& private_desc, std::string& out) const
+{
+    out.clear();
+    if (private_desc.empty()) {
+        return false;
+    }
+    LOCK2(cs_wallet, cs_KeyStore);
+    if (!IsCrypted()) {
+        // An unencrypted wallet stores the private descriptor in the clear, in
+        // the same way as it stores private keys in the clear.
+        out = private_desc;
+        return true;
+    }
+    if (vMasterKey.empty()) {
+        // The wallet is locked, the master key is not available.
+        return false;
+    }
+    const uint256 iv = Hash(desc.begin(), desc.end());
+    const CKeyingMaterial plaintext(private_desc.begin(), private_desc.end());
+    std::vector<unsigned char> ciphertext;
+    if (!EncryptSecret(vMasterKey, plaintext, iv, ciphertext)) {
+        return false;
+    }
+    out.assign(ciphertext.begin(), ciphertext.end());
     return true;
 }
 
@@ -3482,6 +3743,14 @@ DBErrors CWallet::LoadWallet(bool& fFirstRunRet)
             && !IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS) && !IsWalletFlagSet(WALLET_FLAG_BLANK_WALLET);
     }
 
+    // Keep the descriptor wallet flag in sync with the descriptor records: the
+    // flag is set if and only if the wallet holds at least one descriptor record.
+    if (!m_descriptors.empty() && !IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS)) {
+        SetWalletFlag(WALLET_FLAG_DESCRIPTORS);
+    } else if (m_descriptors.empty() && IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS)) {
+        UnsetWalletFlag(WALLET_FLAG_DESCRIPTORS);
+    }
+
     if (nLoadWalletRet != DBErrors::LOAD_OK)
         return nLoadWalletRet;
 
@@ -3841,6 +4110,17 @@ bool CWallet::GetNewDestination(const OutputType type, const std::string label, 
     LOCK(cs_wallet);
     error.clear();
 
+    // An active descriptor takes precedence over the legacy keypool. A wallet
+    // without descriptor records keeps using the keypool path unchanged.
+    WalletDescriptor descriptor;
+    if (GetActiveDescriptor(type, /*internal=*/false, descriptor)) {
+        if (!DeriveNewDescriptorDestination(descriptor, type, dest, error)) {
+            return false;
+        }
+        SetAddressBook(dest, label, "receive");
+        return true;
+    }
+
     TopUpKeyPool();
 
     // Generate a new key that is added to wallet
@@ -3866,6 +4146,15 @@ bool CWallet::GetNewDestination(const OutputType type, const std::string label, 
 bool CWallet::GetNewChangeDestination(const OutputType type, CTxDestination& dest, std::string& error)
 {
     error.clear();
+
+    // An active internal descriptor takes precedence over the legacy keypool.
+    {
+        LOCK(cs_wallet);
+        WalletDescriptor descriptor;
+        if (GetActiveDescriptor(type, /*internal=*/true, descriptor)) {
+            return DeriveNewDescriptorDestination(descriptor, type, dest, error);
+        }
+    }
 
     TopUpKeyPool();
 

@@ -131,6 +131,20 @@ void EnsureWalletIsUnlocked(const CWallet* pwallet)
     }
 }
 
+int64_t GetImportTimestamp(const UniValue& data, int64_t now)
+{
+    if (data.exists("timestamp")) {
+        const UniValue& timestamp = data["timestamp"];
+        if (timestamp.isNum()) {
+            return timestamp.getInt<int64_t>();
+        } else if (timestamp.isStr() && timestamp.get_str() == "now") {
+            return now;
+        }
+        throw JSONRPCError(RPC_TYPE_ERROR, strprintf("Expected number or \"now\" timestamp value for key. got type %s", uvTypeName(timestamp.type())));
+    }
+    throw JSONRPCError(RPC_TYPE_ERROR, "Missing required timestamp field for key");
+}
+
 static void WalletTxToJSON(interfaces::Chain& chain, interfaces::Chain::Lock& locked_chain, const CWalletTx& wtx, UniValue& entry)
 {
     int confirms = wtx.GetDepthInMainChain(locked_chain);
@@ -2470,6 +2484,7 @@ static UniValue getwalletinfo(const JSONRPCRequest& request)
             "  \"hdseedid\": \"<hash160>\"            (string, optional) the Hash160 of the HD seed (only present when HD is enabled)\n"
             "  \"private_keys_enabled\": true|false (boolean) false if privatekeys are disabled for this wallet (enforced watch-only wallet)\n"
             "  \"avoid_reuse\": true|false          (boolean) whether this wallet tracks clean/dirty coins in terms of reuse\n"
+            "  \"descriptors\": true|false          (boolean) whether this wallet holds descriptor records\n"
             "  \"scanning\":                        (json object) current scanning details, or false if no scan is in progress\n"
             "    {\n"
             "      \"duration\" : xxxx              (numeric) elapsed seconds since scan start\n"
@@ -2517,6 +2532,7 @@ static UniValue getwalletinfo(const JSONRPCRequest& request)
     }
     obj.pushKV("private_keys_enabled", !pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS));
     obj.pushKV("avoid_reuse", pwallet->IsWalletFlagSet(WALLET_FLAG_AVOID_REUSE));
+    obj.pushKV("descriptors", pwallet->IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS));
     if (pwallet->IsScanning()) {
         UniValue scanning(UniValue::VOBJ);
         scanning.pushKV("duration", pwallet->ScanningDuration() / 1000);
@@ -4125,6 +4141,13 @@ UniValue sethdseed(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_WALLET_ERROR, "Cannot set a HD seed to a wallet with private keys disabled");
     }
 
+    // A wallet with an active descriptor derives its addresses from the
+    // descriptor and not from the HD keypool, changing the seed would create a
+    // second source of truth for the wallet addresses.
+    if (pwallet->HasActiveDescriptors()) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Cannot set a HD seed on a wallet with an active descriptor");
+    }
+
     auto locked_chain = pwallet->chain().lock();
     LOCK2(pwallet->cs_wallet, locked_chain->mutex());
 
@@ -4492,6 +4515,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "getwalletinfo",                    &getwalletinfo,                 {"with_tokens"} },
     { "wallet",             "importaddress",                    &importaddress,                 {"address","label","rescan","p2sh"} },
     { "wallet",             "importmulti",                      &importmulti,                   {"requests","options"} },
+    { "wallet",             "importdescriptors",                &importdescriptors,             {"requests"} },
     { "wallet",             "importprivkey",                    &importprivkey,                 {"privkey","label","rescan"} },
     { "wallet",             "importprunedfunds",                &importprunedfunds,             {"rawtransaction","txoutproof"} },
     { "wallet",             "importpubkey",                     &importpubkey,                  {"pubkey","label","rescan"} },
@@ -4499,6 +4523,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "keypoolrefill",                    &keypoolrefill,                 {"newsize"} },
     { "wallet",             "listaddressgroupings",             &listaddressgroupings,          {} },
     { "wallet",             "listlabels",                       &listlabels,                    {"purpose"} },
+    { "wallet",             "listdescriptors",                  &listdescriptors,               {"private"} },
     { "wallet",             "listlockunspent",                  &listlockunspent,               {} },
     { "wallet",             "listreceivedbyaddress",            &listreceivedbyaddress,         {"minconf","include_empty","include_watchonly","address_filter"} },
     { "wallet",             "listreceivedbylabel",              &listreceivedbylabel,           {"minconf","include_empty","include_watchonly"} },
