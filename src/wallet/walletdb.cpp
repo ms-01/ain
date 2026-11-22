@@ -29,6 +29,7 @@ const std::string BESTBLOCK{"bestblock"};
 const std::string CRYPTED_KEY{"ckey"};
 const std::string CSCRIPT{"cscript"};
 const std::string DEFAULTKEY{"defaultkey"};
+const std::string DESC{"desc"};
 const std::string DESTDATA{"destdata"};
 const std::string FLAGS{"flags"};
 const std::string HDCHAIN{"hdchain"};
@@ -47,6 +48,11 @@ const std::string VERSION{"version"};
 const std::string WATCHMETA{"watchmeta"};
 const std::string WATCHS{"watchs"};
 } // namespace DBKeys
+
+uint256 DescriptorID(const std::string& desc)
+{
+    return Hash(desc.begin(), desc.end());
+}
 
 //
 // WalletBatch
@@ -132,6 +138,21 @@ bool WalletBatch::WriteCScript(const uint160& hash, const CScript& redeemScript)
 bool WalletBatch::ReadCScript(const uint160& hash, CScript& redeemScript)
 {
     return m_batch->Read(std::make_pair(DBKeys::CSCRIPT, hash), redeemScript);
+}
+
+bool WalletBatch::WriteDescriptor(const WalletDescriptor& descriptor)
+{
+    return WriteIC(std::make_pair(DBKeys::DESC, DescriptorID(descriptor.desc)), descriptor);
+}
+
+bool WalletBatch::ReadDescriptor(const uint256& desc_id, WalletDescriptor& descriptor)
+{
+    return m_batch->Read(std::make_pair(DBKeys::DESC, desc_id), descriptor);
+}
+
+bool WalletBatch::EraseDescriptor(const uint256& desc_id)
+{
+    return EraseIC(std::make_pair(DBKeys::DESC, desc_id));
 }
 
 bool WalletBatch::WriteWatchOnly(const CScript &dest, const CKeyMetadata& keyMeta)
@@ -399,6 +420,17 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
                 strErr = "Error reading wallet database: LoadCScript failed";
                 return false;
             }
+        } else if (strType == DBKeys::DESC) {
+            uint256 desc_id;
+            ssKey >> desc_id;
+            WalletDescriptor descriptor;
+            ssValue >> descriptor;
+            if (DescriptorID(descriptor.desc) != desc_id)
+            {
+                strErr = "Error reading wallet database: descriptor identifier mismatch";
+                return false;
+            }
+            pwallet->LoadDescriptor(descriptor);
         } else if (strType == DBKeys::ORDERPOSNEXT) {
             ssValue >> pwallet->nOrderPosNext;
         } else if (strType == DBKeys::DESTDATA) {

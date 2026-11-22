@@ -40,6 +40,16 @@ bool EnsureWalletIsAvailable(const CWallet*, bool avoidException);
 
 UniValue getaddressinfo(const JSONRPCRequest& request);
 UniValue signrawtransactionwithwallet(const JSONRPCRequest& request);
+UniValue importdescriptors(const JSONRPCRequest& request);
+UniValue listdescriptors(const JSONRPCRequest& request);
+
+/**
+ * Read the timestamp of an import request.
+ *
+ * The timestamp is either a unix timestamp or the string "now", which is
+ * replaced by the given current blockchain time.
+ */
+int64_t GetImportTimestamp(const UniValue& data, int64_t now);
 
 CTransactionRef SendMoney(interfaces::Chain::Lock& locked_chain, CWallet * const pwallet, const CTxDestination &address, CAmount nValue, DCT_ID tokenId, bool fSubtractFeeFromAmount, const CCoinControl& coin_control, mapValue_t mapValue, const CoinSelectionOptions &coinSelectOpts = CoinSelectionOptions::CreateDefault());
 #endif //DEFI_WALLET_RPCWALLET_H

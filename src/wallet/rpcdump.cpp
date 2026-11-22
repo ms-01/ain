@@ -21,6 +21,7 @@
 #include <util/translation.h>
 #include <wallet/rpcwallet.h>
 #include <wallet/wallet.h>
+#include <wallet/walletdescriptors.h>
 
 #include <cstdint>
 #include <fstream>
@@ -1212,26 +1213,8 @@ static UniValue ProcessImportDescriptor(ImportData& import_data, std::map<CKeyID
     const UniValue& priv_keys = data.exists("keys") ? data["keys"].get_array() : UniValue();
 
     // Expand all descriptors to get public keys and scripts, and private keys if available.
-    for (int i = range_start; i <= range_end; ++i) {
-        FlatSigningProvider out_keys;
-        std::vector<CScript> scripts_temp;
-        parsed_desc->Expand(i, keys, scripts_temp, out_keys);
-        std::copy(scripts_temp.begin(), scripts_temp.end(), std::inserter(script_pub_keys, script_pub_keys.end()));
-        for (const auto& key_pair : out_keys.pubkeys) {
-            ordered_pubkeys.push_back(key_pair.first);
-        }
-
-        for (const auto& x : out_keys.scripts) {
-            import_data.import_scripts.emplace(x.second);
-        }
-
-        parsed_desc->ExpandPrivate(i, keys, out_keys);
-
-        std::copy(out_keys.pubkeys.begin(), out_keys.pubkeys.end(), std::inserter(pubkey_map, pubkey_map.end()));
-        for (const auto& [key, value] : out_keys.keys) {
-            privkey_map.emplace(key, value);
-        }
-        import_data.key_origins.insert(out_keys.origins.begin(), out_keys.origins.end());
+    if (!ExpandDescriptorForImport(*parsed_desc, keys, range_start, range_end, script_pub_keys, import_data.import_scripts, pubkey_map, privkey_map, import_data.key_origins, ordered_pubkeys)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Cannot expand descriptor. Probably because of hardened derivations without private keys provided");
     }
 
     for (size_t i = 0; i < priv_keys.size(); ++i) {
@@ -1346,20 +1329,6 @@ static UniValue ProcessImport(CWallet * const pwallet, const UniValue& data, con
     }
     if (warnings.size()) result.pushKV("warnings", warnings);
     return result;
-}
-
-static int64_t GetImportTimestamp(const UniValue& data, int64_t now)
-{
-    if (data.exists("timestamp")) {
-        const UniValue& timestamp = data["timestamp"];
-        if (timestamp.isNum()) {
-            return timestamp.getInt<int64_t>();
-        } else if (timestamp.isStr() && timestamp.get_str() == "now") {
-            return now;
-        }
-        throw JSONRPCError(RPC_TYPE_ERROR, strprintf("Expected number or \"now\" timestamp value for key. got type %s", uvTypeName(timestamp.type())));
-    }
-    throw JSONRPCError(RPC_TYPE_ERROR, "Missing required timestamp field for key");
 }
 
 UniValue importmulti(const JSONRPCRequest& mainRequest)

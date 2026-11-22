@@ -193,3 +193,104 @@ All RPCs in Bitcoin Core will include the checksum in their output. Only
 certain RPCs require checksums on input, including `deriveaddress` and
 `importmulti`. The checksum for a descriptor without one can be computed
 using the `getdescriptorinfo` RPC.
+
+## DeFi Blockchain wallet descriptors
+
+Beside the descriptor language that is described above, the DeFi Blockchain
+wallet is able to *store* descriptors. The following RPCs are available:
+
+- `importdescriptors` imports descriptors into the wallet, stores them and
+  (optionally) triggers a rescan of the blockchain.
+- `listdescriptors` lists the descriptor records of the wallet.
+
+### Stored descriptor records
+
+A descriptor record keeps the canonical public descriptor (including its
+checksum) together with the metadata that is required to restore the wallet:
+
+| Field | Description |
+|---|---|
+| `desc` | The canonical public descriptor, including the checksum. |
+| `active` | Whether the descriptor is used to derive new addresses. |
+| `internal` | Whether the descriptor is used for change (internal) addresses. |
+| `range` | The imported range of a ranged descriptor, `[begin,end]`. |
+| `next` / `next_index` | The next index that is used to derive an address. |
+| `timestamp` | The creation time of the descriptor. |
+| `label` | The address book label of an external descriptor. |
+
+The records are written through the generic wallet database batch, they are
+therefore available on the Berkeley DB (`-dbtype=bdb`) and on the SQLite
+(`-dbtype=sqlite`) wallet backend and they are migrated by `migratewallet`
+without any additional handling.
+
+A private descriptor is stored as well when the imported descriptor carries
+private key material. The private descriptor is encrypted with the wallet
+master key when the wallet is encrypted, it is never stored in plaintext in an
+encrypted wallet. `listdescriptors true` returns the private descriptors and
+requires an unlocked wallet.
+
+### Address types
+
+The descriptor engine of DeFi Blockchain supports the `pk`, `pkh`, `wpkh`,
+`multi`, `combo`, `sh`, `wsh`, `addr` and `raw` functions. The address type of
+a descriptor is derived from the script that the descriptor expands to:
+
+| Descriptor | Address type |
+|---|---|
+| `pkh(...)` | `legacy` |
+| `wpkh(...)` | `bech32` |
+| `sh(wpkh(...))` | `p2sh-segwit` |
+
+The `erc55` address type of DeFi Blockchain has no descriptor equivalent, it
+is therefore never produced by a descriptor. `getnewaddress` with
+`address_type=erc55` keeps using the keypool of the wallet.
+
+### Active descriptors
+
+An active descriptor is the source of the new addresses of the wallet for its
+address type and externality:
+
+- `getnewaddress` with the address type of an active external descriptor
+  derives the next address of that descriptor and advances its `next_index`.
+- `getrawchangeaddress` with the address type of an active internal descriptor
+  derives the next change address of that descriptor.
+- Only one active descriptor per address type and externality is allowed, a
+  second one is rejected with an error.
+- A wallet without descriptor records keeps using the keypool of the wallet,
+  the behaviour of legacy wallets does not change.
+
+An active descriptor has to be a ranged descriptor, a non ranged descriptor
+would always derive the very same address. The range of an active descriptor
+is the range that was imported, the derivation fails with an error when the
+range is exhausted.
+
+### Deviations from Bitcoin Core
+
+The descriptor support of the DeFi Blockchain wallet is additive, the
+following differences to Bitcoin Core exist:
+
+1. Descriptor wallets are not exclusive. Legacy keypool wallets stay
+   creatable and usable, `createwallet` does not gain a `descriptors`
+   argument.
+2. `importdescriptors` and `listdescriptors` are available on every wallet,
+   they are not gated behind the `descriptor_wallet` wallet flag. The flag is
+   informational, it is set when the wallet holds at least one descriptor
+   record and it is reported by `getwalletinfo`.
+3. The descriptor grammar is the one of the DeFi Blockchain node, `sortedmulti`,
+   `multi_a`, `tr`, `rawtr`, miniscript and `musig` are not supported and are
+   rejected with an error that names the unsupported function.
+4. There is no automatic migration of a legacy wallet into a descriptor wallet
+   (`upgradewallet` is not available).
+5. A descriptor may be imported without private keys, the outputs are then
+   watch-only.
+6. `sethdseed` is rejected for a wallet with an active descriptor, the
+   descriptor and the HD seed would be two sources of truth for the addresses
+   of the wallet.
+
+### Downgrade compatibility
+
+A wallet file that contains descriptor records uses the new `desc` record type
+and the `descriptor_wallet` wallet flag. An older node skips the unknown
+record type with a warning, but it refuses to open a wallet with an unknown
+wallet flag in the upper section of the flag bits. A wallet backup that is
+restored with an older node therefore loses the descriptor records.

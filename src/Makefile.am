@@ -562,9 +562,11 @@ libdefi_wallet_a_SOURCES = \
   wallet/load.cpp \
   wallet/psbtwallet.cpp \
   wallet/rpcdump.cpp \
+  wallet/rpcdescriptors.cpp \
   wallet/rpcwallet.cpp \
   wallet/wallet.cpp \
   wallet/walletdb.cpp \
+  wallet/walletdescriptors.cpp \
   wallet/walletutil.cpp \
   wallet/coinselection.cpp \
   $(DEFI_CORE_H)

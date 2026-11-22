@@ -173,13 +173,22 @@ enum WalletFlags : uint64_t {
     //! DeFi Blockchain from opening the wallet, thinking it was newly created, and
     //! then improperly reinitializing it.
     WALLET_FLAG_BLANK_WALLET = (1ULL << 33),
+
+    //! Flag set when the wallet holds descriptor records.
+    //!
+    //! The flag is informational: it is set automatically when the first
+    //! descriptor record is written to the wallet and it is unset again when
+    //! the last descriptor record is removed. Descriptor wallets are not
+    //! exclusive in DeFi Blockchain, legacy keypool wallets stay usable.
+    WALLET_FLAG_DESCRIPTORS = (1ULL << 34),
 };
 
 static constexpr uint64_t KNOWN_WALLET_FLAGS =
         WALLET_FLAG_AVOID_REUSE
     |   WALLET_FLAG_BLANK_WALLET
     |   WALLET_FLAG_KEY_ORIGIN_METADATA
-    |   WALLET_FLAG_DISABLE_PRIVATE_KEYS;
+    |   WALLET_FLAG_DISABLE_PRIVATE_KEYS
+    |   WALLET_FLAG_DESCRIPTORS;
 
 static constexpr uint64_t MUTABLE_WALLET_FLAGS =
         WALLET_FLAG_AVOID_REUSE;
@@ -189,6 +198,7 @@ static const std::map<std::string,WalletFlags> WALLET_FLAG_MAP{
     {"blank", WALLET_FLAG_BLANK_WALLET},
     {"key_origin_metadata", WALLET_FLAG_KEY_ORIGIN_METADATA},
     {"disable_private_keys", WALLET_FLAG_DISABLE_PRIVATE_KEYS},
+    {"descriptor_wallet", WALLET_FLAG_DESCRIPTORS},
 };
 
 extern const std::map<uint64_t,std::string> WALLET_FLAG_CAVEATS;
@@ -944,6 +954,9 @@ public:
 
     std::map<CTxDestination, CAddressBookData> mapAddressBook GUARDED_BY(cs_wallet);
 
+    //! Descriptor records of the wallet, keyed by the canonical public descriptor.
+    std::map<std::string, WalletDescriptor> m_descriptors GUARDED_BY(cs_wallet);
+
     std::set<COutPoint> setLockedCoins GUARDED_BY(cs_wallet);
 
     /** Registered interfaces::Chain::Notifications handler. */
@@ -1147,6 +1160,42 @@ public:
     bool ImportPrivKeys(const std::map<CKeyID, CKey>& privkey_map, const int64_t timestamp) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     bool ImportPubKeys(const std::vector<CKeyID>& ordered_pubkeys, const std::map<CKeyID, CPubKey>& pubkey_map, const std::map<CKeyID, std::pair<CPubKey, KeyOriginInfo>>& key_origins, const bool add_keypool, const bool internal, const int64_t timestamp) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     bool ImportScriptPubKeys(const std::string& label, const std::set<CScript>& script_pub_keys, const bool have_solving_data, const bool apply_label, const int64_t timestamp) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+
+    //! Load a descriptor record into the wallet (used by LoadWallet).
+    void LoadDescriptor(const WalletDescriptor& descriptor) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+
+    //! Store a descriptor record in the wallet and persist it in the wallet database.
+    bool AddDescriptor(WalletDescriptor& descriptor) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+
+    //! Remove a descriptor record from the wallet and from the wallet database.
+    bool RemoveDescriptor(const std::string& desc) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+
+    //! All descriptor records of the wallet, keyed by the canonical public descriptor.
+    std::map<std::string, WalletDescriptor> GetDescriptors() const;
+
+    //! Whether the wallet holds at least one descriptor record.
+    bool HasDescriptors() const;
+
+    //! Whether the wallet holds at least one active descriptor record.
+    bool HasActiveDescriptors() const;
+
+    //! Find the active descriptor for the given output type and externality.
+    bool GetActiveDescriptor(const OutputType type, const bool internal, WalletDescriptor& descriptor) const;
+
+    //! Derive the next address of an active descriptor and advance its next index.
+    bool DeriveNewDescriptorDestination(WalletDescriptor& descriptor, const OutputType type, CTxDestination& dest, std::string& error) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+
+    //! Encrypt (or re-encrypt) the private descriptors of the wallet with the master key.
+    bool EncryptDescriptors(const CKeyingMaterial& master_key, WalletBatch* batch = nullptr) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+
+    //! Decrypt the private descriptors of the wallet with the master key.
+    bool DecryptDescriptors(const CKeyingMaterial& master_key) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+
+    //! Return the private descriptor string of a descriptor record, decrypted if required.
+    bool GetPrivateDescriptorString(const WalletDescriptor& descriptor, std::string& out) const;
+
+    //! Encrypt a private descriptor string with the wallet master key.
+    bool EncryptDescriptorString(const std::string& desc, const std::string& private_desc, std::string& out) const;
 
     CFeeRate m_pay_tx_fee{DEFAULT_PAY_TX_FEE};
     unsigned int m_confirm_target{DEFAULT_TX_CONFIRM_TARGET};
