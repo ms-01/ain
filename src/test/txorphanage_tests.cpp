@@ -999,6 +999,35 @@ BOOST_AUTO_TEST_CASE(orphan_count_limit_per_peer)
     orphanage->SanityCheck();
 }
 
+BOOST_AUTO_TEST_CASE(orphan_count_limit_tiebreak_prefers_recent_peer)
+{
+    FastRandomContext det_rand{true};
+    std::unique_ptr<node::TxOrphanage> orphanage{node::MakeTxOrphanage()};
+    // Two peers with the same number of announcements: the more recent peer (higher NodeId) is
+    // considered the worse offender, matching the upstream orphanage's tiebreak.
+    const NodeId peer_older{1};
+    const NodeId peer_recent{2};
+
+    auto older_tx = MakeTransactionSpending({}, det_rand);
+    BOOST_CHECK(orphanage->AddTx(older_tx, peer_older));
+    auto recent_tx = MakeTransactionSpending({}, det_rand);
+    BOOST_CHECK(orphanage->AddTx(recent_tx, peer_recent));
+
+    BOOST_CHECK_EQUAL(orphanage->CountUniqueOrphans(), 2);
+    BOOST_CHECK_EQUAL(orphanage->AnnouncementsFromPeer(peer_older), 1);
+    BOOST_CHECK_EQUAL(orphanage->AnnouncementsFromPeer(peer_recent), 1);
+
+    // Enforce a limit of a single orphan: the more recent peer's announcement is evicted first.
+    const unsigned int evicted = orphanage->LimitOrphanCount(1);
+    BOOST_CHECK_EQUAL(evicted, 1);
+    BOOST_CHECK_EQUAL(orphanage->CountUniqueOrphans(), 1);
+    BOOST_CHECK(orphanage->HaveTx(Wtxid::FromUint256(older_tx->GetWitnessHash())));
+    BOOST_CHECK(!orphanage->HaveTx(Wtxid::FromUint256(recent_tx->GetWitnessHash())));
+    BOOST_CHECK_EQUAL(orphanage->AnnouncementsFromPeer(peer_older), 1);
+    BOOST_CHECK_EQUAL(orphanage->AnnouncementsFromPeer(peer_recent), 0);
+    orphanage->SanityCheck();
+}
+
 BOOST_AUTO_TEST_CASE(net_processing_per_peer_eviction)
 {
     FastRandomContext det_rand{true};

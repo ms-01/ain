@@ -649,13 +649,15 @@ unsigned int TxOrphanageImpl::LimitOrphanCount(size_t max_orphans)
     while (CountUniqueOrphans() > max_orphans && !m_orphans.empty()) {
         // Order the peers by the number of announcements they have (descending). The peer with the
         // most announcements is the one that exceeds its reserved share of the global limit.
+        // Tiebreak by considering the more recent peer (higher NodeId) to be worse, matching the
+        // upstream orphanage (see upstream's compare_score() in src/node/txorphanage.cpp).
         std::vector<NodeId> peers;
         peers.reserve(m_peer_orphanage_info.size());
         for (const auto& [nodeid, info] : m_peer_orphanage_info) peers.push_back(nodeid);
         std::sort(peers.begin(), peers.end(), [this](NodeId a, NodeId b) {
             const auto count_a = m_peer_orphanage_info.at(a).m_count_announcements;
             const auto count_b = m_peer_orphanage_info.at(b).m_count_announcements;
-            return count_a != count_b ? count_a > count_b : a < b;
+            return count_a != count_b ? count_a > count_b : a > b;
         });
 
         bool erased{false};
