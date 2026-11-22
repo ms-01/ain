@@ -237,6 +237,7 @@ DEFI_CORE_H = \
   node/mempool_persist.h \
   node/psbt.h \
   node/transaction.h \
+  node/txorphanage.h \
   noui.h \
   outputtype.h \
   policy/feerate.h \
@@ -492,6 +493,7 @@ libdefi_server_a_SOURCES = \
   node/mempool_persist.cpp \
   node/psbt.cpp \
   node/transaction.cpp \
+  node/txorphanage.cpp \
   noui.cpp \
   policy/fees.cpp \
   policy/packages.cpp \

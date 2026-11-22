@@ -676,9 +676,9 @@ class TxDownloadTest(DefiTestFramework):
         with mininode_lock:
             assert_equal(len(legacy_peer.getdatas), 0)
 
-        # Disconnecting peer1 erases its orphans from both maps
+        # Disconnecting peer1 erases its announcements from the orphan pool
         peers_before = len(node.getpeerinfo())
-        with node.assert_debug_log(expected_msgs=["Erased 1 orphan tx"]):
+        with node.assert_debug_log(expected_msgs=["Erased 1 orphan transaction(s)"]):
             peer1.peer_disconnect()
             wait_until(lambda: len(node.getpeerinfo()) == peers_before - 1)
 

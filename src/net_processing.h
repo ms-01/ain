@@ -8,6 +8,7 @@
 
 #include <net.h>
 #include <net_processing_stalling.h>
+#include <node/txorphanage.h>
 #include <validationinterface.h>
 #include <consensus/params.h>
 #include <sync.h>
@@ -18,6 +19,20 @@
 #include <string>
 
 extern CCriticalSection cs_main;
+
+/** Guards the global orphan transaction pool (see GetOrphanage()). */
+extern CCriticalSection g_cs_orphans;
+
+/**
+ * The global orphan transaction pool.
+ *
+ * The pool is a node::TxOrphanage instance that provides per-peer accounting (a peer that floods
+ * the node with orphans cannot evict the orphans of other peers) and keeps track of all
+ * announcers of an orphan (a disconnecting peer only loses its own announcement).
+ *
+ * All accesses must be protected by g_cs_orphans.
+ */
+node::TxOrphanage& GetOrphanage();
 
 /**
  * Lock that guards all peer/relay bookkeeping of the P2P layer (see
