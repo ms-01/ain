@@ -12,7 +12,7 @@ evm = { workspace = true, default-features = false, features = ["with-serde", "t
 evm-runtime.workspace = true
 log.workspace = true
 rlp.workspace = true
-libsecp256k1.workspace = true
+secp256k1.workspace = true
 ethereum.workspace = true
 sha3.workspace = true
 hex.workspace = true

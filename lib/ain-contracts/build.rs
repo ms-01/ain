@@ -1,7 +1,9 @@
 use std::{env, fs, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
-use ethers_solc::{artifacts::Optimizer, Project, ProjectPathsConfig, Solc, SolcConfig};
+use ethers_solc::{
+    artifacts::Optimizer, EvmVersion, Project, ProjectPathsConfig, Solc, SolcConfig,
+};
 
 fn main() -> Result<()> {
     let manifest_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
@@ -45,6 +47,18 @@ fn main() -> Result<()> {
             runs: Some(u32::MAX as usize),
             details: None,
         };
+
+        // Pin the EVM target explicitly.
+        //
+        // The node implements the `shanghai` EVM (see `lib/ain-evm/src/executor.rs` and
+        // `lib/ain-evm/src/gas.rs`), while newer `solc` releases default to a *newer* target
+        // (e.g. `cancun`). Compiling the intrinsic contracts for an unsupported target would
+        // emit opcodes the node cannot execute (e.g. `MCOPY`) and would change the embedded
+        // code hash, which is compared against the on-chain code hash.
+        //
+        // The pin matches the current effective default of `ethers-solc` (`Shanghai`), so the
+        // emitted bytecode stays byte-identical.
+        solc_config.settings.evm_version = Some(EvmVersion::Shanghai);
 
         let project = Project::builder()
             .solc(solc)

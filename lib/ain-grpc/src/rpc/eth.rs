@@ -14,8 +14,8 @@ use ethereum::{EnvelopedEncodable, TransactionV2};
 use ethereum_types::{H160, H256, U256};
 use evm::{Config, ExitError, ExitReason};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
-use libsecp256k1::SecretKey;
 use log::trace;
+use secp256k1::{ecdsa::RecoverableSignature, Message, SecretKey};
 
 use crate::{
     block::{BlockNumber, RpcBlock, RpcFeeHistory},
@@ -1233,23 +1233,32 @@ impl MetachainRPCServer for MetachainRPCModule {
     }
 }
 
+/// Computes the `v` component of an Ethereum signature from the recovery id.
+///
+/// * pre-EIP-155 (no chain id): `v = recid + 27`
+/// * EIP-155: `v = 2 * chain_id + 35 + recid`
+fn signature_v(recid: u8, chain_id: Option<u64>) -> u64 {
+    match chain_id {
+        None => 27 + u64::from(recid),
+        Some(chain_id) => 2 * chain_id + 35 + u64::from(recid),
+    }
+}
+
 fn sign(address: H160, message: TransactionMessage) -> RpcResult<TransactionV2> {
     trace!(target: "rpc", "sign address {:#x}", address);
     let priv_key = get_eth_priv_key(address.to_fixed_bytes())
         .map_err(|_| to_custom_err("Invalid private key"))?;
-    let secret_key = SecretKey::parse(&priv_key)
+    let secret_key = SecretKey::from_secret_bytes(priv_key)
         .map_err(|e| to_custom_err(format!("Error parsing SecretKey {e}")))?;
 
     match message {
         TransactionMessage::Legacy(m) => {
-            let signing_message = libsecp256k1::Message::parse_slice(&m.hash()[..])
-                .map_err(|_| to_custom_err("Invalid signing message"))?;
-            let (signature, recid) = libsecp256k1::sign(&signing_message, &secret_key);
-            let v = match m.chain_id {
-                None => 27 + u64::from(recid.serialize()),
-                Some(chain_id) => 2 * chain_id + 35 + u64::from(recid.serialize()),
-            };
-            let rs = signature.serialize();
+            let hash = m.hash();
+            let signing_message = Message::from_digest(*hash.as_fixed_bytes());
+            let signature =
+                RecoverableSignature::sign_ecdsa_recoverable(signing_message, &secret_key);
+            let (recid, rs) = signature.serialize_compact();
+            let v = signature_v(recid.to_u8(), m.chain_id);
             let r = H256::from_slice(&rs[0..32]);
             let s = H256::from_slice(&rs[32..64]);
 
@@ -1265,10 +1274,11 @@ fn sign(address: H160, message: TransactionMessage) -> RpcResult<TransactionV2> 
             }))
         }
         TransactionMessage::EIP2930(m) => {
-            let signing_message = libsecp256k1::Message::parse_slice(&m.hash()[..])
-                .map_err(|_| to_custom_err("Invalid signing message"))?;
-            let (signature, recid) = libsecp256k1::sign(&signing_message, &secret_key);
-            let rs = signature.serialize();
+            let hash = m.hash();
+            let signing_message = Message::from_digest(*hash.as_fixed_bytes());
+            let signature =
+                RecoverableSignature::sign_ecdsa_recoverable(signing_message, &secret_key);
+            let (recid, rs) = signature.serialize_compact();
             let r = H256::from_slice(&rs[0..32]);
             let s = H256::from_slice(&rs[32..64]);
 
@@ -1281,16 +1291,17 @@ fn sign(address: H160, message: TransactionMessage) -> RpcResult<TransactionV2> 
                 value: m.value,
                 input: m.input.clone(),
                 access_list: m.access_list,
-                odd_y_parity: recid.serialize() != 0,
+                odd_y_parity: recid.to_u8() & 1 == 1,
                 r,
                 s,
             }))
         }
         TransactionMessage::EIP1559(m) => {
-            let signing_message = libsecp256k1::Message::parse_slice(&m.hash()[..])
-                .map_err(|_| to_custom_err("Invalid signing message"))?;
-            let (signature, recid) = libsecp256k1::sign(&signing_message, &secret_key);
-            let rs = signature.serialize();
+            let hash = m.hash();
+            let signing_message = Message::from_digest(*hash.as_fixed_bytes());
+            let signature =
+                RecoverableSignature::sign_ecdsa_recoverable(signing_message, &secret_key);
+            let (recid, rs) = signature.serialize_compact();
             let r = H256::from_slice(&rs[0..32]);
             let s = H256::from_slice(&rs[32..64]);
 
@@ -1304,10 +1315,31 @@ fn sign(address: H160, message: TransactionMessage) -> RpcResult<TransactionV2> 
                 value: m.value,
                 input: m.input.clone(),
                 access_list: m.access_list,
-                odd_y_parity: recid.serialize() != 0,
+                odd_y_parity: recid.to_u8() & 1 == 1,
                 r,
                 s,
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::signature_v;
+
+    #[test]
+    fn signature_v_uses_the_pre_eip155_encoding_without_a_chain_id() {
+        assert_eq!(signature_v(0, None), 27);
+        assert_eq!(signature_v(1, None), 28);
+        assert_eq!(signature_v(2, None), 29);
+        assert_eq!(signature_v(3, None), 30);
+    }
+
+    #[test]
+    fn signature_v_uses_the_eip155_encoding_with_a_chain_id() {
+        assert_eq!(signature_v(0, Some(1)), 37);
+        assert_eq!(signature_v(1, Some(1)), 38);
+        assert_eq!(signature_v(0, Some(1127)), 2289);
+        assert_eq!(signature_v(1, Some(1127)), 2290);
     }
 }
