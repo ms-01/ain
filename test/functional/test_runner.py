@@ -191,6 +191,7 @@ BASE_SCRIPTS = [
     "feature_poolpair.py",
     "feature_consolidate_rewards.py",
     "feature_poolpair_liquidity.py",
+    "feature_pool_rewards_batch.py",
     "feature_icx_orderbook.py",
     "feature_icx_orderbook_errors.py",
     "feature_loan_setcollateraltoken.py",
