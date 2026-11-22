@@ -45,13 +45,7 @@ extern void EraseOrphansFor(NodeId peer);
 extern unsigned int LimitOrphanTxSize(unsigned int nMaxOrphans);
 extern void Misbehaving(NodeId nodeid, int howmuch, const std::string& message="") EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_state);
 
-struct COrphanTx {
-    CTransactionRef tx;
-    NodeId fromPeer;
-    int64_t nTimeExpire;
-};
 extern CCriticalSection g_cs_orphans;
-extern std::map<uint256, COrphanTx> mapOrphanTransactions GUARDED_BY(g_cs_orphans);
 
 static CService ip(uint32_t i)
 {
@@ -346,16 +340,20 @@ BOOST_AUTO_TEST_CASE(DoS_bantime)
 
 static CTransactionRef RandomOrphan()
 {
-    std::map<uint256, COrphanTx>::iterator it;
     LOCK2(cs_main, g_cs_orphans);
-    it = mapOrphanTransactions.lower_bound(InsecureRand256());
-    if (it == mapOrphanTransactions.end())
-        it = mapOrphanTransactions.begin();
-    return it->second.tx;
+    const auto orphans = GetOrphanage().GetOrphanTransactions();
+    if (orphans.empty()) return nullptr;
+    return orphans[InsecureRandRange(orphans.size())].tx;
 }
 
 BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 {
+    // Start with an empty orphan pool: the pool is global and shared with other tests.
+    {
+        LOCK(g_cs_orphans);
+        GetOrphanage().Clear();
+    }
+
     CKey key;
     key.MakeNewKey(true);
     FillableSigningProvider keystore;
@@ -421,18 +419,18 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     // Test EraseOrphansFor:
     for (NodeId i = 0; i < 3; i++)
     {
-        size_t sizeBefore = mapOrphanTransactions.size();
+        size_t sizeBefore = GetOrphanage().CountUniqueOrphans();
         EraseOrphansFor(i);
-        BOOST_CHECK(mapOrphanTransactions.size() < sizeBefore);
+        BOOST_CHECK(GetOrphanage().CountUniqueOrphans() < sizeBefore);
     }
 
     // Test LimitOrphanTxSize() function:
     LimitOrphanTxSize(40);
-    BOOST_CHECK(mapOrphanTransactions.size() <= 40);
+    BOOST_CHECK(GetOrphanage().CountUniqueOrphans() <= 40);
     LimitOrphanTxSize(10);
-    BOOST_CHECK(mapOrphanTransactions.size() <= 10);
+    BOOST_CHECK(GetOrphanage().CountUniqueOrphans() <= 10);
     LimitOrphanTxSize(0);
-    BOOST_CHECK(mapOrphanTransactions.empty());
+    BOOST_CHECK_EQUAL(GetOrphanage().CountUniqueOrphans(), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
