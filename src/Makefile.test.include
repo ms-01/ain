@@ -131,6 +131,7 @@ DEFI_TESTS =\
   test/merkle_tests.cpp \
   test/merkleblock_tests.cpp \
   test/miner_tests.cpp \
+  test/muhash_tests.cpp \
   test/multisig_tests.cpp \
   test/musig_tests.cpp \
   test/net_tests.cpp \

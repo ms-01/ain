@@ -1240,7 +1240,9 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
             RPCHelpMan{"gettxoutsetinfo",
                 "\nReturns statistics about the unspent transaction output set.\n"
                 "Note this call may take some time.\n",
-                {},
+                {
+                    {"hash_type", RPCArg::Type::STR, /* default */ "hash_serialized_2", "Which UTXO set hash to calculate. Options: 'hash_serialized_2' (the legacy algorithm), 'muhash', 'none'."},
+                },
                 RPCResult{
             "{\n"
             "  \"height\":n,     (numeric) The current block height (index)\n"
@@ -1248,16 +1250,33 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
             "  \"transactions\": n,      (numeric) The number of transactions with unspent outputs\n"
             "  \"txouts\": n,            (numeric) The number of unspent transaction outputs\n"
             "  \"bogosize\": n,          (numeric) A meaningless metric for UTXO set size\n"
-            "  \"hash_serialized_2\": \"hash\", (string) The serialized hash\n"
+            "  \"hash_serialized_2\": \"hash\", (string, optional) The serialized hash (only present if the 'hash_serialized_2' hash type is requested)\n"
+            "  \"muhash\": \"hash\", (string, optional) The MuHash of the UTXO set (only present if the 'muhash' hash type is requested)\n"
             "  \"disk_size\": n,         (numeric) The estimated size of the chainstate on disk\n"
             "  \"total_amount\": x.xxx          (numeric) The total amount\n"
             "}\n"
                 },
                 RPCExamples{
                     HelpExampleCli("gettxoutsetinfo", "")
+            + HelpExampleCli("gettxoutsetinfo", "\"muhash\"")
             + HelpExampleRpc("gettxoutsetinfo", "")
+            + HelpExampleRpc("gettxoutsetinfo", "\"muhash\"")
                 },
             }.Check(request);
+
+    CoinStatsHashType hash_type{CoinStatsHashType::HASH_SERIALIZED};
+    if (!request.params[0].isNull()) {
+        const std::string hash_type_arg = request.params[0].get_str();
+        if (hash_type_arg == "hash_serialized_2") {
+            hash_type = CoinStatsHashType::HASH_SERIALIZED;
+        } else if (hash_type_arg == "muhash") {
+            hash_type = CoinStatsHashType::MUHASH;
+        } else if (hash_type_arg == "none") {
+            hash_type = CoinStatsHashType::NONE;
+        } else {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid hash_type");
+        }
+    }
 
     UniValue ret(UniValue::VOBJ);
 
@@ -1265,13 +1284,18 @@ static UniValue gettxoutsetinfo(const JSONRPCRequest& request)
     ::ChainstateActive().ForceFlushStateToDisk();
 
     CCoinsView* coins_view = WITH_LOCK(cs_main, return &ChainstateActive().CoinsDB());
-    if (GetUTXOStats(coins_view, stats, RpcInterruptionPoint)) {
+    if (GetUTXOStats(coins_view, stats, hash_type, RpcInterruptionPoint)) {
         ret.pushKV("height", (int64_t)stats.nHeight);
         ret.pushKV("bestblock", stats.hashBlock.GetHex());
         ret.pushKV("transactions", (int64_t)stats.nTransactions);
         ret.pushKV("txouts", (int64_t)stats.nTransactionOutputs);
         ret.pushKV("bogosize", (int64_t)stats.nBogoSize);
-        ret.pushKV("hash_serialized_2", stats.hashSerialized.GetHex());
+        if (hash_type == CoinStatsHashType::HASH_SERIALIZED) {
+            ret.pushKV("hash_serialized_2", stats.hashSerialized.GetHex());
+        }
+        if (hash_type == CoinStatsHashType::MUHASH) {
+            ret.pushKV("muhash", stats.hashSerialized.GetHex());
+        }
         ret.pushKV("disk_size", stats.nDiskSize);
         ret.pushKV("total_amount", ValueFromAmount(stats.nTotalAmount));
     } else {
@@ -2622,7 +2646,7 @@ static const CRPCCommand commands[] =
     { "blockchain",         "getmempoolinfo",         &getmempoolinfo,         {} },
     { "blockchain",         "getrawmempool",          &getrawmempool,          {"verbose"} },
     { "blockchain",         "gettxout",               &gettxout,               {"txid","n","include_mempool"} },
-    { "blockchain",         "gettxoutsetinfo",        &gettxoutsetinfo,        {} },
+    { "blockchain",         "gettxoutsetinfo",        &gettxoutsetinfo,        {"hash_type"} },
     { "blockchain",         "pruneblockchain",        &pruneblockchain,        {"height"} },
     { "blockchain",         "savemempool",            &savemempool,            {} },
     { "blockchain",         "verifychain",            &verifychain,            {"checklevel","nblocks"} },
