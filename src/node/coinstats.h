@@ -14,6 +14,16 @@
 
 class CCoinsView;
 
+/** Which UTXO set hash should be calculated. */
+enum class CoinStatsHashType {
+    //! Legacy double SHA-256 over the serialized UTXO set (hash_serialized_2).
+    HASH_SERIALIZED,
+    //! MuHash3072 over the UTXO set.
+    MUHASH,
+    //! No UTXO set hash at all.
+    NONE,
+};
+
 struct CCoinsStats
 {
     int nHeight;
@@ -29,6 +39,6 @@ struct CCoinsStats
 };
 
 //! Calculate statistics about the unspent transaction output set
-bool GetUTXOStats(CCoinsView* view, CCoinsStats& stats, const std::function<void()>& interruption_point = {});
+bool GetUTXOStats(CCoinsView* view, CCoinsStats& stats, CoinStatsHashType hash_type = CoinStatsHashType::HASH_SERIALIZED, const std::function<void()>& interruption_point = {});
 
 #endif // DEFI_NODE_COINSTATS_H

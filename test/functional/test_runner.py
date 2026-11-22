@@ -233,6 +233,7 @@ BASE_SCRIPTS = [
     "feature_poolpair_rename.py",
     "rpc_decodescript.py",
     "rpc_blockchain.py",
+    "rpc_coinstats.py",
     "rpc_gettxspendingprevout.py",
     "rpc_deprecated.py",
     "wallet_disable.py",
