@@ -39,27 +39,48 @@ jobs:
       run: |
         ./make.sh ci-setup-deps
         ./make.sh ci-setup-user-deps
-        apt-get update && apt-get install -y clang
+        # clang-15 (and clang++-15) are already installed by ./make.sh ci-setup-deps.
+        # The compiler-rt runtimes provide libFuzzer/ASan/UBSan (libclang_rt.*).
+        apt-get update && apt-get install -y libclang-rt-15-dev
 
     - name: Build dependencies
       run: ./make.sh build-deps
 
     - name: Configure and build fuzz binary
       run: |
+        REPO_ROOT="$(pwd)"
         ./autogen.sh
         mkdir -p build-fuzz
         cd build-fuzz
-        CC=clang CXX=clang++ ../configure \
-          --prefix="$(pwd)/../build/depends/${TARGET}" \
+        # CONFIG_SITE must point at the depends-built config.site, mirroring make.sh
+        # (build_conf): it provides with_boost, CPPFLAGS/LDFLAGS, PROTOC and SOLC_PATH.
+        # -no-pie: the ASan runtime reserves 0x600000000000-0x700000000000 with MAP_FIXED.
+        # A PIE executable that ASLR loads into that range is clobbered by that
+        # reservation, which makes the fuzz binary die with SIGSEGV during startup.
+        CC=clang-15 CXX=clang++-15 \
+        LDFLAGS="-no-pie" \
+        CONFIG_SITE="${REPO_ROOT}/build/depends/${TARGET}/share/config.site" \
+          ../configure \
+          --prefix="${REPO_ROOT}/build/depends/${TARGET}" \
           --enable-fuzz \
           --with-sanitizers=fuzzer,address,undefined \
-          --disable-bench \
-          --disable-gui-tests
-        make -j"$(nproc)"
+          --disable-bench
+        # Build the Rust workspace first (it provides ain_rs_exports.h and
+        # libain_rs_exports.a), then the fuzz binary itself. The complete tree
+        # cannot be built in a fuzz configuration: --enable-fuzz sets use_bench=no
+        # and the ENABLE_BENCH automake conditional is inverted, so bench/bench_defi
+        # is built and fails to link (SQLITE_LIBS are missing from its LDADD).
+        make -j"$(nproc)" -C lib
+        make -j"$(nproc)" -C src test/fuzz/fuzz
+
+    - name: List fuzz targets
+      run: PRINT_ALL_FUZZ_TARGETS_AND_ABORT=1 ./build-fuzz/src/test/fuzz/fuzz
+
+    - name: Prepare fuzz artifacts directory
+      run: mkdir -p fuzz-artifacts
 
     - name: Run fuzz targets
       run: |
-        mkdir -p fuzz-artifacts
         TARGETS="partially_downloaded_block p2p_message_parsing transaction addrv2_deserialize netaddr_str script_flags"
         for target in $TARGETS; do
           echo "=== Fuzzing target: $target (${FUZZ_TIME}s) ==="
