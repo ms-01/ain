@@ -1,10 +1,11 @@
-// Copyright (c) 2009-2019 The Bitcoin Core developers
+// Copyright (c) 2009-2026 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <addrdb.h>
 #include <addrman.h>
 #include <blockencodings.h>
+#include <bloom.h>
 #include <chain.h>
 #include <coins.h>
 #include <compressor.h>
@@ -13,152 +14,167 @@
 #include <primitives/block.h>
 #include <protocol.h>
 #include <streams.h>
+#include <test/fuzz/fuzz.h>
 #include <undo.h>
 #include <version.h>
 
-#include <stdint.h>
-#include <unistd.h>
-
+#include <cstdint>
 #include <vector>
 
-#include <test/fuzz/fuzz.h>
+namespace {
 
-void test_one_input(std::vector<uint8_t> buffer)
+bool MakeVersionedStream(FuzzBufferType buffer, CDataStream& ds)
 {
-    CDataStream ds(buffer, SER_NETWORK, INIT_PROTO_VERSION);
+    ds.write(reinterpret_cast<const char*>(buffer.data()), buffer.size());
     try {
         int nVersion;
         ds >> nVersion;
         ds.SetVersion(nVersion);
-    } catch (const std::ios_base::failure& e) {
-        return;
+    } catch (const std::ios_base::failure&) {
+        return false;
     }
+    return true;
+}
 
-#if BLOCK_DESERIALIZE
-            try
-            {
-                CBlock block;
-                ds >> block;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif TRANSACTION_DESERIALIZE
-            try
-            {
-                CTransaction tx(deserialize, ds);
-            } catch (const std::ios_base::failure& e) {return;}
-#elif BLOCKLOCATOR_DESERIALIZE
-            try
-            {
-                CBlockLocator bl;
-                ds >> bl;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif BLOCKMERKLEROOT
-            try
-            {
-                CBlock block;
-                ds >> block;
-                bool mutated;
-                BlockMerkleRoot(block, &mutated);
-            } catch (const std::ios_base::failure& e) {return;}
-#elif ADDRMAN_DESERIALIZE
-            try
-            {
-                CAddrMan am;
-                ds >> am;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif BLOCKHEADER_DESERIALIZE
-            try
-            {
-                CBlockHeader bh;
-                ds >> bh;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif BANENTRY_DESERIALIZE
-            try
-            {
-                CBanEntry be;
-                ds >> be;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif TXUNDO_DESERIALIZE
-            try
-            {
-                CTxUndo tu;
-                ds >> tu;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif BLOCKUNDO_DESERIALIZE
-            try
-            {
-                CBlockUndo bu;
-                ds >> bu;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif COINS_DESERIALIZE
-            try
-            {
-                Coin coin;
-                ds >> coin;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif NETADDR_DESERIALIZE
-            try
-            {
-                CNetAddr na;
-                ds >> na;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif SERVICE_DESERIALIZE
-            try
-            {
-                CService s;
-                ds >> s;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif MESSAGEHEADER_DESERIALIZE
-            CMessageHeader::MessageStartChars pchMessageStart = {0x00, 0x00, 0x00, 0x00};
-            try
-            {
-                CMessageHeader mh(pchMessageStart);
-                ds >> mh;
-                if (!mh.IsValid(pchMessageStart)) {return;}
-            } catch (const std::ios_base::failure& e) {return;}
-#elif ADDRESS_DESERIALIZE
-            try
-            {
-                CAddress a;
-                ds >> a;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif INV_DESERIALIZE
-            try
-            {
-                CInv i;
-                ds >> i;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif BLOOMFILTER_DESERIALIZE
-            try
-            {
-                CBloomFilter bf;
-                ds >> bf;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif DISKBLOCKINDEX_DESERIALIZE
-            try
-            {
-                CDiskBlockIndex dbi;
-                ds >> dbi;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif TXOUTCOMPRESSOR_DESERIALIZE
-            CTxOut to;
-            CTxOutCompressor toc(to);
-            try
-            {
-                ds >> toc;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif BLOCKTRANSACTIONS_DESERIALIZE
-            try
-            {
-                BlockTransactions bt;
-                ds >> bt;
-            } catch (const std::ios_base::failure& e) {return;}
-#elif BLOCKTRANSACTIONSREQUEST_DESERIALIZE
-            try
-            {
-                BlockTransactionsRequest btr;
-                ds >> btr;
-            } catch (const std::ios_base::failure& e) {return;}
-#else
-#error Need at least one fuzz target to compile
-#endif
+template <typename T>
+void FuzzDeserialize(FuzzBufferType buffer)
+{
+    CDataStream ds(SER_NETWORK, INIT_PROTO_VERSION);
+    if (!MakeVersionedStream(buffer, ds)) return;
+    try {
+        T obj;
+        ds >> obj;
+    } catch (const std::ios_base::failure&) {
+    }
+}
+
+} // namespace
+
+FUZZ_TARGET(block_deserialize)
+{
+    FuzzDeserialize<CBlock>(buffer);
+}
+
+FUZZ_TARGET(transaction_deserialize)
+{
+    CDataStream ds(SER_NETWORK, INIT_PROTO_VERSION);
+    if (!MakeVersionedStream(buffer, ds)) return;
+    try {
+        CTransaction tx(deserialize, ds);
+        (void)tx;
+    } catch (const std::ios_base::failure&) {
+    }
+}
+
+FUZZ_TARGET(blocklocator_deserialize)
+{
+    FuzzDeserialize<CBlockLocator>(buffer);
+}
+
+FUZZ_TARGET(blockmerkleroot)
+{
+    CDataStream ds(SER_NETWORK, INIT_PROTO_VERSION);
+    if (!MakeVersionedStream(buffer, ds)) return;
+    try {
+        CBlock block;
+        ds >> block;
+        bool mutated;
+        BlockMerkleRoot(block, &mutated);
+    } catch (const std::ios_base::failure&) {
+    }
+}
+
+FUZZ_TARGET(addrman_deserialize)
+{
+    FuzzDeserialize<CAddrMan>(buffer);
+}
+
+FUZZ_TARGET(blockheader_deserialize)
+{
+    FuzzDeserialize<CBlockHeader>(buffer);
+}
+
+FUZZ_TARGET(banentry_deserialize)
+{
+    FuzzDeserialize<CBanEntry>(buffer);
+}
+
+FUZZ_TARGET(txundo_deserialize)
+{
+    FuzzDeserialize<CTxUndo>(buffer);
+}
+
+FUZZ_TARGET(blockundo_deserialize)
+{
+    FuzzDeserialize<CBlockUndo>(buffer);
+}
+
+FUZZ_TARGET(coins_deserialize)
+{
+    FuzzDeserialize<Coin>(buffer);
+}
+
+FUZZ_TARGET(netaddr_deserialize)
+{
+    FuzzDeserialize<CNetAddr>(buffer);
+}
+
+FUZZ_TARGET(service_deserialize)
+{
+    FuzzDeserialize<CService>(buffer);
+}
+
+FUZZ_TARGET(messageheader_deserialize)
+{
+    CDataStream ds(SER_NETWORK, INIT_PROTO_VERSION);
+    if (!MakeVersionedStream(buffer, ds)) return;
+    CMessageHeader::MessageStartChars pchMessageStart = {0x00, 0x00, 0x00, 0x00};
+    try {
+        CMessageHeader mh(pchMessageStart);
+        ds >> mh;
+        (void)mh.IsValid(pchMessageStart);
+    } catch (const std::ios_base::failure&) {
+    }
+}
+
+FUZZ_TARGET(address_deserialize)
+{
+    FuzzDeserialize<CAddress>(buffer);
+}
+
+FUZZ_TARGET(inv_deserialize)
+{
+    FuzzDeserialize<CInv>(buffer);
+}
+
+FUZZ_TARGET(bloomfilter_deserialize)
+{
+    FuzzDeserialize<CBloomFilter>(buffer);
+}
+
+FUZZ_TARGET(diskblockindex_deserialize)
+{
+    FuzzDeserialize<CDiskBlockIndex>(buffer);
+}
+
+FUZZ_TARGET(txoutcompressor_deserialize)
+{
+    CDataStream ds(SER_NETWORK, INIT_PROTO_VERSION);
+    if (!MakeVersionedStream(buffer, ds)) return;
+    CTxOut to;
+    CTxOutCompressor toc(to);
+    try {
+        ds >> toc;
+    } catch (const std::ios_base::failure&) {
+    }
+}
+
+FUZZ_TARGET(blocktransactions_deserialize)
+{
+    FuzzDeserialize<BlockTransactions>(buffer);
+}
+
+FUZZ_TARGET(blocktransactionsrequest_deserialize)
+{
+    FuzzDeserialize<BlockTransactionsRequest>(buffer);
 }

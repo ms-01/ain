@@ -94,6 +94,7 @@ BASE_SCRIPTS = [
     "feature_maxuploadtarget.py",
     "rpc_fundrawtransaction.py",
     "p2p_compactblocks.py",
+    "p2p_compactblocks_blocksonly.py",
     "p2p_compactblocks_hb.py",
     "feature_segwit.py",
     # vv Tests less than 2m vv

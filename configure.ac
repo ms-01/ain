@@ -940,7 +940,6 @@ if test "x$enable_fuzz" = "xyes"; then
   build_defi_tx=no
   build_defi_wallet=no
   build_defid=no
-  enable_wallet=no
   use_bench=no
   use_zmq=no
 fi

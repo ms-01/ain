@@ -49,6 +49,18 @@ def assert_equal(thing1, thing2, *args):
         )
 
 
+def assert_not_equal(thing1, thing2):
+    if thing1 == thing2:
+        raise AssertionError("not(%s != %s)" % (str(thing1), str(thing2)))
+
+
+def assert_approx(v, vexp, vspan=0.00001):
+    if v < vexp - vspan or v > vexp + vspan:
+        raise AssertionError(
+            "%s not within %s of %s" % (str(v), str(vspan), str(vexp))
+        )
+
+
 def assert_greater_than(thing1, thing2):
     if thing1 <= thing2:
         raise AssertionError("%s <= %s" % (str(thing1), str(thing2)))

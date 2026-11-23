@@ -3,7 +3,6 @@
 // file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <netaddress.h>
-
 #include <test/fuzz/fuzz.h>
 
 #include <cassert>
@@ -17,10 +16,10 @@
  * which parses the base32 encoding, verifies the Tor v3 checksum and the
  * version byte and derives the textual representation of the address.
  */
-void test_one_input(std::vector<uint8_t> buffer)
+FUZZ_TARGET(netaddr_str)
 {
     // The address is a printable string; NUL bytes terminate it.
-    const std::string str((const char*)buffer.data(), buffer.size());
+    const std::string str(reinterpret_cast<const char*>(buffer.data()), buffer.size());
 
     CNetAddr addr;
     if (!addr.SetSpecial(str)) {
