@@ -501,6 +501,7 @@ libdefi_server_a_SOURCES = \
   policy/packages.cpp \
   policy/rbf.cpp \
   policy/settings.cpp \
+  policy/truc_policy.cpp \
   pos.cpp \
   pos_kernel.cpp \
   rest.cpp \

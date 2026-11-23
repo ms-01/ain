@@ -18,6 +18,7 @@
 #include <policy/policy.h>
 #include <policy/rbf.h>
 #include <policy/settings.h>
+#include <policy/truc_policy.h>
 #include <script/interpreter.h>
 #include <script/standard.h>
 #include <tinyformat.h>
@@ -264,6 +265,14 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(CTxMemPool &pool,
     // transaction path uses. The outputs of an already validated transaction are made available
     // to the following transactions through the package coins view, so that a child can spend
     // the outputs of its (still unconfirmed) parent.
+    // For a 1-parent-1-child (1P1C) package, allow a low-fee/0-fee parent to be funded by its
+    // child (package CPFP) and evaluate 1P1C replacements against the combined package feerate.
+    const bool is_1p1c = (package.size() == 2 && IsChildWithParents(package));
+    CAmount package_fee{0};
+    int64_t package_size{0};
+    bool parent_needs_fee_bypass{false};
+    std::set<uint256> package_conflicts;
+
     CCoinsViewMemPool package_view(&::ChainstateActive().CoinsTip(), pool);
     {
         LOCK(pool.cs);
@@ -275,13 +284,14 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(CTxMemPool &pool,
             std::vector<COutPoint> coins_to_uncache;
             // The maximum fee is stored in a local variable, because ATMPArgs keeps a reference to it.
             const CAmount max_fee = maxFeeOf(i);
+            const bool bypass_parent_fee = (is_1p1c && i == 0);
 
             MemPoolAccept::ATMPArgs args{Params(),
                                          state,
                                          &missing_inputs,
                                          GetTime(),
                                          &replaced,
-                                         false /* bypass_limits */,
+                                         bypass_parent_fee /* bypass_limits */,
                                          max_fee,
                                          coins_to_uncache,
                                          true /* test_accept */};
@@ -290,10 +300,83 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(CTxMemPool &pool,
             Workspace ws(tx);
 
             bool accepted = accept.PreChecks(args, ws);
+            if (accepted) {
+                if (const auto truc_err = PackageTRUCChecks(pool, tx, ws.nSize, package)) {
+                    accepted = false;
+                    state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "TRUC-violation", *truc_err);
+                }
+            }
+            if (accepted && is_1p1c) {
+                package_fee += ws.nModifiedFees;
+                package_size += ws.nSize;
+                if (i == 0) {
+                    const CAmount parent_mempool_fee =
+                        pool.GetMinFee(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000).GetFee(ws.nSize);
+                    const CAmount parent_relay_fee = ::minRelayTxFee.GetFee(ws.nSize);
+                    if ((parent_mempool_fee > 0 && ws.nModifiedFees < parent_mempool_fee) ||
+                        (!ws.isEVMTx && ws.nModifiedFees < parent_relay_fee)) {
+                        parent_needs_fee_bypass = true;
+                    }
+                }
+            }
             if (accepted && !ws.setConflicts.empty()) {
-                // Replacements are not supported for the transactions of a package.
-                accepted = false;
-                state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "package-replacement-not-supported");
+                if (!is_1p1c) {
+                    // Replacements are only supported for 1-parent-1-child packages.
+                    accepted = false;
+                    state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "package-replacement-not-supported");
+                } else {
+                    package_conflicts.insert(ws.setConflicts.begin(), ws.setConflicts.end());
+                }
+            }
+            if (accepted && is_1p1c && i == 1) {
+                // Verify combined 1P1C package feerate against mempool min fee and min relay fee.
+                const CAmount pkg_mempool_fee =
+                    pool.GetMinFee(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000).GetFee(package_size);
+                if (pkg_mempool_fee > 0 && package_fee < pkg_mempool_fee) {
+                    accepted = false;
+                    state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY,
+                                  false,
+                                  "mempool min fee not met",
+                                  strprintf("%d < %d", package_fee, pkg_mempool_fee));
+                }
+                const CAmount pkg_relay_fee = ::minRelayTxFee.GetFee(package_size);
+                if (accepted && package_fee < pkg_relay_fee) {
+                    accepted = false;
+                    state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY,
+                                  false,
+                                  "min relay fee not met",
+                                  strprintf("%d < %d", package_fee, pkg_relay_fee));
+                }
+                // Evaluate 1P1C package replacement rules if either tx conflicts with the mempool.
+                if (accepted && !package_conflicts.empty()) {
+                    const CTxMemPool::setEntries setIterConflicting = pool.GetIterSet(package_conflicts);
+                    const CFeeRate pkg_feerate(package_fee, package_size);
+                    if (const auto err = PaysMoreThanConflicts(setIterConflicting, pkg_feerate, tx->GetHash())) {
+                        accepted = false;
+                        state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "insufficient fee", *err);
+                    }
+                    CTxMemPool::setEntries allConflicting;
+                    if (accepted) {
+                        if (const auto err = GetEntriesForConflicts(*tx, pool, setIterConflicting, allConflicting)) {
+                            accepted = false;
+                            state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY,
+                                          false,
+                                          "too many potential replacements",
+                                          *err);
+                        }
+                    }
+                    if (accepted) {
+                        CAmount conflicting_fees{0};
+                        for (CTxMemPool::txiter it : allConflicting) {
+                            conflicting_fees += it->GetModifiedFee();
+                        }
+                        if (const auto err =
+                                PaysForRBF(conflicting_fees, package_fee, package_size, ::incrementalRelayFee, tx->GetHash())) {
+                            accepted = false;
+                            state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "insufficient fee", *err);
+                        }
+                    }
+                }
             }
             if (accepted) {
                 PrecomputedTransactionData txdata(*ws.ptx);
@@ -344,6 +427,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(CTxMemPool &pool,
         CValidationState state;
         bool missing_inputs{false};
         std::list<CTransactionRef> replaced;
+        const bool bypass_parent_fee = (is_1p1c && i == 0 && parent_needs_fee_bypass);
         const bool accepted = AcceptToMemoryPoolWithTime(Params(),
                                                          pool,
                                                          state,
@@ -351,7 +435,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(CTxMemPool &pool,
                                                          &missing_inputs,
                                                          GetTime(),
                                                          &replaced,
-                                                         false /* bypass_limits */,
+                                                         bypass_parent_fee /* bypass_limits */,
                                                          maxFeeOf(i),
                                                          false /* test_accept */);
         if (!accepted) {
@@ -683,6 +767,18 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
                                               dummy_err_string)) {
             return state.Invalid(
                 ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "too-long-mempool-chain", errString);
+        }
+    }
+
+    // BIP 431 TRUC policy checks (applied to all transactions to enforce v3/non-v3 isolation).
+    if (const auto truc_result = SingleTRUCChecks(m_pool, ws.ptx, ws.setConflicts, ws.nSize)) {
+        const auto &[truc_err, sibling_to_evict] = *truc_result;
+        if (sibling_to_evict != nullptr) {
+            // Sibling eviction: treat the existing TRUC child as a direct conflict so
+            // ReplacementChecks() evaluates BIP 125 fee/feerate rules.
+            ws.setConflicts.insert(sibling_to_evict->GetHash());
+        } else {
+            return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "TRUC-violation", truc_err);
         }
     }
 
