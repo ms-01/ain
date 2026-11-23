@@ -256,7 +256,7 @@ BASE_SCRIPTS = [
     "p2p_invalid_messages.py",
     "p2p_invalid_tx.py",
     "p2p_orphan_per_peer_eviction.py",
-    "p2p_tx_download.py",
+    "p2p_wtxid_relay.py",
     "feature_foundation_migration.py",
     "feature_assumevalid.py",
     "example_test.py",
