@@ -1,0 +1,77 @@
+name: Fuzz
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: "Max fuzzing time per target in seconds"
+        required: false
+        default: "300"
+  pull_request:
+    branches:
+      - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  TARGET: x86_64-pc-linux-gnu
+  MAKE_DEBUG: 0
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    container:
+      image: defi/ain-builder:latest
+    env:
+      CARGO_INCREMENTAL: 0
+      FUZZ_TIME: ${{ github.event.inputs.max_total_time || '300' }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Populate environment
+      run: ./make.sh ci-export-vars
+
+    - name: Setup dependencies
+      run: |
+        ./make.sh ci-setup-deps
+        ./make.sh ci-setup-user-deps
+        apt-get update && apt-get install -y clang
+
+    - name: Build dependencies
+      run: ./make.sh build-deps
+
+    - name: Configure and build fuzz binary
+      run: |
+        ./autogen.sh
+        mkdir -p build-fuzz
+        cd build-fuzz
+        CC=clang CXX=clang++ ../configure \
+          --prefix="$(pwd)/../build/depends/${TARGET}" \
+          --enable-fuzz \
+          --with-sanitizers=fuzzer,address,undefined \
+          --disable-bench \
+          --disable-gui-tests
+        make -j"$(nproc)"
+
+    - name: Run fuzz targets
+      run: |
+        mkdir -p fuzz-artifacts
+        TARGETS="partially_downloaded_block p2p_message_parsing transaction addrv2_deserialize netaddr_str script_flags"
+        for target in $TARGETS; do
+          echo "=== Fuzzing target: $target (${FUZZ_TIME}s) ==="
+          FUZZ="$target" ./build-fuzz/src/test/fuzz/fuzz \
+            -max_total_time="${FUZZ_TIME}" \
+            -artifact_prefix="$(pwd)/fuzz-artifacts/${target}-"
+        done
+
+    - name: Upload fuzz crash artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: fuzz-crash-artifacts
+        path: fuzz-artifacts/
+        if-no-files-found: ignore

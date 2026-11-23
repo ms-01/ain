@@ -17,7 +17,7 @@
  * amount of memory and never run into an endless loop, no matter how the
  * payload is crafted.
  */
-void test_one_input(std::vector<uint8_t> buffer)
+FUZZ_TARGET(addrv2_deserialize)
 {
     CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
     if (!buffer.empty()) {
