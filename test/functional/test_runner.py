@@ -349,6 +349,7 @@ BASE_SCRIPTS = [
     "feature_evm_gas.py",
     "feature_evm_opcodes.py",
     "feature_evm_precompiles.py",
+    "feature_evm_precompile_access_cost_df25.py",
     "feature_evm_modexp_df25.py",
     "feature_evm_genesis.py",
     "feature_evm_mempool.py",

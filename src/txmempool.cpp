@@ -636,11 +636,21 @@ void CTxMemPool::resetAccountsView() {
  * True if the consensus rules change between the two given heights.
  *
  * The height dependent overflow check of the transfer sum
- * (nBalanceOverflowHeight) is the only rule that depends on the height in
- * this context. If the account view was built below the activation height
- * and the next block is at or above it, the view has to be rebuilt:
- * transactions that were accepted under the legacy rules are not valid
- * under the strict rules anymore.
+ * (nBalanceOverflowHeight) is a rule that depends on the height in this
+ * context: if the account view was built below the activation height and the
+ * next block is at or above it, the view has to be rebuilt because
+ * transactions that were accepted under the legacy rules are not valid under
+ * the strict rules anymore.
+ *
+ * The DF25 rules (the EVM modexp gas cost and the EIP-2929 access cost of the
+ * first access to a precompile address) change the *execution* gas of an EVM
+ * transaction, not its acceptance: EVM transactions skip the consensus input
+ * check of the mempool (`Consensus::CheckTxInputs` returns early for them),
+ * so no transaction can become unacceptable because of them.  A transaction
+ * that needs more gas after the activation is still valid, it simply runs out
+ * of gas when it is executed - exactly like in go-ethereum across an EIP-2929
+ * activation.  The entry is nevertheless kept, so that the accounts view is
+ * rebuilt consistently across the activation boundary.
  */
 static bool HeightCrossed(int activation, int fromHeight, int toHeight) {
     if (activation == std::numeric_limits<int>::max()) {
