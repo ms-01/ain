@@ -357,6 +357,7 @@ BASE_SCRIPTS = [
     "feature_evm_rpc.py",
     "feature_evm_rpc_accesslist.py",
     "feature_evm_rpc_blocks.py",
+    "feature_evm_rpc_pending_block.py",
     "feature_evm_rpc_fee.py",
     "feature_evm_rpc_filters.py",
     "feature_evm_rpc_tracer.py",
