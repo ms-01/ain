@@ -10,26 +10,34 @@
 #include <chainparamsbase.h>
 #include <clientversion.h>
 #include <fs.h>
+#include <netbase.h>
 #include <rpc/client.h>
 #include <rpc/protocol.h>
 #include <rpc/request.h>
+#include <tinyformat.h>
 #include <util/strencodings.h>
 #include <util/system.h>
 #include <util/translation.h>
+#include <util/url.h>
 
+#include <cerrno>
+#include <charconv>
 #include <chrono>
+#include <cstring>
+#include <fcntl.h>
 #include <functional>
 #include <memory>
+#include <poll.h>
 #include <stdio.h>
 #include <tuple>
 #include <utility>
 
-#include <event2/buffer.h>
-#include <event2/keyvalq_struct.h>
-#include <support/events.h>
-
 #include <univalue.h>
 #include <dfi/coinselect.h>
+
+#ifndef WIN32
+#include <netdb.h>
+#endif
 
 const std::function<std::string(const char*)> G_TRANSLATION_FUN = nullptr;
 
@@ -73,18 +81,6 @@ static void SetupCliArgs()
     gArgs.AddArg("-ethrpcport=<port>", strprintf("Listen for ETH-JSON-RPC connections on <port>> (default: %u, testnet: %u, changi: %u, devnet: %u, regtest: %u)", defaultBaseParams->ETHRPCPort(), testnetBaseParams->ETHRPCPort(), changiBaseParams->ETHRPCPort(), devnetBaseParams->ETHRPCPort(), regtestBaseParams->ETHRPCPort()), ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::RPC);
     gArgs.AddArg("-wsport=<port>", strprintf("Listen for ETH-WebSockets connections on <port>> (default: %u, testnet: %u, changi: %u, devnet: %u, regtest: %u)", defaultBaseParams->WSPort(), testnetBaseParams->WSPort(), changiBaseParams->WSPort(), devnetBaseParams->WSPort(), regtestBaseParams->ETHRPCPort()), ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::RPC);
     RPCMetadata::SetupArgs(gArgs);
-}
-
-/** libevent event log callback */
-static void libevent_log_cb(int severity, const char *msg)
-{
-#ifndef EVENT_LOG_ERR // EVENT_LOG_ERR was added in 2.0.19; but before then _EVENT_LOG_ERR existed.
-# define EVENT_LOG_ERR _EVENT_LOG_ERR
-#endif
-    // Ignore everything other than errors
-    if (severity >= EVENT_LOG_ERR) {
-        throw std::runtime_error(strprintf("libevent error: %s", msg));
-    }
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -160,70 +156,241 @@ static int AppInitRPC(int argc, char* argv[])
 }
 
 
-/** Reply structure for request_done to fill in */
+/** Reply structure of a HTTP request. */
 struct HTTPReply
 {
-    HTTPReply(): status(0), error(-1) {}
+    HTTPReply(): status(0) {}
 
     int status;
-    int error;
     std::string body;
 };
 
-static const char *http_errorstring(int code)
+/**
+ * Minimal HTTP/1.1 client used to talk to the RPC server.
+ *
+ * The client sends a single request over a plain socket and reads the
+ * complete response. It replaces the libevent based client that was used
+ * before.
+ */
+class HTTPClient
 {
-    switch(code) {
-#if LIBEVENT_VERSION_NUMBER >= 0x02010300
-    case EVREQ_HTTP_TIMEOUT:
-        return "timeout reached";
-    case EVREQ_HTTP_EOF:
-        return "EOF reached";
-    case EVREQ_HTTP_INVALID_HEADER:
-        return "error while reading header, or invalid header";
-    case EVREQ_HTTP_BUFFER_ERROR:
-        return "error encountered while reading or writing";
-    case EVREQ_HTTP_REQUEST_CANCEL:
-        return "request was canceled";
-    case EVREQ_HTTP_DATA_TOO_LONG:
-        return "response body is larger than allowed";
-#endif
-    default:
-        return "unknown";
-    }
-}
+public:
+    HTTPClient(std::string host, uint16_t port, int timeout)
+        : m_host(std::move(host)), m_port(port), m_timeout(timeout) {}
 
-static void http_request_done(struct evhttp_request *req, void *ctx)
-{
-    HTTPReply *reply = static_cast<HTTPReply*>(ctx);
-
-    if (req == nullptr) {
-        /* If req is nullptr, it means an error occurred while connecting: the
-         * error code will have been passed to http_error_cb.
-         */
-        reply->status = 0;
-        return;
-    }
-
-    reply->status = evhttp_request_get_response_code(req);
-
-    struct evbuffer *buf = evhttp_request_get_input_buffer(req);
-    if (buf)
+    ~HTTPClient()
     {
-        size_t size = evbuffer_get_length(buf);
-        const char *data = (const char*)evbuffer_pullup(buf, size);
-        if (data)
-            reply->body = std::string(data, size);
-        evbuffer_drain(buf, size);
-    }
-}
-
-#if LIBEVENT_VERSION_NUMBER >= 0x02010300
-static void http_error_cb(enum evhttp_request_error err, void *ctx)
-{
-    HTTPReply *reply = static_cast<HTTPReply*>(ctx);
-    reply->error = err;
-}
+        if (m_socket != INVALID_SOCKET) {
+#ifdef WIN32
+            closesocket(m_socket);
+#else
+            close(m_socket);
 #endif
+        }
+    }
+
+    HTTPClient(const HTTPClient&) = delete;
+    HTTPClient& operator=(const HTTPClient&) = delete;
+
+    /** Connect to the server. Returns false and sets `error` on failure. */
+    bool Connect(std::string& error)
+    {
+        struct addrinfo hints;
+        std::memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        const std::string service = std::to_string(m_port);
+        struct addrinfo* result{nullptr};
+        const int rc = getaddrinfo(m_host.c_str(), service.c_str(), &hints, &result);
+        if (rc != 0) {
+            error = gai_strerror(rc);
+            return false;
+        }
+
+        for (struct addrinfo* ai = result; ai != nullptr; ai = ai->ai_next) {
+            const int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+            if (fd == SOCKET_ERROR) continue;
+
+            // Set the socket timeouts
+            struct timeval tv;
+            tv.tv_sec = m_timeout;
+            tv.tv_usec = 0;
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+
+            if (ConnectSocket(fd, ai->ai_addr, ai->ai_addrlen, error)) {
+                m_socket = fd;
+                break;
+            }
+#ifdef WIN32
+            closesocket(fd);
+#else
+            close(fd);
+#endif
+        }
+        freeaddrinfo(result);
+
+        if (m_socket == INVALID_SOCKET) {
+            if (error.empty()) error = "no connection could be established";
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Send a request and read the response.
+     *
+     * @param[in] method The HTTP method (e.g. "POST").
+     * @param[in] path The request target (e.g. "/").
+     * @param[in] headers Additional request headers.
+     * @param[in] body The request body.
+     * @param[out] reply The status code and the body of the response.
+     * @param[out] error The error description in case of a failure.
+     */
+    bool Request(const std::string& method,
+                 const std::string& path,
+                 const std::vector<std::pair<std::string, std::string>>& headers,
+                 const std::string& body,
+                 HTTPReply& reply,
+                 std::string& error)
+    {
+        std::string request;
+        request.reserve(body.size() + 256);
+        request += method + " " + path + " HTTP/1.1\r\n";
+        request += "Host: " + m_host + "\r\n";
+        for (const auto& header : headers) {
+            request += header.first + ": " + header.second + "\r\n";
+        }
+        request += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+        request += "\r\n";
+        request += body;
+
+        if (!SendAll(request, error)) return false;
+
+        std::string response;
+        if (!RecvAll(response, error)) return false;
+
+        return ParseResponse(response, reply, error);
+    }
+
+private:
+    bool ConnectSocket(int fd, const struct sockaddr* addr, socklen_t addr_len, std::string& error)
+    {
+        // Connect with a timeout: the socket is put into non-blocking mode for
+        // the connect and polled afterwards.
+        const int flags = fcntl(fd, F_GETFL, 0);
+        if (flags == SOCKET_ERROR || fcntl(fd, F_SETFL, flags | O_NONBLOCK) == SOCKET_ERROR) {
+            error = "could not set the socket to non-blocking mode";
+            return false;
+        }
+        if (connect(fd, addr, addr_len) == 0) {
+            fcntl(fd, F_SETFL, flags);
+            return true;
+        }
+        if (errno != EINPROGRESS) {
+            error = strprintf("connect(): %s", strerror(errno));
+            return false;
+        }
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLOUT;
+        pfd.revents = 0;
+        const int rc = poll(&pfd, 1, m_timeout * 1000);
+        if (rc == 0) {
+            error = "connection timed out";
+            return false;
+        }
+        if (rc < 0) {
+            error = strprintf("poll(): %s", strerror(errno));
+            return false;
+        }
+        int err = 0;
+        socklen_t err_len = sizeof(err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &err_len) != 0 || err != 0) {
+            error = strprintf("connect(): %s", strerror(err ? err : errno));
+            return false;
+        }
+        fcntl(fd, F_SETFL, flags);
+        return true;
+    }
+
+    bool SendAll(const std::string& data, std::string& error)
+    {
+        size_t sent = 0;
+        while (sent < data.size()) {
+            const ssize_t n = send(m_socket, data.data() + sent, data.size() - sent, 0);
+            if (n > 0) {
+                sent += static_cast<size_t>(n);
+                continue;
+            }
+            if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    error = "timeout reached";
+                    return false;
+                }
+                continue;
+            }
+            error = strprintf("send(): %s", strerror(errno));
+            return false;
+        }
+        return true;
+    }
+
+    bool RecvAll(std::string& data, std::string& error)
+    {
+        char buf[4096];
+        while (true) {
+            const ssize_t n = recv(m_socket, buf, sizeof(buf), 0);
+            if (n > 0) {
+                data.append(buf, n);
+                continue;
+            }
+            if (n == 0) {
+                // The server closed the connection, the response is complete.
+                return true;
+            }
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                error = "timeout reached";
+                return false;
+            }
+            error = strprintf("recv(): %s", strerror(errno));
+            return false;
+        }
+    }
+
+    static bool ParseResponse(const std::string& response, HTTPReply& reply, std::string& error)
+    {
+        const size_t header_end = response.find("\r\n\r\n");
+        if (header_end == std::string::npos) {
+            error = "invalid response from server";
+            return false;
+        }
+        const std::string status_line = response.substr(0, response.find("\r\n"));
+        const size_t first_space = status_line.find(' ');
+        if (first_space == std::string::npos) {
+            error = "invalid response from server";
+            return false;
+        }
+        const size_t second_space = status_line.find(' ', first_space + 1);
+        const std::string status_str = status_line.substr(first_space + 1,
+                                                          second_space == std::string::npos ? std::string::npos : second_space - first_space - 1);
+        int parsed_status{0};
+        const auto result = std::from_chars(status_str.data(), status_str.data() + status_str.size(), parsed_status);
+        if (result.ec != std::errc{} || result.ptr != status_str.data() + status_str.size()) {
+            error = "invalid response from server";
+            return false;
+        }
+        reply.status = parsed_status;
+        reply.body = response.substr(header_end + 4);
+        return true;
+    }
+
+    std::string m_host;
+    uint16_t m_port;
+    int m_timeout;
+    SOCKET m_socket{INVALID_SOCKET};
+};
 
 /** Class that handles the conversion from a command-line to a JSON-RPC request,
  * as well as converting back to a JSON object that can be shown as result.
@@ -388,21 +555,6 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string& strMethod, co
     if (strMethod.rfind("eth_", 0) == 0 || strMethod.rfind("debug_", 0) == 0 || strMethod.rfind("net_", 0) == 0 || strMethod.rfind("web3_", 0) == 0)
         port = evmport;
 
-    // Obtain event base
-    raii_event_base base = obtain_event_base();
-
-    // Synchronously look up hostname
-    raii_evhttp_connection evcon = obtain_evhttp_connection_base(base.get(), host, port);
-    evhttp_connection_set_timeout(evcon.get(), gArgs.GetArg("-rpcclienttimeout", DEFAULT_HTTP_CLIENT_TIMEOUT));
-
-    HTTPReply response;
-    raii_evhttp_request req = obtain_evhttp_request(http_request_done, (void*)&response);
-    if (req == nullptr)
-        throw std::runtime_error("create http request failed");
-#if LIBEVENT_VERSION_NUMBER >= 0x02010300
-    evhttp_request_set_error_cb(req.get(), http_error_cb);
-#endif
-
     // Get credentials
     std::string strRPCUserColonPass;
     bool failedToGetAuthCookie = false;
@@ -415,52 +567,41 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string& strMethod, co
         strRPCUserColonPass = gArgs.GetArg("-rpcuser", "") + ":" + gArgs.GetArg("-rpcpassword", "");
     }
 
-    struct evkeyvalq* output_headers = evhttp_request_get_output_headers(req.get());
-    assert(output_headers);
-    evhttp_add_header(output_headers, "Host", host.c_str());
-    evhttp_add_header(output_headers, "Content-Type", "application/json");
-    evhttp_add_header(output_headers, "Connection", "close");
-    evhttp_add_header(output_headers, "Authorization", (std::string("Basic ") + EncodeBase64(strRPCUserColonPass)).c_str());
+    std::vector<std::pair<std::string, std::string>> request_headers;
+    request_headers.emplace_back("Content-Type", "application/json");
+    request_headers.emplace_back("Connection", "close");
+    request_headers.emplace_back("Authorization", std::string("Basic ") + EncodeBase64(strRPCUserColonPass));
 
     const auto meta = RPCMetadata::CreateDefault();
-    const auto writerFunc = [&](const std::string& key, const std::string& val) { evhttp_add_header(output_headers, key.c_str(), val.c_str()); };
+    const auto writerFunc = [&](const std::string& key, const std::string& val) { request_headers.emplace_back(key, val); };
     RPCMetadata::ToHTTPHeader(meta, writerFunc);
 
     // Attach request data
     // The JSON-RPC version is added per request object by JSONRPCRequestObj(),
     // so that batch requests (e.g. "-getinfo") carry it in every member.
     std::string strRequest = rh->PrepareRequest(strMethod, args).write() + "\n";
-    struct evbuffer* output_buffer = evhttp_request_get_output_buffer(req.get());
-    assert(output_buffer);
-    evbuffer_add(output_buffer, strRequest.data(), strRequest.size());
 
     // check if we should use a special wallet endpoint
     std::string endpoint = "/";
     if (!gArgs.GetArgs("-rpcwallet").empty()) {
         std::string walletName = gArgs.GetArg("-rpcwallet", "");
-        char *encodedURI = evhttp_uriencode(walletName.c_str(), walletName.size(), false);
-        if (encodedURI) {
-            endpoint = "/wallet/"+ std::string(encodedURI);
-            free(encodedURI);
-        }
-        else {
-            throw CConnectionFailed("uri-encode failed");
-        }
-    }
-    int r = evhttp_make_request(evcon.get(), req.get(), EVHTTP_REQ_POST, endpoint.c_str());
-    req.release(); // ownership moved to evcon in above call
-    if (r != 0) {
-        throw CConnectionFailed("send http request failed");
+        endpoint = "/wallet/" + urlEncode(walletName);
     }
 
-    event_base_dispatch(base.get());
+    const int timeout = gArgs.GetArg("-rpcclienttimeout", DEFAULT_HTTP_CLIENT_TIMEOUT);
+    HTTPClient client(host, static_cast<uint16_t>(port), timeout);
+    std::string clientError;
+    if (!client.Connect(clientError)) {
+        throw CConnectionFailed(strprintf("Could not connect to the server %s:%d (%s)\n\nMake sure the defid server is running and that you are connecting to the correct RPC port.", host, port, clientError));
+    }
+
+    HTTPReply response;
+    if (!client.Request("POST", endpoint, request_headers, strRequest, response, clientError)) {
+        throw CConnectionFailed(strprintf("Could not connect to the server %s:%d (%s)\n\nMake sure the defid server is running and that you are connecting to the correct RPC port.", host, port, clientError));
+    }
 
     if (response.status == 0) {
-        std::string responseErrorMessage;
-        if (response.error != -1) {
-            responseErrorMessage = strprintf(" (error code %d - \"%s\")", response.error, http_errorstring(response.error));
-        }
-        throw CConnectionFailed(strprintf("Could not connect to the server %s:%d%s\n\nMake sure the defid server is running and that you are connecting to the correct RPC port.", host, port, responseErrorMessage));
+        throw CConnectionFailed(strprintf("Could not connect to the server %s:%d\n\nMake sure the defid server is running and that you are connecting to the correct RPC port.", host, port));
     } else if (response.status == HTTP_UNAUTHORIZED) {
         if (failedToGetAuthCookie) {
             throw std::runtime_error(strprintf(
@@ -612,8 +753,6 @@ int main(int argc, char* argv[])
         tfm::format(std::cerr, "Error: Initializing networking failed\n");
         return EXIT_FAILURE;
     }
-    event_set_log_callback(&libevent_log_cb);
-
     try {
         int ret = AppInitRPC(argc, argv);
         if (ret != CONTINUE_EXECUTION)

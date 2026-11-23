@@ -1,6 +1,18 @@
 DeFiChain release notes (unreleased)
 ====================================
 
+Removal of the libevent dependency
+----------------------------------
+
+- The node does not depend on `libevent` anymore. The HTTP server, the RPC
+  client (`defi-cli`) and the Tor control connection use the in-tree socket
+  implementation now. This is not a user-visible change: the options
+  `-rpcallowip`, `-rpcbind`, `-rpcport`, `-rpcthreads`, `-rpcworkqueue` and
+  `-rpcservertimeout` keep their semantics and the RPC interface is unchanged.
+
+- The `libevent` log category was removed, together with its special handling
+  in the `logging` RPC.
+
 I2P SAM v3 transport
 --------------------
 

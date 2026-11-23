@@ -238,6 +238,7 @@ BASE_SCRIPTS = [
     "rpc_gettxspendingprevout.py",
     "rpc_deprecated.py",
     "wallet_disable.py",
+    "wallet_lock_timer.py",
     "rpc_net.py",
     "wallet_keypool.py",
     "p2p_mempool.py",

@@ -13,7 +13,6 @@ These are the dependencies currently used by Bitcoin Core. You can find instruct
 | FreeType | [2.7.1](https://download.savannah.gnu.org/releases/freetype) |  | No |  |  |
 | GCC |  | [10+](https://gcc.gnu.org/) (C++20 support) |  |  |  |
 | HarfBuzz-NG |  |  |  |  |  |
-| libevent | [2.1.8-stable](https://github.com/libevent/libevent/releases) | 2.0.22 | No |  |  |
 | libpng |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk) |
 | librsvg | |  |  |  |  |
 | MiniUPnPc | [2.0.20180203](http://miniupnp.free.fr/files) |  | No |  |  |

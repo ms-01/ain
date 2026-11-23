@@ -36,7 +36,6 @@ These dependencies are required:
  ------------|------------------|----------------------
  libssl      | Crypto           | Random Number Generation, Elliptic Curve Cryptography
  libboost    | Utility          | Library for threading, data structures, etc
- libevent    | Networking       | OS independent asynchronous networking
 
 Optional dependencies:
 
@@ -86,7 +85,7 @@ Build requirements:
 
 Now, you can either build from self-compiled [depends](/depends/README.md) or install the required dependencies:
 
-    sudo apt-get install libssl-dev libevent-dev libboost-test-dev
+    sudo apt-get install libssl-dev libboost-test-dev
 
 Rust toolchain is necessary for the build:
 
@@ -122,7 +121,7 @@ Optional SQLite wallet support (see `--with-sqlite` and `--without-sqlite`):
 
 Build requirements:
 
-    sudo dnf install gcc-c++ libtool make autoconf automake openssl-devel libevent-devel boost-devel libdb4-devel libdb4-cxx-devel python3
+    sudo dnf install gcc-c++ libtool make autoconf automake openssl-devel boost-devel libdb4-devel libdb4-cxx-devel python3
 
 Optional (see `--with-miniupnpc` and `--enable-upnp-default`):
 
@@ -245,7 +244,7 @@ Setup and Build Example: Arch Linux
 -----------------------------------
 This example lists the steps necessary to setup and build a command line only, non-wallet distribution of the latest changes on Arch Linux:
 
-    pacman -S git base-devel boost libevent python
+    pacman -S git base-devel boost python
     git clone https://github.com/defich/ain.git
     cd ain/
     ./autogen.sh

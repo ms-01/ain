@@ -1,4 +1,4 @@
-packages := boost libevent protobuf solc
+packages := boost protobuf solc
 
 rapidcheck_packages = rapidcheck
 wallet_packages = bdb sqlite
