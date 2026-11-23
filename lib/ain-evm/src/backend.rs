@@ -40,10 +40,16 @@ pub struct Vicinity {
     pub block_gas_limit: U256,
     pub block_base_fee_per_gas: U256,
     pub block_randomness: Option<H256>,
+    pub dvm_block: Option<u64>,
 }
 
 impl From<Header> for Vicinity {
     fn from(header: Header) -> Self {
+        let dvm_block = std::str::from_utf8(&header.extra_data)
+            .ok()
+            .and_then(|s| s.strip_prefix("DFI: "))
+            .and_then(|s| s.parse::<u64>().ok());
+
         Vicinity {
             beneficiary: header.beneficiary,
             block_number: header.number,
@@ -52,6 +58,7 @@ impl From<Header> for Vicinity {
             block_gas_limit: header.gas_limit,
             block_base_fee_per_gas: header.base_fee,
             block_randomness: None,
+            dvm_block,
             ..Default::default()
         }
     }

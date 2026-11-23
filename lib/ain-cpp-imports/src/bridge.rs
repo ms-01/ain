@@ -127,6 +127,7 @@ pub mod ffi {
         fn getEVMSystemTxsFromBlock(block_hash: [u8; 32]) -> Vec<SystemTxData>;
         fn getDF23Height() -> u64;
         fn getDF24Height() -> u64;
+        fn getDF25Height() -> u64;
         fn getBalanceOverflowHeight() -> u64;
         fn getMNVersionGateHeight() -> u64;
         fn migrateTokensFromEVM(

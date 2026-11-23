@@ -227,6 +227,9 @@ mod ffi {
     pub fn getDF24Height() -> u64 {
         unimplemented!("{}", UNIMPL_MSG)
     }
+    pub fn getDF25Height() -> u64 {
+        unimplemented!("{}", UNIMPL_MSG)
+    }
     pub fn getBalanceOverflowHeight() -> u64 {
         unimplemented!("{}", UNIMPL_MSG)
     }
@@ -477,9 +480,14 @@ pub fn get_df23_height() -> u64 {
     ffi::getDF23Height()
 }
 
-/// Gets the DF23 height
+/// Gets the DF24 height
 pub fn get_df24_height() -> u64 {
     ffi::getDF24Height()
+}
+
+/// Gets the DF25 height
+pub fn get_df25_height() -> u64 {
+    ffi::getDF25Height()
 }
 
 /// Gets the height from which on an overflowing sum of transfer amounts is
