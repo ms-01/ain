@@ -41,7 +41,6 @@ Optional dependencies:
 
  Library     | Purpose          | Description
  ------------|------------------|----------------------
- miniupnpc   | UPnP Support     | Firewall-jumping support
  libdb4.8    | Berkeley DB      | Wallet storage (only needed when wallet enabled)
  libsqlite3  | SQLite           | Optional SQLite wallet storage (only needed when wallet enabled)
  protobuf    | Payments in GUI  | Data interchange format used for payment protocol (only needed when GUI enabled)
@@ -102,11 +101,6 @@ Otherwise, you can build from self-compiled `depends` (see above).
 
 To build DeFi Core without wallet, see [*Disable-wallet mode*](/doc/build-unix.md#disable-wallet-mode)
 
-
-Optional (see `--with-miniupnpc` and `--enable-upnp-default`):
-
-    sudo apt-get install libminiupnpc-dev
-
 ZMQ dependencies (provides ZMQ API):
 
     sudo apt-get install libzmq3-dev
@@ -123,10 +117,6 @@ Build requirements:
 
     sudo dnf install gcc-c++ libtool make autoconf automake openssl-devel boost-devel libdb4-devel libdb4-cxx-devel python3
 
-Optional (see `--with-miniupnpc` and `--enable-upnp-default`):
-
-    sudo dnf install miniupnpc-devel
-
 ZMQ dependencies (provides ZMQ API):
 
     sudo dnf install zeromq-devel
@@ -139,18 +129,6 @@ Notes
 -----
 The release is built with GCC and then "strip defid" to strip the debug
 symbols, which reduces the executable size by about 90%.
-
-
-miniupnpc
----------
-
-[miniupnpc](http://miniupnp.free.fr/) may be used for UPnP port mapping.  It can be downloaded from [here](
-http://miniupnp.tuxfamily.org/files/).  UPnP support is compiled in and
-turned off by default.  See the configure options for upnp behavior desired:
-
-	--without-miniupnpc      No UPnP support miniupnp not required
-	--disable-upnp-default   (the default) UPnP support turned off by default at runtime
-	--enable-upnp-default    UPnP support turned on by default at runtime
 
 
 Berkeley DB
@@ -248,7 +226,7 @@ This example lists the steps necessary to setup and build a command line only, n
     git clone https://github.com/defich/ain.git
     cd ain/
     ./autogen.sh
-    ./configure --disable-wallet --without-miniupnpc
+    ./configure --disable-wallet
     make check
 
 Note:

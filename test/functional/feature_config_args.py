@@ -175,6 +175,30 @@ class ConfArgsTest(DefiTestFramework):
                 os.path.join(new_data_dir_2, "regtest", "wallets", "w2")
             )
 
+        # Ensure deprecated -upnp option is accepted as a no-op and logs a warning
+        upnp_warning = "-upnp is deprecated and has no effect since v4.2.7"
+        self.stop_node(0)
+        with self.nodes[0].assert_debug_log(expected_msgs=[upnp_warning]):
+            self.start_node(
+                0, ["-datadir=" + new_data_dir_2, "-conf=" + conf_file, "-upnp"]
+            )
+        self.stop_node(0)
+        with self.nodes[0].assert_debug_log(expected_msgs=[upnp_warning]):
+            self.start_node(
+                0, ["-datadir=" + new_data_dir_2, "-conf=" + conf_file, "-upnp=0"]
+            )
+        self.stop_node(0)
+        upnp_conf = os.path.join(self.options.tmpdir, "upnp.conf")
+        with open(conf_file, "r", encoding="utf8") as src, open(
+            upnp_conf, "w", encoding="utf8"
+        ) as dst:
+            dst.write(src.read())
+            dst.write("\nupnp=1\n")
+        with self.nodes[0].assert_debug_log(expected_msgs=[upnp_warning]):
+            self.start_node(
+                0, ["-datadir=" + new_data_dir_2, "-conf=" + upnp_conf]
+            )
+
 
 if __name__ == "__main__":
     ConfArgsTest().main()

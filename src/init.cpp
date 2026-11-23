@@ -218,7 +218,6 @@ void Interrupt()
     InterruptREST();
     InterruptHealthEndpoints();
     InterruptTorControl();
-    InterruptMapPort();
     if (g_connman)
         g_connman->Interrupt();
     if (g_txindex) {
@@ -260,7 +259,6 @@ void Shutdown(InitInterfaces& interfaces)
         client->flush();
     }
     XResultStatusLogged(ain_rs_stop_network_services(result));
-    StopMapPort();
 
     // Because these depend on each-other, we make sure that neither can be
     // using the other before destroying them.
@@ -585,15 +583,7 @@ void SetupServerArgs()
     gArgs.AddArg("-ethstartstate", strprintf("Initialise Ethereum state trie using JSON input"), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-enablesnapshots", strprintf("Whether to enable snapshot on each block (default: %u)", DEFAULT_SNAPSHOT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-ascendingstaketime", strprintf("Test staking forward in time from the current block"), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-#ifdef USE_UPNP
-#if USE_UPNP
-    gArgs.AddArg("-upnp", "Use UPnP to map the listening port (default: 1 when listening and no -proxy)", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
-#else
-    gArgs.AddArg("-upnp", strprintf("Use UPnP to map the listening port (default: %u)", 0), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
-#endif
-#else
-    hidden_args.emplace_back("-upnp");
-#endif
+    gArgs.AddArg("-upnp", "Deprecated, has no effect since v4.2.7 (UPnP support was removed).", ArgsManager::ALLOW_ANY, OptionsCategory::HIDDEN);
     gArgs.AddArg("-whitebind=<[permissions@]addr>", "Bind to given address and whitelist peers connecting to it. "
         "Use [host]:port notation for IPv6. Allowed permissions are bloomfilter (allow requesting BIP37 filtered blocks and transactions), "
         "noban (do not ban for misbehavior), "
@@ -1052,10 +1042,6 @@ void InitParameterInteraction()
         // to protect privacy, do not listen by default if a default proxy server is specified
         if (gArgs.SoftSetBoolArg("-listen", false))
             LogPrintf("%s: parameter interaction: -proxy set -> setting -listen=0\n", __func__);
-        // to protect privacy, do not use UPNP when a proxy is set. The user may still specify -listen=1
-        // to listen locally, so don't rely on this happening through -listen below.
-        if (gArgs.SoftSetBoolArg("-upnp", false))
-            LogPrintf("%s: parameter interaction: -proxy set -> setting -upnp=0\n", __func__);
         // to protect privacy, do not discover addresses by default
         if (gArgs.SoftSetBoolArg("-discover", false))
             LogPrintf("%s: parameter interaction: -proxy set -> setting -discover=0\n", __func__);
@@ -1063,8 +1049,6 @@ void InitParameterInteraction()
 
     if (!gArgs.GetBoolArg("-listen", DEFAULT_LISTEN)) {
         // do not map ports or try to retrieve public IP when not listening (pointless)
-        if (gArgs.SoftSetBoolArg("-upnp", false))
-            LogPrintf("%s: parameter interaction: -listen=0 -> setting -upnp=0\n", __func__);
         if (gArgs.SoftSetBoolArg("-discover", false))
             LogPrintf("%s: parameter interaction: -listen=0 -> setting -discover=0\n", __func__);
         if (gArgs.SoftSetBoolArg("-listenonion", false))
@@ -2558,9 +2542,8 @@ bool AppInitMain(InitInterfaces& interfaces)
 
     Discover();
 
-    // Map ports with UPnP
-    if (gArgs.GetBoolArg("-upnp", DEFAULT_UPNP)) {
-        StartMapPort();
+    if (gArgs.IsArgSet("-upnp")) {
+        LogPrintf("Warning: -upnp is deprecated and has no effect since v4.2.7 (UPnP support was removed; planned for removal in v4.3.0).\n");
     }
 
     CConnman::Options connOptions;

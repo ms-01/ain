@@ -68,7 +68,7 @@ if ENABLE_ZMQ
 bench_bench_defi_LDADD += $(LIBDEFI_ZMQ) $(ZMQ_LIBS)
 endif
 
-bench_bench_defi_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS)
+bench_bench_defi_LDADD += $(BOOST_LIBS) $(BDB_LIBS)
 
 if ENABLE_WALLET
 bench_bench_defi_SOURCES += bench/coin_selection.cpp

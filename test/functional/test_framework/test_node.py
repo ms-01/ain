@@ -114,7 +114,6 @@ class TestNode:
             "-logtimemicros",
             "-logthreadnames",
             "-debug",
-            "-debugexclude=libevent",
             "-debugexclude=leveldb",
             "-debugexclude=accountchange",
             "-uacomment=testnode%d" % i,

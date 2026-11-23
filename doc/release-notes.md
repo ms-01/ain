@@ -13,6 +13,18 @@ Removal of the libevent dependency
 - The `libevent` log category was removed, together with its special handling
   in the `logging` RPC.
 
+Removal of miniupnpc / UPnP support
+-----------------------------------
+
+- UPnP port mapping (`miniupnpc`) has been removed, along with the
+  `--with-miniupnpc` and `--enable-upnp-default` configure options and the
+  `NO_UPNP` depends option.
+
+- The `-upnp` CLI/config option (including `-upnp=0` / `-upnp=1` and `upnp=1`
+  in `defi.conf`) is kept as a hidden, deprecated no-op for v4.2.7: the node
+  still starts cleanly and logs a deprecation warning. Complete removal of
+  `-upnp` is planned for v4.3.0.
+
 I2P SAM v3 transport
 --------------------
 
