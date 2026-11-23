@@ -148,7 +148,6 @@ const CLogCategoryDesc LogCategories[] =
     {BCLog::PRUNE, "prune"},
     {BCLog::PROXY, "proxy"},
     {BCLog::MEMPOOLREJ, "mempoolrej"},
-    {BCLog::LIBEVENT, "libevent"},
     {BCLog::COINDB, "coindb"},
     {BCLog::LEVELDB, "leveldb"},
     {BCLog::STAKING, "staking"},

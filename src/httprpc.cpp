@@ -13,16 +13,137 @@
 #include <ui_interface.h>
 #include <util/strencodings.h>
 #include <util/system.h>
+#include <util/threadnames.h>
 #include <util/translation.h>
 #include <walletinitinterface.h>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <stdio.h>
+#include <thread>
 
 #include <boost/algorithm/string.hpp> // boost::trim
 
 /** WWW-Authenticate to present with 401 Unauthorized response */
 static const char* WWW_AUTH_HEADER_DATA = "Basic realm=\"jsonrpc\"";
+
+/**
+ * Timer service for the RPC mechanism.
+ *
+ * A single dedicated thread executes the scheduled callbacks, ordered by their
+ * deadline. The service replaces the libevent based timer that was used
+ * before; the RPCTimerInterface/RPCTimerBase contract is unchanged.
+ */
+class RPCTimerService
+{
+public:
+    /** Handle of a scheduled callback; cancels the callback when destroyed. */
+    struct TimerHandle
+    {
+        ~TimerHandle()
+        {
+            cancelled.store(true);
+        }
+        std::atomic<bool> cancelled{false};
+    };
+
+    ~RPCTimerService()
+    {
+        Stop();
+    }
+
+    /** Start the timer thread. */
+    void Start()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_thread.joinable()) return;
+        m_stopped = false;
+        m_thread = std::thread(&RPCTimerService::Thread, this);
+    }
+
+    /**
+     * Stop the timer thread and wait for it to exit.
+     *
+     * Pending callbacks are discarded, a callback that is currently executed is
+     * finished before this function returns. This makes sure that no callback
+     * can run concurrently with the teardown of the RPC server.
+     */
+    void Stop()
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!m_thread.joinable()) return;
+            m_stopped = true;
+        }
+        m_cond.notify_all();
+        m_thread.join();
+    }
+
+    /**
+     * Schedule a one-shot callback.
+     *
+     * @returns A handle that cancels the callback when it is destroyed.
+     */
+    std::shared_ptr<TimerHandle> Schedule(std::function<void()> func, int64_t millis)
+    {
+        auto handle = std::make_shared<TimerHandle>();
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(millis);
+            m_queue.emplace(deadline, Entry{handle, std::move(func)});
+        }
+        m_cond.notify_all();
+        return handle;
+    }
+
+private:
+    struct Entry {
+        std::shared_ptr<TimerHandle> handle;
+        std::function<void()> func;
+    };
+
+    void Thread()
+    {
+        util::ThreadRename("rpctimer");
+        std::unique_lock<std::mutex> lock(m_mutex);
+        while (true) {
+            if (m_stopped) return;
+            if (m_queue.empty()) {
+                m_cond.wait(lock);
+                continue;
+            }
+            auto it = m_queue.begin();
+            const auto now = std::chrono::steady_clock::now();
+            if (it->first > now) {
+                m_cond.wait_until(lock, it->first);
+                continue;
+            }
+            Entry entry = std::move(it->second);
+            m_queue.erase(it);
+            if (entry.handle->cancelled.load()) continue;
+            lock.unlock();
+            try {
+                entry.func();
+            } catch (const std::exception& e) {
+                LogPrintf("RPC timer callback failed: %s\n", e.what());
+            } catch (...) {
+                LogPrintf("RPC timer callback failed with an unknown exception\n");
+            }
+            lock.lock();
+        }
+    }
+
+    std::mutex m_mutex;
+    std::condition_variable m_cond;
+    std::multimap<std::chrono::steady_clock::time_point, Entry> m_queue;
+    std::thread m_thread;
+    bool m_stopped{false};
+};
 
 /** Simple one-shot callback timer to be used by the RPC mechanism to e.g.
  * re-lock the wallet.
@@ -30,22 +151,19 @@ static const char* WWW_AUTH_HEADER_DATA = "Basic realm=\"jsonrpc\"";
 class HTTPRPCTimer : public RPCTimerBase
 {
 public:
-    HTTPRPCTimer(struct event_base* eventBase, std::function<void()>& func, int64_t millis) :
-        ev(eventBase, false, func)
+    HTTPRPCTimer(RPCTimerService& service, std::function<void()>& func, int64_t millis) :
+        m_handle(service.Schedule(func, millis))
     {
-        struct timeval tv;
-        tv.tv_sec = millis/1000;
-        tv.tv_usec = (millis%1000)*1000;
-        ev.trigger(&tv);
     }
+
 private:
-    HTTPEvent ev;
+    std::shared_ptr<RPCTimerService::TimerHandle> m_handle;
 };
 
 class HTTPRPCTimerInterface : public RPCTimerInterface
 {
 public:
-    explicit HTTPRPCTimerInterface(struct event_base* _base) : base(_base)
+    explicit HTTPRPCTimerInterface(RPCTimerService& _service) : service(_service)
     {
     }
     const char* Name() override
@@ -54,10 +172,10 @@ public:
     }
     RPCTimerBase* NewTimer(std::function<void()>& func, int64_t millis) override
     {
-        return new HTTPRPCTimer(base, func, millis);
+        return new HTTPRPCTimer(service, func, millis);
     }
 private:
-    struct event_base* base;
+    RPCTimerService& service;
 };
 
 
@@ -67,6 +185,8 @@ static std::string strRPCUserColonPass;
 static std::vector<std::vector<std::string>> g_rpcauth;
 /* Stored RPC timer interface (for unregistration) */
 static std::unique_ptr<HTTPRPCTimerInterface> httpRPCTimerInterface;
+/* The timer service that executes the scheduled RPC callbacks */
+static RPCTimerService rpcTimerService;
 /* The host to be used for CORS header */
 static std::string corsOriginHost;
 
@@ -298,9 +418,8 @@ bool StartHTTPRPC()
     if (g_wallet_init_interface.HasWalletSupport()) {
         RegisterHTTPHandler("/wallet/", false, HTTPReq_JSONRPC);
     }
-    struct event_base* eventBase = EventBase();
-    assert(eventBase);
-    httpRPCTimerInterface = std::make_unique<HTTPRPCTimerInterface>(eventBase);
+    rpcTimerService.Start();
+    httpRPCTimerInterface = std::make_unique<HTTPRPCTimerInterface>(rpcTimerService);
     RPCSetTimerInterface(httpRPCTimerInterface.get());
     if (statsRPC.isActive()) statsRPC.load();
     return true;
@@ -322,6 +441,9 @@ void StopHTTPRPC()
         RPCUnsetTimerInterface(httpRPCTimerInterface.get());
         httpRPCTimerInterface.reset();
     }
+    // Stop and join the timer thread, so that no callback can run anymore
+    // once the RPC server is torn down.
+    rpcTimerService.Stop();
 
     if (statsRPC.isActive()) statsRPC.save();
 }

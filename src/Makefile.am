@@ -276,7 +276,6 @@ DEFI_CORE_H = \
   support/allocators/secure.h \
   support/allocators/zeroafterfree.h \
   support/cleanse.h \
-  support/events.h \
   support/lockedpool.h \
   sync.h \
   threadsafety.h \
@@ -288,6 +287,7 @@ DEFI_CORE_H = \
   ui_interface.h \
   undo.h \
   util/bip32.h \
+  util/check.h \
   util/bytevectorhash.h \
   util/asmap.h \
   util/error.h \
@@ -296,8 +296,10 @@ DEFI_CORE_H = \
   util/system.h \
   util/moneystr.h \
   util/rbf.h \
+  util/sock.h \
   util/string.h \
   util/threadnames.h \
+  util/threadpool.h \
   util/time.h \
   util/translation.h \
   util/url.h \
@@ -401,7 +403,7 @@ libdefi_spv_a_SOURCES = \
 # Contains code accessing mempool and chain state that is meant to be separated
 # from wallet and gui code (see node/README.md). Shared code should go in
 # libdefi_common or libdefi_util libraries, instead.
-libdefi_server_a_CPPFLAGS = $(AM_CPPFLAGS) $(DEFI_INCLUDES) $(MINIUPNPC_CPPFLAGS) $(EVENT_CFLAGS) $(EVENT_PTHREADS_CFLAGS)
+libdefi_server_a_CPPFLAGS = $(AM_CPPFLAGS) $(DEFI_INCLUDES) $(MINIUPNPC_CPPFLAGS)
 libdefi_server_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 libdefi_server_a_SOURCES = \
   addr_response_cache.cpp \
@@ -737,6 +739,7 @@ libdefi_util_a_SOURCES = \
   util/system.cpp \
   util/moneystr.cpp \
   util/rbf.cpp \
+  util/sock.cpp \
   util/threadnames.cpp \
   util/strencodings.cpp \
   util/string.cpp \
@@ -784,7 +787,7 @@ defid_LDADD = \
   $(LIBUNIVALUE) \
   $(LIBSECP256K1)
 
-defid_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS)
+defid_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(ZMQ_LIBS)
 
 if ENABLE_SQLITE
 DEFI_INCLUDES += $(SQLITE_CPPFLAGS)
@@ -808,7 +811,7 @@ EXTRA_defid_DEPENDENCIES: $(LIBAIN_RS_LIB_PATH)
 
 # defi-cli binary #
 defi_cli_SOURCES = defi-cli.cpp
-defi_cli_CPPFLAGS = $(AM_CPPFLAGS) $(DEFI_INCLUDES) $(EVENT_CFLAGS)
+defi_cli_CPPFLAGS = $(AM_CPPFLAGS) $(DEFI_INCLUDES)
 defi_cli_CPPFLAGS += -DDEFI_CLI
 defi_cli_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 defi_cli_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
@@ -823,7 +826,7 @@ defi_cli_LDADD = \
   $(LIBDEFI_UTIL) \
   $(LIBDEFI_CRYPTO)
 
-defi_cli_LDADD += $(BOOST_LIBS) $(EVENT_LIBS)
+defi_cli_LDADD += $(BOOST_LIBS)
 #
 
 # defi-tx binary #

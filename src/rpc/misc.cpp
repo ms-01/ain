@@ -529,32 +529,15 @@ UniValue logging(const JSONRPCRequest& request)
                 },
                 RPCExamples{
                     HelpExampleCli("logging", "\"[\\\"all\\\"]\" \"[\\\"http\\\"]\"")
-            + HelpExampleRpc("logging", "[\"all\"], [\"libevent\"]")
+            + HelpExampleRpc("logging", "[\"all\"], [\"http\"]")
                 },
             }.Check(request);
 
-    uint32_t original_log_categories = LogInstance().GetCategoryMask();
     if (request.params[0].isArray()) {
         EnableOrDisableLogCategories(request.params[0], true);
     }
     if (request.params[1].isArray()) {
         EnableOrDisableLogCategories(request.params[1], false);
-    }
-    uint32_t updated_log_categories = LogInstance().GetCategoryMask();
-    uint32_t changed_log_categories = original_log_categories ^ updated_log_categories;
-
-    // Update libevent logging if BCLog::LIBEVENT has changed.
-    // If the library version doesn't allow it, UpdateHTTPServerLogging() returns false,
-    // in which case we should clear the BCLog::LIBEVENT flag.
-    // Throw an error if the user has explicitly asked to change only the libevent
-    // flag and it failed.
-    if (changed_log_categories & BCLog::LIBEVENT) {
-        if (!UpdateHTTPServerLogging(LogInstance().WillLogCategory(BCLog::LIBEVENT))) {
-            LogInstance().DisableCategory(BCLog::LIBEVENT);
-            if (changed_log_categories == BCLog::LIBEVENT) {
-            throw JSONRPCError(RPC_INVALID_PARAMETER, "libevent logging cannot be updated when using libevent before v2.1.1.");
-            }
-        }
     }
 
     UniValue result(UniValue::VOBJ);

@@ -61,7 +61,7 @@ namespace BCLog {
         PRUNE                = (1ull << 14ull),
         PROXY                = (1ull << 15ull),
         MEMPOOLREJ           = (1ull << 16ull),
-        LIBEVENT             = (1ull << 17ull),
+        // Bit 17 was used by the removed "libevent" log category
         COINDB               = (1ull << 18ull),
         LEVELDB              = (1ull << 20ull),
         STAKING              = (1ull << 21ull),
