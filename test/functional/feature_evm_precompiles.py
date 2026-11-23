@@ -38,17 +38,20 @@ transactions:
     precompile cost.  No ``CALL`` opcode is involved, so neither an
     EIP-2929 account access cost nor a memory expansion asymmetry can leak
     into the delta.
-  * **Secondary (documented offset)**: the same measurement through a
-    deployed caller contract.  Here the baseline target is a contract with a
-    one byte ``STOP`` runtime.  A ``CALL`` to a regular account is charged
-    ``gas_account_access_cold = 2600`` (``Config::shanghai()``), while a
-    ``CALL`` to a precompile is charged the warm cost
-    ``gas_storage_read_warm = 100`` because the pinned ``evm`` crate treats
-    precompiles as warm (``src/executor/stack/executor.rs``,
-    ``StackExecutor::is_cold``: ``!is_precompile && self.state.is_cold(..)``).
-    The baseline callee consumes 0 gas, therefore the expected delta is
-    ``<precompile cost> - 2500``.  The 2500 is a documented constant offset
-    (the cold vs. warm account access difference), not a fitted value.
+  * **Secondary**: the same measurement through a deployed caller contract.
+    Here the baseline target is a contract with a one byte ``STOP`` runtime.
+    Since ``DF25Height`` the first access to *any* address is charged with the
+    EIP-2929 cold account access cost ``gas_account_access_cold = 2600``
+    (``Config::shanghai()``) — precompiles included, exactly like
+    go-ethereum.  The precompile address and the baseline contract are both
+    accessed for the first time in the calling transaction, therefore both
+    calls are charged the same 2600 gas and the expected delta is exactly
+    ``<precompile cost>``.  (Before ``DF25Height`` the pinned ``evm`` crate
+    treated precompiles as permanently warm
+    (``src/executor/stack/executor.rs``, ``StackExecutor::is_cold``:
+    ``!is_precompile && self.state.is_cold(..)``), which made the delta
+    ``<precompile cost> - 2500``; on regtest ``DF25Height = 1``, so the rule is
+    active from the genesis block.)
 
 The expected gas values are derived from the source constants:
 
@@ -96,10 +99,6 @@ NOT_A_PRECOMPILE = "0x000000000000000000000000000000000000000b"
 # measurement.  It is created in `setup()` so that the account creation can
 # never influence the measured delta.
 PLAIN_ACCOUNT = "0x00000000000000000000000000000000000000ee"
-
-# The difference between the cold account access cost (2600) and the warm
-# account access cost (100) that is charged for a precompile.
-CALL_ACCESS_OFFSET = 2500
 
 # Size of the memory window the caller contract reads the return data from.
 OUTPUT_SIZE = 64
@@ -416,8 +415,10 @@ class EVMPrecompileTest(DefiTestFramework):
         """Return the gas delta and the output window of the caller contract.
 
         The baseline is the same caller contract that calls the ``STOP``
-        contract.  The expected delta is the precompile cost minus the
-        documented ``CALL_ACCESS_OFFSET`` (cold vs. warm account access).
+        contract.  Since ``DF25Height`` the first access to the precompile
+        address and the first access to the baseline contract are both charged
+        the EIP-2929 cold account access cost (2600 gas), therefore the
+        expected delta is exactly the precompile cost.
         """
         caller = self.deploy_caller(target, data)
         baseline = self.deploy_caller(self.baseline_contract, data)
@@ -450,7 +451,7 @@ class EVMPrecompileTest(DefiTestFramework):
             payload,
             expected_output + bytes(OUTPUT_SIZE - len(expected_output)),
         )
-        assert_equal(delta, expected_gas - CALL_ACCESS_OFFSET)
+        assert_equal(delta, expected_gas)
 
     # ------------------------------------------------------------------
     # scenarios
@@ -516,7 +517,7 @@ class EVMPrecompileTest(DefiTestFramework):
         # The caller contract gets an empty output window.
         delta, payload = self.contract_delta(ECRECOVER, data)
         assert_equal(payload, bytes(OUTPUT_SIZE))
-        assert_equal(delta, 3000 - CALL_ACCESS_OFFSET)
+        assert_equal(delta, 3000)
 
     def test_modexp(self):
         """``modexp`` computes the modular exponentiation.

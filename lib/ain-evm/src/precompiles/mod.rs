@@ -150,8 +150,24 @@ impl PrecompileSet for MetachainPrecompiles {
     }
 
     fn is_precompile(&self, address: H160, _gas: u64) -> IsPrecompileResult {
+        // The pinned `evm` crate consumes `is_precompile()` exclusively as the switch
+        // between its "precompiles are always warm" pricing and its access list based
+        // EIP-2929 pricing (`StackExecutor::is_cold`:
+        // `!is_precompile && self.state.is_cold(address)`).  go-ethereum charges the
+        // cold account access cost (2600 gas) for the *first* access to any address,
+        // precompiles included, and only the warm cost (100 gas) for the subsequent
+        // ones.
+        //
+        // Therefore the metachain precompile addresses are reported as *not*
+        // precompiles once `DF25Height` is active, which switches the crate to the
+        // access list based (go-ethereum like) pricing.  The precompile dispatch
+        // itself is unaffected: `execute()` still resolves the precompiles, and the
+        // addresses stay precompiles.
+        //
+        // NOTE: a future dependency bump must re-check that `is_precompile()` is still
+        // consumed only for the pricing decision.
         IsPrecompileResult::Answer {
-            is_precompile: Self::used_addresses().contains(&address),
+            is_precompile: !self.df25_active && Self::used_addresses().contains(&address),
             extra_cost: 0,
         }
     }
@@ -168,6 +184,8 @@ fn is_dst20(addr: H160) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethereum_types::H256;
+    use evm::{backend::Basic, Context, ExitReason, Transfer};
 
     /// Builds an address from the given hex string.
     fn address(hex: &str) -> H160 {
@@ -211,6 +229,163 @@ mod tests {
                     assert_eq!(extra_cost, 0);
                 }
                 _ => panic!("unexpected result"),
+            }
+        }
+    }
+
+    /// Once `DF25Height` is active the metachain precompile addresses are reported as
+    /// *not* precompiles: the pinned `evm` crate uses the answer exclusively as the switch
+    /// between its "precompiles are always warm" pricing and its access list based
+    /// EIP-2929 pricing, and go-ethereum charges the cold account access cost (2600 gas)
+    /// for the first access to a precompile address.
+    #[test]
+    fn test_is_precompile_when_df25_active() {
+        let precompiles = MetachainPrecompiles::new(0).with_df25_active(true);
+
+        for address in MetachainPrecompiles::used_addresses() {
+            match <MetachainPrecompiles as PrecompileSet>::is_precompile(&precompiles, address, 0) {
+                IsPrecompileResult::Answer {
+                    is_precompile,
+                    extra_cost,
+                } => {
+                    assert!(
+                        !is_precompile,
+                        "{address:x} must not be reported as a precompile"
+                    );
+                    assert_eq!(extra_cost, 0);
+                }
+                _ => panic!("unexpected result"),
+            }
+        }
+
+        for address in [H160::zero(), hash(0), hash(11)] {
+            match <MetachainPrecompiles as PrecompileSet>::is_precompile(&precompiles, address, 0) {
+                IsPrecompileResult::Answer {
+                    is_precompile,
+                    extra_cost,
+                } => {
+                    assert!(!is_precompile, "{address:x} must not be a precompile");
+                    assert_eq!(extra_cost, 0);
+                }
+                _ => panic!("unexpected result"),
+            }
+        }
+    }
+
+    /// The inverted `is_precompile()` answer must not affect the precompile dispatch:
+    /// `execute()` still resolves the precompile addresses once `DF25Height` is active.
+    #[test]
+    fn test_execute_resolves_precompiles_when_df25_active() {
+        let precompiles = MetachainPrecompiles::new(0).with_df25_active(true);
+        let context = Context {
+            address: H160::zero(),
+            caller: H160::zero(),
+            apparent_value: Default::default(),
+        };
+
+        for (index, address) in MetachainPrecompiles::used_addresses().iter().enumerate() {
+            // The DST20 token split (0x..0a) requires a DST20 caller, it is skipped here.
+            if index == 9 {
+                continue;
+            }
+            let mut handle = MockHandle::new(vec![], *address, context.clone());
+            assert!(
+                <MetachainPrecompiles as PrecompileSet>::execute(&precompiles, &mut handle)
+                    .is_some(),
+                "{address:x} must still be dispatched as a precompile"
+            );
+            if index == 3 {
+                // The identity precompile (0x..04) costs 15 gas for an empty input.
+                assert_eq!(handle.gas_used, 15);
+            }
+        }
+
+        // An unregistered address is still not dispatched.
+        let mut handle = MockHandle::new(vec![], hash(11), context);
+        assert!(
+            <MetachainPrecompiles as PrecompileSet>::execute(&precompiles, &mut handle).is_none(),
+            "an unregistered address must not be dispatched as a precompile"
+        );
+    }
+
+    /// A minimal `PrecompileHandle` implementation for the tests above.
+    struct MockHandle {
+        input: Vec<u8>,
+        code_address: H160,
+        context: Context,
+        gas_used: u64,
+    }
+
+    impl MockHandle {
+        fn new(input: Vec<u8>, code_address: H160, context: Context) -> Self {
+            Self {
+                input,
+                code_address,
+                context,
+                gas_used: 0,
+            }
+        }
+    }
+
+    impl PrecompileHandle for MockHandle {
+        fn call(
+            &mut self,
+            _to: H160,
+            _transfer: Option<Transfer>,
+            _input: Vec<u8>,
+            _gas_limit: Option<u64>,
+            _is_static: bool,
+            _context: &Context,
+        ) -> (ExitReason, Vec<u8>) {
+            (ExitReason::Succeed(ExitSucceed::Returned), Vec::new())
+        }
+
+        fn record_cost(&mut self, cost: u64) -> Result<(), ExitError> {
+            self.gas_used += cost;
+            Ok(())
+        }
+
+        fn remaining_gas(&self) -> u64 {
+            u64::MAX
+        }
+
+        fn log(
+            &mut self,
+            _address: H160,
+            _topics: Vec<H256>,
+            _data: Vec<u8>,
+        ) -> Result<(), ExitError> {
+            Ok(())
+        }
+
+        fn code_address(&self) -> H160 {
+            self.code_address
+        }
+
+        fn input(&self) -> &[u8] {
+            &self.input
+        }
+
+        fn context(&self) -> &Context {
+            &self.context
+        }
+
+        fn is_static(&self) -> bool {
+            false
+        }
+
+        fn gas_limit(&self) -> Option<u64> {
+            Some(1_000_000)
+        }
+
+        fn storage(&self, _address: H160, _index: H256) -> H256 {
+            H256::zero()
+        }
+
+        fn basic(&self, _address: H160) -> Basic {
+            Basic {
+                balance: Default::default(),
+                nonce: Default::default(),
             }
         }
     }
