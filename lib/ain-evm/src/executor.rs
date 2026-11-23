@@ -97,8 +97,13 @@ impl<'backend> AinExecutor<'backend> {
     /// Read-only call
     pub fn call(&mut self, ctx: ExecutorContext) -> TxResponse {
         let metadata = StackSubstateMetadata::new(ctx.gas_limit, &Self::CONFIG);
+        let df25_active = self
+            .backend
+            .vicinity
+            .dvm_block
+            .is_some_and(|h| h >= ain_cpp_imports::get_df25_height());
         let state = MemoryStackState::new(metadata, self.backend);
-        let precompiles = MetachainPrecompiles::default();
+        let precompiles = MetachainPrecompiles::default().with_df25_active(df25_active);
         let mut executor = StackExecutor::new_with_precompiles(state, &Self::CONFIG, &precompiles);
         let access_list = ctx
             .access_list
@@ -173,11 +178,15 @@ impl<'backend> AinExecutor<'backend> {
         }
 
         let metadata = StackSubstateMetadata::new(ctx.gas_limit, &Self::CONFIG);
+        let dvm_block = block_ctx
+            .map(|ctx| ctx.dvm_block)
+            .or(self.backend.vicinity.dvm_block);
+        let df25_active = dvm_block.is_some_and(|h| h >= ain_cpp_imports::get_df25_height());
         let state = MemoryStackState::new(metadata, self.backend);
         let precompiles = if let Some(block_ctx) = block_ctx {
-            MetachainPrecompiles::new(block_ctx.mnview_ptr)
+            MetachainPrecompiles::new(block_ctx.mnview_ptr).with_df25_active(df25_active)
         } else {
-            MetachainPrecompiles::default()
+            MetachainPrecompiles::default().with_df25_active(df25_active)
         };
         let mut executor = StackExecutor::new_with_precompiles(state, &Self::CONFIG, &precompiles);
         let access_list = ctx

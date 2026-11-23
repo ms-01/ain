@@ -20,6 +20,7 @@ fn calculate_gas_cost(
     exponent: &BigUint,
     exponent_bytes: &[u8],
     mod_is_even: bool,
+    apply_even_mod_penalty: bool,
 ) -> u64 {
     fn calculate_multiplication_complexity(base_length: u64, mod_length: u64) -> u64 {
         let max_length = max(base_length, mod_length);
@@ -70,7 +71,11 @@ fn calculate_gas_cost(
         MIN_GAS_COST,
         multiplication_complexity * iteration_count / 3,
     )
-    .saturating_mul(if mod_is_even { 20 } else { 1 })
+    .saturating_mul(if apply_even_mod_penalty && mod_is_even {
+        20
+    } else {
+        1
+    })
 }
 
 /// Copy bytes from input to target.
@@ -106,8 +111,11 @@ fn read_input(source: &[u8], target: &mut [u8], source_offset: &mut usize) {
 //
 //       see: https://eips.ethereum.org/EIPS/eip-198
 
-impl Precompile for Modexp {
-    fn execute(handle: &mut impl PrecompileHandle) -> PrecompileResult {
+impl Modexp {
+    pub fn execute_with_even_mod_penalty(
+        handle: &mut impl PrecompileHandle,
+        apply_even_mod_penalty: bool,
+    ) -> PrecompileResult {
         let input = handle.input();
         let mut input_offset = 0;
 
@@ -183,6 +191,7 @@ impl Precompile for Modexp {
                 &exponent,
                 &exp_buf,
                 modulus.is_even(),
+                apply_even_mod_penalty,
             );
 
             handle.record_cost(gas_cost)?;
@@ -219,6 +228,12 @@ impl Precompile for Modexp {
                 exit_status: ExitError::Other("failed".into()),
             }),
         }
+    }
+}
+
+impl Precompile for Modexp {
+    fn execute(handle: &mut impl PrecompileHandle) -> PrecompileResult {
+        Self::execute_with_even_mod_penalty(handle, false)
     }
 }
 
@@ -496,10 +511,61 @@ mod tests {
             apparent_value: From::from(0),
         };
 
-        let mut handle = MockHandle::new(input, Some(100_000), context);
+        let mut handle_post_df25 = MockHandle::new(input.clone(), Some(200_000), context.clone());
+        let _ = Modexp::execute_with_even_mod_penalty(&mut handle_post_df25, false)
+            .expect("Modexp::execute_with_even_mod_penalty(false) returned error");
+        assert_eq!(handle_post_df25.gas_used, 7104); // EIP-2565 cost (post-DF25)
 
-        let _ = Modexp::execute(&mut handle).expect("Modexp::execute() returned error");
+        let mut handle_pre_df25 = MockHandle::new(input, Some(200_000), context);
+        let _ = Modexp::execute_with_even_mod_penalty(&mut handle_pre_df25, true)
+            .expect("Modexp::execute_with_even_mod_penalty(true) returned error");
+        assert_eq!(handle_pre_df25.gas_used, 7104 * 20); // legacy x20 cost for even modulus (pre-DF25)
+    }
 
-        assert_eq!(handle.gas_used, 7104 * 20); // gas used when ran in geth (x20)
+    #[test]
+    fn test_even_and_odd_modulus_gas_cost_pre_and_post_df25() {
+        let context: Context = Context {
+            address: Default::default(),
+            caller: Default::default(),
+            apparent_value: From::from(0),
+        };
+
+        let build_input = |base: u8, exp: u8, modulus: u8| {
+            let mut input = vec![0u8; 96];
+            input[31] = 1; // base_len = 1
+            input[63] = 1; // exp_len = 1
+            input[95] = 1; // mod_len = 1
+            input.extend_from_slice(&[base, exp, modulus]);
+            input
+        };
+
+        // 3^5 mod 7 = 5 (odd modulus): 200 gas both pre- and post-DF25
+        let odd_input = build_input(3, 5, 7);
+        let mut handle_odd_pre = MockHandle::new(odd_input.clone(), Some(10_000), context.clone());
+        let res_odd_pre = Modexp::execute_with_even_mod_penalty(&mut handle_odd_pre, true)
+            .expect("odd modexp pre-DF25");
+        assert_eq!(res_odd_pre.output, vec![5]);
+        assert_eq!(handle_odd_pre.gas_used, 200);
+
+        let mut handle_odd_post = MockHandle::new(odd_input, Some(10_000), context.clone());
+        let res_odd_post = Modexp::execute_with_even_mod_penalty(&mut handle_odd_post, false)
+            .expect("odd modexp post-DF25");
+        assert_eq!(res_odd_post.output, vec![5]);
+        assert_eq!(handle_odd_post.gas_used, 200);
+
+        // 3^5 mod 8 = 3 (even modulus): 4000 gas pre-DF25, 200 gas post-DF25
+        let even_input = build_input(3, 5, 8);
+        let mut handle_even_pre =
+            MockHandle::new(even_input.clone(), Some(10_000), context.clone());
+        let res_even_pre = Modexp::execute_with_even_mod_penalty(&mut handle_even_pre, true)
+            .expect("even modexp pre-DF25");
+        assert_eq!(res_even_pre.output, vec![3]);
+        assert_eq!(handle_even_pre.gas_used, 4000);
+
+        let mut handle_even_post = MockHandle::new(even_input, Some(10_000), context);
+        let res_even_post = Modexp::execute_with_even_mod_penalty(&mut handle_even_post, false)
+            .expect("even modexp post-DF25");
+        assert_eq!(res_even_post.output, vec![3]);
+        assert_eq!(handle_even_post.gas_used, 200);
     }
 }

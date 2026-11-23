@@ -521,11 +521,8 @@ class EVMPrecompileTest(DefiTestFramework):
     def test_modexp(self):
         """``modexp`` computes the modular exponentiation.
 
-        The cost follows EIP-2565 with a minimum of 200 gas.  The
-        implementation multiplies the cost by 20 for an even modulus
-        (``lib/ain-evm/src/precompiles/modexp.rs``), which is a deviation
-        from go-ethereum that is tracked in a separate issue and only
-        documented here.
+        The cost follows EIP-2565 with a minimum of 200 gas for both odd and
+        even moduli once DF25 is active (regtest default: ``DF25Height = 1``).
         """
         # 3^5 mod 7 = 5
         data = (
@@ -536,14 +533,14 @@ class EVMPrecompileTest(DefiTestFramework):
         )
         self.assert_precompile(MODEXP, data, bytes([5]), 200)
 
-        # 3^5 mod 8 = 3, the modulus is even, so the cost is 200 * 20.
+        # 3^5 mod 8 = 3, even modulus also costs 200 gas at/above DF25Height.
         data = (
             (1).to_bytes(32, "big")
             + (1).to_bytes(32, "big")
             + (1).to_bytes(32, "big")
             + bytes([3, 5, 8])
         )
-        self.assert_precompile(MODEXP, data, bytes([3]), 4000)
+        self.assert_precompile(MODEXP, data, bytes([3]), 200)
 
     def test_bn128_add(self):
         """``bn128Add`` adds two points and costs 150 gas."""

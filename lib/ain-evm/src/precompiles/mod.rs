@@ -89,13 +89,24 @@ fn ensure_linear_cost(
 }
 
 #[derive(Default)]
-pub struct MetachainPrecompiles(Option<usize>);
+pub struct MetachainPrecompiles {
+    mnview_ptr: Option<usize>,
+    df25_active: bool,
+}
 
 // Ethereum precompiles available as of shangai fork :
 // Ref: Ethereum Yellow Paper (https://ethereum.github.io/yellowpaper/paper.pdf) Page 12
 impl MetachainPrecompiles {
     pub fn new(mnview_ptr: usize) -> Self {
-        Self(Some(mnview_ptr))
+        Self {
+            mnview_ptr: Some(mnview_ptr),
+            df25_active: false,
+        }
+    }
+
+    pub fn with_df25_active(mut self, df25_active: bool) -> Self {
+        self.df25_active = df25_active;
+        self
     }
 
     pub fn used_addresses() -> [H160; 10] {
@@ -121,14 +132,17 @@ impl PrecompileSet for MetachainPrecompiles {
             a if a == hash(2) => Some(<Sha256 as Precompile>::execute(handle)),
             a if a == hash(3) => Some(<Ripemd160 as Precompile>::execute(handle)),
             a if a == hash(4) => Some(<Identity as Precompile>::execute(handle)),
-            a if a == hash(5) => Some(Modexp::execute(handle)),
+            a if a == hash(5) => Some(Modexp::execute_with_even_mod_penalty(
+                handle,
+                !self.df25_active,
+            )),
             a if a == hash(6) => Some(Bn128Add::execute(handle)),
             a if a == hash(7) => Some(Bn128Mul::execute(handle)),
             a if a == hash(8) => Some(Bn128Pairing::execute(handle)),
             a if a == hash(9) => Some(Blake2F::execute(handle)),
 
             a if a == hash(10) && is_dst20(handle.context().caller) => {
-                let mnview_ptr = self.0.unwrap_or_default(); // If None, should fetch from global view
+                let mnview_ptr = self.mnview_ptr.unwrap_or_default(); // If None, should fetch from global view
                 Some(TokenSplit::execute(handle, mnview_ptr))
             }
             _ => None,

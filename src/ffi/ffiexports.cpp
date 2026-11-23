@@ -600,6 +600,14 @@ uint64_t getDF24Height() {
     return Params().GetConsensus().DF24Height;
 }
 
+uint64_t getDF25Height() {
+    const auto height = Params().GetConsensus().DF25Height;
+    if (height == std::numeric_limits<int>::max()) {
+        return std::numeric_limits<uint64_t>::max();
+    }
+    return height < 0 ? 0 : static_cast<uint64_t>(height);
+}
+
 uint64_t getBalanceOverflowHeight() {
     // nBalanceOverflowHeight is an int and may be INT_MAX (disabled).
     // A negative value must not be wrapped around to a huge uint64_t,
