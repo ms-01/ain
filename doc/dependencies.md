@@ -15,7 +15,6 @@ These are the dependencies currently used by Bitcoin Core. You can find instruct
 | HarfBuzz-NG |  |  |  |  |  |
 | libpng |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk) |
 | librsvg | |  |  |  |  |
-| MiniUPnPc | [2.0.20180203](http://miniupnp.free.fr/files) |  | No |  |  |
 | OpenSSL | [1.0.1k](https://www.openssl.org/source) |  | Yes |  |  |
 | PCRE |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk) |
 | protobuf | [2.6.1](https://github.com/google/protobuf/releases) |  | No |  |  |
@@ -40,7 +39,6 @@ Controlling dependencies
 Some dependencies are not needed in all configurations. The following are some factors that affect the dependency list.
 
 #### Options passed to `./configure`
-* MiniUPnPc is not needed with  `--with-miniupnpc=no`.
 * Berkeley DB is not needed with `--disable-wallet`.
 * SQLite is not needed with `--disable-wallet` or `--without-sqlite`.
 * protobuf is not needed with `--disable-bip70`.

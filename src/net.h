@@ -75,12 +75,6 @@ static const bool DEFAULT_LISTEN = true;
 static const bool DEFAULT_I2P_ACCEPT_INCOMING = false;
 /** The default port of an I2P SAM v3 bridge. */
 static const int DEFAULT_I2P_SAM_PORT = 7656;
-/** -upnp default */
-#ifdef USE_UPNP
-static const bool DEFAULT_UPNP = USE_UPNP;
-#else
-static const bool DEFAULT_UPNP = false;
-#endif
 /** The maximum number of peer connections to maintain. */
 static const unsigned int DEFAULT_MAX_PEER_CONNECTIONS = 125;
 /** The default for -maxuploadtarget. 0 = Unlimited */
@@ -519,9 +513,6 @@ private:
 extern std::unique_ptr<CConnman> g_connman;
 extern std::unique_ptr<BanMan> g_banman;
 void Discover();
-void StartMapPort();
-void InterruptMapPort();
-void StopMapPort();
 unsigned short GetListenPort();
 
 struct CombinerAll
@@ -563,7 +554,6 @@ enum
     LOCAL_NONE,   // unknown
     LOCAL_IF,     // address a local interface listens on
     LOCAL_BIND,   // address explicit bound to
-    LOCAL_UPNP,   // address reported by UPnP
     LOCAL_MANUAL, // address explicitly specified (-externalip=)
 
     LOCAL_MAX
