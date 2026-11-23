@@ -30,7 +30,7 @@ use crate::{
     utils::{format_h256, format_u256, try_get_reverted_error_or_default},
 };
 
-use super::common::get_block;
+use super::common::{committed_block_number, pending_transactions, resolve_block};
 
 #[rpc(server, client, namespace = "eth")]
 pub trait MetachainRPC {
@@ -314,7 +314,12 @@ impl MetachainRPCServer for MetachainRPCModule {
         let gas_limit = u64::try_from(call.gas.unwrap_or(U256::from(block_gas_limit)))
             .map_err(to_custom_err)?;
 
-        let block = get_block(&self.handler.storage, block_number)?;
+        // The `pending` selector resolves explicitly to the latest committed
+        // block: the node cannot compute a faithful pending state, the mempool
+        // transactions are executed on the C++ side during block production.
+        // The pending state therefore does not show the mempool effects.
+        let resolved = resolve_block(&self.handler.storage, block_number)?;
+        let block = resolved.committed();
         let block_base_fee = block.header.base_fee;
         let gas_price = call.get_effective_gas_price()?.unwrap_or(block_base_fee);
 
@@ -359,7 +364,12 @@ impl MetachainRPCServer for MetachainRPCModule {
     // State RPC
 
     fn get_balance(&self, address: H160, block_number: Option<BlockNumber>) -> RpcResult<U256> {
-        let block = get_block(&self.handler.storage, block_number)?;
+        // The `pending` selector resolves explicitly to the latest committed
+        // block: the node cannot compute a faithful pending state, the mempool
+        // transactions are executed on the C++ side during block production.
+        // The pending state therefore does not show the mempool effects.
+        let resolved = resolve_block(&self.handler.storage, block_number)?;
+        let block = resolved.committed();
         trace!(target:"rpc",
             "Getting balance for address: {:?} at block : {} ",
             address, block.header.number
@@ -375,7 +385,12 @@ impl MetachainRPCServer for MetachainRPCModule {
     }
 
     fn get_code(&self, address: H160, block_number: Option<BlockNumber>) -> RpcResult<String> {
-        let block = get_block(&self.handler.storage, block_number)?;
+        // The `pending` selector resolves explicitly to the latest committed
+        // block: the node cannot compute a faithful pending state, the mempool
+        // transactions are executed on the C++ side during block production.
+        // The pending state therefore does not show the mempool effects.
+        let resolved = resolve_block(&self.handler.storage, block_number)?;
+        let block = resolved.committed();
 
         trace!(target:"rpc",
             "Getting code for address: {:?} at block : {}",
@@ -401,7 +416,12 @@ impl MetachainRPCServer for MetachainRPCModule {
         position: U256,
         block_number: Option<BlockNumber>,
     ) -> RpcResult<H256> {
-        let block = get_block(&self.handler.storage, block_number)?;
+        // The `pending` selector resolves explicitly to the latest committed
+        // block: the node cannot compute a faithful pending state, the mempool
+        // transactions are executed on the C++ side during block production.
+        // The pending state therefore does not show the mempool effects.
+        let resolved = resolve_block(&self.handler.storage, block_number)?;
+        let block = resolved.committed();
         trace!(target:"rpc",
             "Getting storage for address: {:?}, at position {:?}, for block {}",
             address, position, block.header.number
@@ -461,9 +481,17 @@ impl MetachainRPCServer for MetachainRPCModule {
         block_number: BlockNumber,
         full_transactions: Option<bool>,
     ) -> RpcResult<Option<RpcBlock>> {
-        let block_number = get_block(&self.handler.storage, Some(block_number))?
-            .header
-            .number;
+        let resolved = resolve_block(&self.handler.storage, Some(block_number))?;
+        // The pending block is synthetic, it does not exist in the storage and
+        // is therefore returned directly.
+        if let Some(pending) = resolved.pending() {
+            trace!(target:"rpc", "Getting the pending block");
+            return Ok(Some(RpcBlock::from_block_with_tx(
+                pending.clone(),
+                full_transactions.unwrap_or_default(),
+            )));
+        }
+        let block_number = resolved.committed().header.number;
         trace!(target:"rpc", "Getting block by number : {}", block_number);
         self.handler
             .storage
@@ -601,9 +629,13 @@ impl MetachainRPCServer for MetachainRPCModule {
     }
 
     fn get_block_transaction_count_by_number(&self, block_number: BlockNumber) -> RpcResult<usize> {
-        let block_number = get_block(&self.handler.storage, Some(block_number))?
-            .header
-            .number;
+        let resolved = resolve_block(&self.handler.storage, Some(block_number))?;
+        // The pending block carries the transactions that are currently in the
+        // mempool, it does not exist in the storage.
+        if let Some(pending) = resolved.pending() {
+            return Ok(pending.transactions.len());
+        }
+        let block_number = resolved.committed().header.number;
         self.handler
             .storage
             .get_block_by_number(&block_number)
@@ -746,12 +778,27 @@ impl MetachainRPCServer for MetachainRPCModule {
         block_number: Option<BlockNumber>,
     ) -> RpcResult<U256> {
         trace!(target:"rpc", "Getting transaction count for address: {:?}", address);
-        let block = get_block(&self.handler.storage, block_number)?;
+        let resolved = resolve_block(&self.handler.storage, block_number)?;
+        let block = resolved.committed();
         let nonce = self
             .handler
             .core
             .get_nonce(address, block.header.state_root)
             .map_err(to_custom_err)?;
+
+        // The pending nonce is the committed nonce plus the number of the
+        // transactions of that sender that are currently in the mempool. A
+        // transaction that cannot be decoded is not attributed to a sender, the
+        // committed nonce is returned for it.
+        let nonce = if resolved.is_pending() {
+            let pending = pending_transactions()
+                .into_iter()
+                .filter(|transaction| transaction.sender == address)
+                .count();
+            nonce + U256::from(pending)
+        } else {
+            nonce
+        };
 
         trace!(target:"rpc", "Count: {:#?}", nonce);
         Ok(nonce)
@@ -789,7 +836,12 @@ impl MetachainRPCServer for MetachainRPCModule {
         }
 
         // Get block base fee
-        let block = get_block(&self.handler.storage, block_number)?;
+        // The `pending` selector resolves explicitly to the latest committed
+        // block: the node cannot compute a faithful pending state, the mempool
+        // transactions are executed on the C++ side during block production.
+        // The pending state therefore does not show the mempool effects.
+        let resolved = resolve_block(&self.handler.storage, block_number)?;
+        let block = resolved.committed();
         let block_base_fee = block.header.base_fee;
 
         // Normalize the max fee per gas the call is willing to spend.
@@ -980,7 +1032,12 @@ impl MetachainRPCServer for MetachainRPCModule {
         let gas_limit = u64::try_from(call.gas.unwrap_or(U256::from(block_gas_limit)))
             .map_err(to_custom_err)?;
 
-        let block = get_block(&self.handler.storage, block_number)?;
+        // The `pending` selector resolves explicitly to the latest committed
+        // block: the node cannot compute a faithful pending state, the mempool
+        // transactions are executed on the C++ side during block production.
+        // The pending state therefore does not show the mempool effects.
+        let resolved = resolve_block(&self.handler.storage, block_number)?;
+        let block = resolved.committed();
         let block_base_fee = block.header.base_fee;
         let gas_price = call.get_effective_gas_price()?.unwrap_or(block_base_fee);
 
@@ -1016,9 +1073,10 @@ impl MetachainRPCServer for MetachainRPCModule {
         newest_block: BlockNumber,
         reward_percentile: Vec<i64>,
     ) -> RpcResult<RpcFeeHistory> {
-        let highest_block_number = get_block(&self.handler.storage, Some(newest_block))?
-            .header
-            .number;
+        // The pending block carries no fee history, the selector resolves
+        // explicitly to the latest committed block.
+        let highest_block_number =
+            committed_block_number(&self.handler.storage, Some(newest_block))?;
         let attrs = ain_cpp_imports::get_attribute_values(None);
 
         let fee_history = self
@@ -1096,11 +1154,12 @@ impl MetachainRPCServer for MetachainRPCModule {
                 // Allow future block number to be specified
                 Some(U256::from(block_num))
             } else {
-                Some(
-                    get_block(&self.handler.storage, input.from_block)?
-                        .header
-                        .number,
-                )
+                // The pending block carries no logs, the selector resolves
+                // explicitly to the latest committed block.
+                Some(committed_block_number(
+                    &self.handler.storage,
+                    input.from_block,
+                )?)
             }
         } else {
             None
@@ -1110,19 +1169,18 @@ impl MetachainRPCServer for MetachainRPCModule {
                 // Allow future block number to be specified
                 Some(U256::from(block_num))
             } else {
-                Some(
-                    get_block(&self.handler.storage, input.to_block)?
-                        .header
-                        .number,
-                )
+                // The pending block carries no logs, the selector resolves
+                // explicitly to the latest committed block.
+                Some(committed_block_number(
+                    &self.handler.storage,
+                    input.to_block,
+                )?)
             }
         } else {
             None
         };
         let topics = input.topics.map(|topics| topics.into_filter_topics());
-        let curr_block = get_block(&self.handler.storage, Some(BlockNumber::Latest))?
-            .header
-            .number;
+        let curr_block = committed_block_number(&self.handler.storage, Some(BlockNumber::Latest))?;
         let mut criteria = FilterCriteria {
             block_hash: input.block_hash,
             from_block,
@@ -1147,11 +1205,12 @@ impl MetachainRPCServer for MetachainRPCModule {
                 // Allow future block number to be specified
                 Some(U256::from(block_num))
             } else {
-                Some(
-                    get_block(&self.handler.storage, input.from_block)?
-                        .header
-                        .number,
-                )
+                // The pending block carries no logs, the selector resolves
+                // explicitly to the latest committed block.
+                Some(committed_block_number(
+                    &self.handler.storage,
+                    input.from_block,
+                )?)
             }
         } else {
             None
@@ -1161,19 +1220,18 @@ impl MetachainRPCServer for MetachainRPCModule {
                 // Allow future block number to be specified
                 Some(U256::from(block_num))
             } else {
-                Some(
-                    get_block(&self.handler.storage, input.to_block)?
-                        .header
-                        .number,
-                )
+                // The pending block carries no logs, the selector resolves
+                // explicitly to the latest committed block.
+                Some(committed_block_number(
+                    &self.handler.storage,
+                    input.to_block,
+                )?)
             }
         } else {
             None
         };
         let topics = input.topics.map(|topics| topics.into_filter_topics());
-        let curr_block = get_block(&self.handler.storage, Some(BlockNumber::Latest))?
-            .header
-            .number;
+        let curr_block = committed_block_number(&self.handler.storage, Some(BlockNumber::Latest))?;
         let mut criteria = FilterCriteria {
             from_block,
             to_block,
@@ -1202,9 +1260,7 @@ impl MetachainRPCServer for MetachainRPCModule {
 
     fn get_filter_changes(&self, filter_id: U256) -> RpcResult<GetFilterChangesResult> {
         let filter_id = usize::try_from(filter_id).map_err(to_custom_err)?;
-        let curr_block = get_block(&self.handler.storage, Some(BlockNumber::Latest))?
-            .header
-            .number;
+        let curr_block = committed_block_number(&self.handler.storage, Some(BlockNumber::Latest))?;
         let res = self
             .handler
             .filters
@@ -1221,9 +1277,7 @@ impl MetachainRPCServer for MetachainRPCModule {
 
     fn get_filter_logs(&self, filter_id: U256) -> RpcResult<Vec<LogResult>> {
         let filter_id = usize::try_from(filter_id).map_err(to_custom_err)?;
-        let curr_block = get_block(&self.handler.storage, Some(BlockNumber::Latest))?
-            .header
-            .number;
+        let curr_block = committed_block_number(&self.handler.storage, Some(BlockNumber::Latest))?;
         let logs = self
             .handler
             .filters

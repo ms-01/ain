@@ -24,7 +24,7 @@ use crate::{
     trace::{handle_trace_params, TraceParams},
 };
 
-use super::common::get_block;
+use super::common::{resolve_block, selector_kind, SelectorKind};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct FeeEstimate {
@@ -165,7 +165,10 @@ impl MetachainDebugRPCServer for MetachainDebugRPCModule {
         let gas_limit = u64::try_from(call.gas.unwrap_or(U256::from(block_gas_limit)))
             .map_err(to_custom_err)?;
 
-        let block = get_block(&self.handler.storage, Some(block_number))?;
+        // The `pending` selector resolves explicitly to the latest committed
+        // block, the pending block cannot be executed against.
+        let resolved = resolve_block(&self.handler.storage, Some(block_number))?;
+        let block = resolved.committed();
         let block_base_fee = block.header.base_fee;
         let gas_price = call.get_effective_gas_price()?.unwrap_or(block_base_fee);
 
@@ -203,8 +206,15 @@ impl MetachainDebugRPCServer for MetachainDebugRPCModule {
             usize::try_from(ain_cpp_imports::get_tracing_raw_max_memory_usage_bytes())
                 .map_err(|_| to_custom_err("failed to convert response size limit to usize"))?;
 
+        // The pending block is synthetic, it does not exist in the chain and
+        // can therefore not be traced.
+        if selector_kind(&block_number) == SelectorKind::Pending {
+            return Err(to_custom_err("pending block cannot be traced"));
+        }
+
         // Get block
-        let trace_block = get_block(&self.handler.storage, Some(block_number))?;
+        let resolved = resolve_block(&self.handler.storage, Some(block_number))?;
+        let trace_block = resolved.committed().clone();
         let res = self
             .handler
             .tracer
