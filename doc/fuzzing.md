@@ -90,6 +90,31 @@ make
 The fuzzer needs some inputs to work on, but the inputs or seeds can be used
 interchangeably between libFuzzer and AFL.
 
+### Non-PIE sanitizer builds
+
+Sanitizer builds are linked as non-PIE executables by `configure` itself. The
+sanitizer runtimes reserve a large, fixed address range for their primary
+allocator (for example ASan reserves `0x600000000000`-`0x700000000000`) with
+`mmap(MAP_FIXED)`. If the kernel loads the randomized address of a PIE image
+into such a reservation, the reservation replaces the image mapping and the
+process dies with `SIGSEGV` before `main()` is reached. The startup failure is
+intermittent, because it depends on the randomized load address.
+
+`configure` adds `-no-pie` to the link flags whenever PIE is enabled and a
+sanitizer with a fixed address space reservation (`address`, `fuzzer`, `memory`
+or `thread`) is requested; the decision is printed in the `configure` summary:
+
+```
+  sanitizers          = fuzzer,address,undefined
+  pie                 = disabled (sanitizer build)
+```
+
+Because `configure` places the flag after the hardening flags, an explicit
+`LDFLAGS=-pie` still overrides it and re-introduces the startup crash. The
+`ci/fuzz/main.sh` helper detects this: it verifies that a sanitizer-instrumented
+fuzz binary is linked non-PIE (`ET_EXEC`) and starts it repeatedly. It is run
+by the `Fuzz` CI workflow.
+
 See https://llvm.org/docs/LibFuzzer.html#running on how to run the libFuzzer
 instrumented executable.
 

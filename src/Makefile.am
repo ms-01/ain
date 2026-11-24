@@ -5,7 +5,11 @@
 SUBDIRS = ../lib
 DIST_SUBDIRS = secp256k1
 
-AM_LDFLAGS = $(PTHREAD_CFLAGS) $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) $(GPROF_LDFLAGS) $(SANITIZER_LDFLAGS)
+# Note: $(SANITIZER_NO_PIE_LDFLAGS) must come after $(HARDENED_LDFLAGS), because the
+# compiler driver honours the last of -pie / -no-pie. Automake appends the
+# user-supplied $(LDFLAGS) after $(AM_LDFLAGS), so an explicit LDFLAGS=-pie still
+# overrides the automatic flag and re-introduces the sanitizer startup crash.
+AM_LDFLAGS = $(PTHREAD_CFLAGS) $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS) $(GPROF_LDFLAGS) $(SANITIZER_LDFLAGS) $(SANITIZER_NO_PIE_LDFLAGS)
 AM_CXXFLAGS = $(DEBUG_CXXFLAGS) $(HARDENED_CXXFLAGS) $(WARN_CXXFLAGS) $(NOWARN_CXXFLAGS) $(ERROR_CXXFLAGS) $(GPROF_CXXFLAGS) $(SANITIZER_CXXFLAGS)
 AM_CPPFLAGS = $(DEBUG_CPPFLAGS) $(HARDENED_CPPFLAGS)
 AM_LIBTOOLFLAGS = --preserve-dup-deps
