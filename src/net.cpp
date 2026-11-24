@@ -1849,7 +1849,7 @@ void CConnman::DisconnectNodes()
 
                 if (pnode->m_transport->ShouldReconnectV1()) {
                     LogPrint(BCLog::NET, "retrying with v1 transport for peer=%d (%s)\n", pnode->GetId(), pnode->addr.ToString());
-                    m_reconnections.push_back({pnode->addr, pnode->m_manual_connection});
+                    m_reconnections.push_back({pnode->addr, pnode->addrName, pnode->m_manual_connection});
                 }
 
                 // hold in disconnected pool until all refs are released
@@ -2607,7 +2607,7 @@ void CConnman::ThreadOpenAddedConnections()
             reconnections.splice(reconnections.end(), m_reconnections);
         }
         for (const auto& info : reconnections) {
-            OpenNetworkConnection(info.addr, false, nullptr, nullptr, false, false, info.manual_connection, /*use_v2transport=*/false);
+            OpenNetworkConnection(info.addr, false, nullptr, info.addr_name.empty() ? nullptr : info.addr_name.c_str(), false, false, info.manual_connection, /*use_v2transport=*/false);
         }
 
         CSemaphoreGrant grant(*semAddnode);

@@ -479,6 +479,7 @@ private:
     bool m_use_v2transport{false};
     struct ReconnectionInfo {
         CAddress addr;
+        std::string addr_name;
         bool manual_connection;
     };
     std::list<ReconnectionInfo> m_reconnections GUARDED_BY(cs_vNodes);
