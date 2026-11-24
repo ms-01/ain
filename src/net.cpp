@@ -630,6 +630,173 @@ void CNode::copyStats(CNodeStats &stats)
 }
 #undef X
 
+std::string TransportTypeAsString(TransportProtocolType transport_type)
+{
+    switch (transport_type) {
+    case TransportProtocolType::DETECTING: return "detecting";
+    case TransportProtocolType::V1: return "v1";
+    case TransportProtocolType::V2: return "v2";
+    }
+    assert(false);
+}
+
+V1Transport::V1Transport(const NodeId node_id) noexcept
+    : m_magic_bytes{Params().MessageStartPostAMK()[0], Params().MessageStartPostAMK()[1],
+                    Params().MessageStartPostAMK()[2], Params().MessageStartPostAMK()[3]},
+      m_node_id{node_id},
+      hdrbuf(SER_NETWORK, INIT_PROTO_VERSION), hdr(m_magic_bytes), vRecv(SER_NETWORK, INIT_PROTO_VERSION)
+{
+    LOCK(m_recv_mutex);
+    Reset();
+}
+
+Transport::Info V1Transport::GetInfo() const noexcept
+{
+    return {.transport_type = TransportProtocolType::V1, .session_id = std::nullopt};
+}
+
+int V1Transport::readHeader(std::span<const uint8_t> msg_bytes)
+{
+    AssertLockHeld(m_recv_mutex);
+    unsigned int nRemaining = CMessageHeader::HEADER_SIZE - nHdrPos;
+    unsigned int nCopy = std::min<unsigned int>(nRemaining, msg_bytes.size());
+
+    memcpy(&hdrbuf[nHdrPos], msg_bytes.data(), nCopy);
+    nHdrPos += nCopy;
+
+    if (nHdrPos < CMessageHeader::HEADER_SIZE)
+        return nCopy;
+
+    try {
+        hdrbuf >> hdr;
+    }
+    catch (const std::exception&) {
+        LogPrint(BCLog::NET, "Header error: Unable to deserialize, peer=%d\n", m_node_id);
+        return -1;
+    }
+
+    if (memcmp(hdr.pchMessageStart, m_magic_bytes, CMessageHeader::MESSAGE_START_SIZE) != 0) {
+        LogPrint(BCLog::NET, "PROCESSMESSAGE: INVALID MESSAGESTART %s peer=%d\n", SanitizeString(hdr.GetCommand()), m_node_id);
+        return -1;
+    }
+
+    if (hdr.nMessageSize > MAX_DESER_SIZE || hdr.nMessageSize > MAX_PROTOCOL_MESSAGE_LENGTH) {
+        LogPrint(BCLog::NET, "Oversized message from peer=%i, disconnecting\n", m_node_id);
+        return -1;
+    }
+
+    in_data = true;
+    return nCopy;
+}
+
+int V1Transport::readData(std::span<const uint8_t> msg_bytes)
+{
+    AssertLockHeld(m_recv_mutex);
+    unsigned int nRemaining = hdr.nMessageSize - nDataPos;
+    unsigned int nCopy = std::min<unsigned int>(nRemaining, msg_bytes.size());
+
+    if (vRecv.size() < nDataPos + nCopy) {
+        vRecv.resize(std::min(hdr.nMessageSize, nDataPos + nCopy + 256 * 1024));
+    }
+
+    hasher.Write(msg_bytes.data(), nCopy);
+    memcpy(&vRecv[nDataPos], msg_bytes.data(), nCopy);
+    nDataPos += nCopy;
+
+    return nCopy;
+}
+
+const uint256& V1Transport::GetMessageHash() const
+{
+    AssertLockHeld(m_recv_mutex);
+    assert(CompleteInternal());
+    if (data_hash.IsNull())
+        hasher.Finalize(data_hash.begin());
+    return data_hash;
+}
+
+CNetMessage V1Transport::GetReceivedMessage(int64_t time, bool& reject_message)
+{
+    reject_message = false;
+    LOCK(m_recv_mutex);
+    CNetMessage msg(std::move(vRecv));
+
+    msg.m_type = hdr.GetCommand();
+    msg.m_time = time;
+    msg.m_message_size = hdr.nMessageSize;
+    msg.m_raw_message_size = hdr.nMessageSize + CMessageHeader::HEADER_SIZE;
+
+    uint256 hash = GetMessageHash();
+
+    if (memcmp(hash.begin(), hdr.pchChecksum, CMessageHeader::CHECKSUM_SIZE) != 0) {
+        LogPrint(BCLog::NET, "%s(%s, %u bytes): CHECKSUM ERROR expected %s was %s\n", __func__,
+            SanitizeString(msg.m_type), msg.m_message_size,
+            HexStr(hash.begin(), hash.begin() + CMessageHeader::CHECKSUM_SIZE),
+            HexStr(hdr.pchChecksum, hdr.pchChecksum + CMessageHeader::CHECKSUM_SIZE));
+        reject_message = true;
+    } else if (!hdr.IsValid(m_magic_bytes)) {
+        LogPrint(BCLog::NET, "PROCESSMESSAGE: ERRORS IN HEADER %s peer=%d\n", SanitizeString(msg.m_type), m_node_id);
+        reject_message = true;
+    }
+
+    Reset();
+    return msg;
+}
+
+bool V1Transport::SetMessageToSend(CSerializedNetMsg& msg) noexcept
+{
+    LOCK(m_send_mutex);
+    if (m_sending_header || m_bytes_sent < m_message_to_send.data.size()) return false;
+
+    uint256 hash = Hash(msg.data.data(), msg.data.data() + msg.data.size());
+    CMessageHeader hdr_out(m_magic_bytes, msg.command.c_str(), msg.data.size());
+    memcpy(hdr_out.pchChecksum, hash.begin(), CMessageHeader::CHECKSUM_SIZE);
+
+    m_header_to_send.clear();
+    m_header_to_send.reserve(CMessageHeader::HEADER_SIZE);
+    CVectorWriter{SER_NETWORK, INIT_PROTO_VERSION, m_header_to_send, 0, hdr_out};
+
+    m_message_to_send = std::move(msg);
+    m_sending_header = true;
+    m_bytes_sent = 0;
+    return true;
+}
+
+Transport::BytesToSend V1Transport::GetBytesToSend(bool have_next_message) const noexcept
+{
+    LOCK(m_send_mutex);
+    if (m_sending_header) {
+        return {std::span{m_header_to_send}.subspan(m_bytes_sent),
+                have_next_message || !m_message_to_send.data.empty(),
+                m_message_to_send.command};
+    } else {
+        return {std::span{m_message_to_send.data}.subspan(m_bytes_sent),
+                have_next_message,
+                m_message_to_send.command};
+    }
+}
+
+void V1Transport::MarkBytesSent(size_t bytes_sent) noexcept
+{
+    LOCK(m_send_mutex);
+    m_bytes_sent += bytes_sent;
+    if (m_sending_header && m_bytes_sent == m_header_to_send.size()) {
+        m_sending_header = false;
+        m_bytes_sent = 0;
+        m_header_to_send.clear();
+    } else if (!m_sending_header && m_bytes_sent == m_message_to_send.data.size()) {
+        m_bytes_sent = 0;
+        m_message_to_send.data.clear();
+        m_message_to_send.data.shrink_to_fit();
+    }
+}
+
+size_t V1Transport::GetSendMemoryUsage() const noexcept
+{
+    LOCK(m_send_mutex);
+    return m_header_to_send.size() + m_message_to_send.data.size();
+}
+
 bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete)
 {
     complete = false;
@@ -637,43 +804,28 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete
     LOCK(cs_vRecv);
     nLastRecv = nTimeMicros / 1000000;
     nRecvBytes += nBytes;
-    while (nBytes > 0) {
-
-        // get current incomplete message, or create a new one
-        if (vRecvMsg.empty() ||
-            vRecvMsg.back().complete())
-            vRecvMsg.push_back(CNetMessage(Params().MessageStartPostAMK(), SER_NETWORK, INIT_PROTO_VERSION));
-
-        CNetMessage& msg = vRecvMsg.back();
-
-        // absorb network data
-        int handled;
-        if (!msg.in_data)
-            handled = msg.readHeader(pch, nBytes);
-        else
-            handled = msg.readData(pch, nBytes);
-
-        if (handled < 0)
-            return false;
-
-        if (msg.in_data && msg.hdr.nMessageSize > MAX_PROTOCOL_MESSAGE_LENGTH) {
-            LogPrint(BCLog::NET, "Oversized message from peer=%i, disconnecting\n", GetId());
+    std::span<const uint8_t> msg_bytes{UCharCast(pch), nBytes};
+    while (!msg_bytes.empty()) {
+        if (!m_transport->ReceivedBytes(msg_bytes)) {
             return false;
         }
-
-        pch += handled;
-        nBytes -= handled;
-
-        if (msg.complete()) {
-            //store received bytes per message command
-            //to prevent a memory DOS, only allow valid commands
-            mapMsgCmdSize::iterator i = mapRecvBytesPerMsgCmd.find(msg.hdr.pchCommand);
+        if (m_transport->ReceivedMessageComplete()) {
+            bool reject_message{false};
+            CNetMessage msg = m_transport->GetReceivedMessage(nTimeMicros, reject_message);
+            if (reject_message) {
+                mapMsgCmdSize::iterator i = mapRecvBytesPerMsgCmd.find(NET_MESSAGE_COMMAND_OTHER);
+                assert(i != mapRecvBytesPerMsgCmd.end());
+                i->second += msg.m_raw_message_size;
+                continue;
+            }
+            // Store received bytes per message command; to prevent a memory DoS, only allow valid commands
+            mapMsgCmdSize::iterator i = mapRecvBytesPerMsgCmd.find(msg.m_type);
             if (i == mapRecvBytesPerMsgCmd.end())
                 i = mapRecvBytesPerMsgCmd.find(NET_MESSAGE_COMMAND_OTHER);
             assert(i != mapRecvBytesPerMsgCmd.end());
-            i->second += msg.hdr.nMessageSize + CMessageHeader::HEADER_SIZE;
+            i->second += msg.m_raw_message_size;
 
-            msg.nTime = nTimeMicros;
+            vRecvMsg.push_back(std::move(msg));
             complete = true;
         }
     }
@@ -708,113 +860,56 @@ int CNode::GetSendVersion() const
 }
 
 
-int CNetMessage::readHeader(const char *pch, unsigned int nBytes)
-{
-    // copy data to temporary parsing buffer
-    unsigned int nRemaining = 24 - nHdrPos;
-    unsigned int nCopy = std::min(nRemaining, nBytes);
-
-    memcpy(&hdrbuf[nHdrPos], pch, nCopy);
-    nHdrPos += nCopy;
-
-    // if header incomplete, exit
-    if (nHdrPos < 24)
-        return nCopy;
-
-    // deserialize to CMessageHeader
-    try {
-        hdrbuf >> hdr;
-    }
-    catch (const std::exception&) {
-        return -1;
-    }
-
-    // reject messages larger than MAX_SIZE
-    if (hdr.nMessageSize > MAX_DESER_SIZE) {
-        error("Reject messages larger than max deserialization size: (%u > %u)", hdr.nMessageSize, MAX_DESER_SIZE);
-        return -1;
-    }
-
-    // switch state to reading message data
-    in_data = true;
-
-    return nCopy;
-}
-
-int CNetMessage::readData(const char *pch, unsigned int nBytes)
-{
-    unsigned int nRemaining = hdr.nMessageSize - nDataPos;
-    unsigned int nCopy = std::min(nRemaining, nBytes);
-
-    if (vRecv.size() < nDataPos + nCopy) {
-        // Allocate up to 256 KiB ahead, but never more than the total message size.
-        vRecv.resize(std::min(hdr.nMessageSize, nDataPos + nCopy + 256 * 1024));
-    }
-
-    hasher.Write((const unsigned char*)pch, nCopy);
-    memcpy(&vRecv[nDataPos], pch, nCopy);
-    nDataPos += nCopy;
-
-    return nCopy;
-}
-
-const uint256& CNetMessage::GetMessageHash() const
-{
-    assert(complete());
-    if (data_hash.IsNull())
-        hasher.Finalize(data_hash.begin());
-    return data_hash;
-}
-
 size_t CConnman::SocketSendData(CNode *pnode) const EXCLUSIVE_LOCKS_REQUIRED(pnode->cs_vSend)
 {
-    auto it = pnode->vSendMsg.begin();
     size_t nSentSize = 0;
+    bool sent_something = false;
 
-    while (it != pnode->vSendMsg.end()) {
-        const auto &data = *it;
-        assert(data.size() > pnode->nSendOffset);
+    while (true) {
+        auto [data, more, msg_type] = pnode->m_transport->GetBytesToSend(!pnode->vSendMsg.empty());
+        if (data.empty() && !pnode->vSendMsg.empty()) {
+            size_t front_size = pnode->vSendMsg.front().data.size();
+            if (pnode->m_transport->SetMessageToSend(pnode->vSendMsg.front())) {
+                pnode->vSendMsg.pop_front();
+                pnode->nSendSize -= front_size;
+                continue;
+            } else {
+                break;
+            }
+        }
+        if (data.empty()) break;
+
         int nBytes = 0;
         {
             LOCK(pnode->cs_hSocket);
             if (pnode->hSocket == INVALID_SOCKET)
                 break;
-            nBytes = send(pnode->hSocket, reinterpret_cast<const char*>(data.data()) + pnode->nSendOffset, data.size() - pnode->nSendOffset, MSG_NOSIGNAL | MSG_DONTWAIT);
+            nBytes = send(pnode->hSocket, reinterpret_cast<const char*>(data.data()), data.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
         }
         if (nBytes > 0) {
             pnode->nLastSend = GetSystemTimeInSeconds();
             pnode->nSendBytes += nBytes;
-            pnode->nSendOffset += nBytes;
             nSentSize += nBytes;
-            if (pnode->nSendOffset == data.size()) {
-                pnode->nSendOffset = 0;
-                pnode->nSendSize -= data.size();
-                pnode->fPauseSend = pnode->nSendSize > nSendBufferMaxSize;
-                it++;
-            } else {
-                // could not send full message; stop sending more
+            sent_something = true;
+            pnode->m_transport->MarkBytesSent(nBytes);
+            pnode->fPauseSend = (pnode->nSendSize + pnode->m_transport->GetSendMemoryUsage()) > nSendBufferMaxSize;
+            if (static_cast<size_t>(nBytes) != data.size()) {
+                // could not send full buffer; stop sending more
                 break;
             }
         } else {
             if (nBytes < 0) {
-                // error
                 int nErr = WSAGetLastError();
-                if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
-                {
+                if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS) {
                     LogPrintf("socket send error %s\n", NetworkErrorString(nErr));
                     pnode->CloseSocketDisconnect();
                 }
             }
-            // couldn't send anything at all
             break;
         }
     }
 
-    if (it == pnode->vSendMsg.end()) {
-        assert(pnode->nSendOffset == 0);
-        assert(pnode->nSendSize == 0);
-    }
-    pnode->vSendMsg.erase(pnode->vSendMsg.begin(), it);
+    (void)sent_something;
     return nSentSize;
 }
 
@@ -1313,7 +1408,8 @@ bool CConnman::GenerateSelectSet(std::set<SOCKET> &recv_set, std::set<SOCKET> &s
             bool select_send;
             {
                 LOCK(pnode->cs_vSend);
-                select_send = !pnode->vSendMsg.empty();
+                const auto [to_send, more, _] = pnode->m_transport->GetBytesToSend(!pnode->vSendMsg.empty());
+                select_send = !to_send.empty() || more;
             }
 
             LOCK(pnode->cs_hSocket);
@@ -1518,15 +1614,12 @@ void CConnman::SocketHandler()
                 RecordBytesRecv(nBytes);
                 if (notify) {
                     size_t nSizeAdded = 0;
-                    auto it(pnode->vRecvMsg.begin());
-                    for (; it != pnode->vRecvMsg.end(); ++it) {
-                        if (!it->complete())
-                            break;
-                        nSizeAdded += it->vRecv.size() + CMessageHeader::HEADER_SIZE;
+                    for (const auto& msg : pnode->vRecvMsg) {
+                        nSizeAdded += msg.m_raw_message_size;
                     }
                     {
                         LOCK(pnode->cs_vProcessMsg);
-                        pnode->vProcessMsg.splice(pnode->vProcessMsg.end(), pnode->vRecvMsg, pnode->vRecvMsg.begin(), it);
+                        pnode->vProcessMsg.splice(pnode->vProcessMsg.end(), pnode->vRecvMsg);
                         pnode->nProcessQueueSize += nSizeAdded;
                         pnode->fPauseRecv = pnode->nProcessQueueSize > nReceiveFloodSize;
                     }
@@ -2742,8 +2835,9 @@ int CConnman::GetBestHeight() const
 
 unsigned int CConnman::GetReceiveFloodSize() const { return nReceiveFloodSize; }
 
-CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress& addrBindIn, uint64_t networkKeyIn, const std::string& addrNameIn, bool fInboundIn)
-    : nTimeConnected(GetSystemTimeInSeconds()),
+CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress& addrBindIn, uint64_t networkKeyIn, const std::string& addrNameIn, bool fInboundIn, std::unique_ptr<Transport> transport)
+    : m_transport(transport ? std::move(transport) : std::make_unique<V1Transport>(idIn)),
+    nTimeConnected(GetSystemTimeInSeconds()),
     addr(addrIn),
     addrBind(addrBindIn),
     fInbound(fInboundIn),
@@ -2789,33 +2883,24 @@ void CConnman::PushMessage(CNode* pnode, CSerializedNetMsg&& msg)
 {
     size_t nMessageSize = msg.data.size();
     size_t nTotalSize = nMessageSize + CMessageHeader::HEADER_SIZE;
-    LogPrint(BCLog::NET, "sending %s (%d bytes) peer=%d\n",  SanitizeString(msg.command.c_str()), nMessageSize, pnode->GetId());
-
-    std::vector<unsigned char> serializedHeader;
-    serializedHeader.reserve(CMessageHeader::HEADER_SIZE);
-    uint256 hash = Hash(msg.data.data(), msg.data.data() + nMessageSize);
-    CMessageHeader hdr(Params().MessageStartPostAMK(), msg.command.c_str(), nMessageSize);
-    memcpy(hdr.pchChecksum, hash.begin(), CMessageHeader::CHECKSUM_SIZE);
-
-    CVectorWriter{SER_NETWORK, INIT_PROTO_VERSION, serializedHeader, 0, hdr};
+    LogPrint(BCLog::NET, "sending %s (%d bytes) peer=%d\n", SanitizeString(msg.command.c_str()), nMessageSize, pnode->GetId());
 
     size_t nBytesSent = 0;
     {
         LOCK(pnode->cs_vSend);
-        bool optimisticSend(pnode->vSendMsg.empty());
+        const auto [to_send, more, _] = pnode->m_transport->GetBytesToSend(!pnode->vSendMsg.empty());
+        bool optimisticSend = to_send.empty() && !more && pnode->vSendMsg.empty();
 
-        //log total amount of bytes per command
+        // log total amount of bytes per command
         pnode->mapSendBytesPerMsgCmd[msg.command] += nTotalSize;
-        pnode->nSendSize += nTotalSize;
+        pnode->nSendSize += nMessageSize;
+        pnode->vSendMsg.push_back(std::move(msg));
 
-        if (pnode->nSendSize > nSendBufferMaxSize)
+        if (pnode->nSendSize + pnode->m_transport->GetSendMemoryUsage() > nSendBufferMaxSize)
             pnode->fPauseSend = true;
-        pnode->vSendMsg.push_back(std::move(serializedHeader));
-        if (nMessageSize)
-            pnode->vSendMsg.push_back(std::move(msg.data));
 
         // If write queue empty, attempt "optimistic write"
-        if (optimisticSend == true)
+        if (optimisticSend)
             nBytesSent = SocketSendData(pnode);
     }
     if (nBytesSent)
