@@ -91,6 +91,7 @@ impl FilterCriteria {
         if self.block_hash.is_some() && (self.from_block.is_some() || self.to_block.is_some()) {
             return Err(FilterError::InvalidFilter.into());
         }
+        self.verify_topics()?;
         if self.block_hash.is_none() {
             let from_block = if let Some(from) = self.from_block {
                 from
@@ -110,7 +111,6 @@ impl FilterCriteria {
             if to_block - from_block > BLOCK_RANGE_LIMIT {
                 return Err(FilterError::ExceedBlockRange.into());
             }
-            self.verify_topics()?;
             self.from_block = Some(from_block);
             self.to_block = Some(to_block);
         }
@@ -751,6 +751,51 @@ mod tests {
         assert_eq!(criteria.from_block, None);
         assert_eq!(criteria.to_block, None);
         assert_eq!(criteria.block_hash, Some(H256::from_low_u64_be(1)));
+    }
+
+    #[test]
+    fn verify_criteria_rejects_more_than_four_topics_with_block_hash() {
+        let mut criteria = FilterCriteria {
+            block_hash: Some(H256::from_low_u64_be(1)),
+            topics: Some(vec![vec![H256::zero()]; MAX_TOPICS + 1]),
+            ..Default::default()
+        };
+        let err = criteria.verify_criteria(U256::from(100)).unwrap_err();
+        assert!(
+            err.to_string().contains("exceed max topics"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(criteria.from_block, None);
+        assert_eq!(criteria.to_block, None);
+    }
+
+    #[test]
+    fn verify_criteria_accepts_up_to_four_topics_with_block_hash() {
+        for count in 0..=MAX_TOPICS {
+            let mut criteria = FilterCriteria {
+                block_hash: Some(H256::from_low_u64_be(1)),
+                topics: Some(vec![vec![H256::zero()]; count]),
+                ..Default::default()
+            };
+            criteria.verify_criteria(U256::from(100)).unwrap();
+            assert_eq!(criteria.from_block, None);
+            assert_eq!(criteria.to_block, None);
+        }
+    }
+
+    #[test]
+    fn verify_criteria_prefers_invalid_filter_over_exceed_max_topics() {
+        let mut criteria = FilterCriteria {
+            block_hash: Some(H256::from_low_u64_be(1)),
+            from_block: Some(U256::from(1)),
+            topics: Some(vec![vec![H256::zero()]; MAX_TOPICS + 1]),
+            ..Default::default()
+        };
+        let err = criteria.verify_criteria(U256::from(100)).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid filter"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

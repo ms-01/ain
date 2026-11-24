@@ -667,6 +667,16 @@ class EVMTest(DefiTestFramework):
             self.nodes[0].eth_getLogs,
             {"topics": invalid_topics},
         )
+        assert_raises_rpc_error(
+            -32001,
+            "exceed max topics",
+            self.nodes[0].eth_getLogs,
+            {"blockHash": blockhash, "topics": invalid_topics},
+        )
+        # Up to MAX_TOPICS (4) topic positions with blockHash remains accepted
+        valid_topics = invalid_topics[:4]
+        assert_equal(len(valid_topics), 4)
+        self.nodes[0].eth_getLogs({"blockHash": blockhash, "topics": valid_topics})
 
         # Exceed max block range limit
         assert_raises_rpc_error(
