@@ -395,7 +395,7 @@ static CAddress NormalizeI2PAddress(const CAddress& addr)
     return CAddress(i2p::NormalizeI2PService(addr), addr.nServices);
 }
 
-CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, bool manual_connection)
+CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, bool manual_connection, bool use_v2transport)
 {
     // I2P destinations are portless: normalize the port before the address is
     // compared with the addresses of the already connected peers.
@@ -512,7 +512,8 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
     // For outbound connections, the port of the bound address is randomly
     // assigned by the OS and would therefore not be useful for seeding.
     const uint64_t network_key = m_addr_response_cache.ComputeKey(addrConnect, addr_bind, false);
-    CNode* pnode = new CNode(id, nLocalServices, GetBestHeight(), hSocket, addrConnect, CalculateKeyedNetGroup(addrConnect), nonce, addr_bind, network_key, pszDest ? pszDest : "", false);
+    auto transport = CreateNodeTransport(id, /*inbound=*/false, use_v2transport);
+    CNode* pnode = new CNode(id, nLocalServices, GetBestHeight(), hSocket, addrConnect, CalculateKeyedNetGroup(addrConnect), nonce, addr_bind, network_key, pszDest ? pszDest : "", false, std::move(transport));
     pnode->AddRef();
 
     return pnode;
@@ -627,8 +628,711 @@ void CNode::copyStats(CNodeStats &stats)
     // Leave string empty if addrLocal invalid (not filled in yet)
     CService addrLocalUnlocked = GetAddrLocal();
     stats.addrLocal = addrLocalUnlocked.IsValid() ? addrLocalUnlocked.ToString() : "";
+
+    const auto transport_info = m_transport->GetInfo();
+    stats.m_transport_type = transport_info.transport_type;
+    stats.m_session_id = transport_info.session_id ? HexStr(transport_info.session_id->begin(), transport_info.session_id->end()) : "";
 }
 #undef X
+
+std::string TransportTypeAsString(TransportProtocolType transport_type)
+{
+    switch (transport_type) {
+    case TransportProtocolType::DETECTING: return "detecting";
+    case TransportProtocolType::V1: return "v1";
+    case TransportProtocolType::V2: return "v2";
+    }
+    assert(false);
+}
+
+V1Transport::V1Transport(const NodeId node_id) noexcept
+    : m_magic_bytes{Params().MessageStartPostAMK()[0], Params().MessageStartPostAMK()[1],
+                    Params().MessageStartPostAMK()[2], Params().MessageStartPostAMK()[3]},
+      m_node_id{node_id},
+      hdrbuf(SER_NETWORK, INIT_PROTO_VERSION), hdr(m_magic_bytes), vRecv(SER_NETWORK, INIT_PROTO_VERSION)
+{
+    LOCK(m_recv_mutex);
+    Reset();
+}
+
+Transport::Info V1Transport::GetInfo() const noexcept
+{
+    return {.transport_type = TransportProtocolType::V1, .session_id = std::nullopt};
+}
+
+int V1Transport::readHeader(std::span<const uint8_t> msg_bytes)
+{
+    AssertLockHeld(m_recv_mutex);
+    unsigned int nRemaining = CMessageHeader::HEADER_SIZE - nHdrPos;
+    unsigned int nCopy = std::min<unsigned int>(nRemaining, msg_bytes.size());
+
+    memcpy(&hdrbuf[nHdrPos], msg_bytes.data(), nCopy);
+    nHdrPos += nCopy;
+
+    if (nHdrPos < CMessageHeader::HEADER_SIZE)
+        return nCopy;
+
+    try {
+        hdrbuf >> hdr;
+    }
+    catch (const std::exception&) {
+        LogPrint(BCLog::NET, "Header error: Unable to deserialize, peer=%d\n", m_node_id);
+        return -1;
+    }
+
+    if (memcmp(hdr.pchMessageStart, m_magic_bytes, CMessageHeader::MESSAGE_START_SIZE) != 0) {
+        LogPrint(BCLog::NET, "PROCESSMESSAGE: INVALID MESSAGESTART %s peer=%d\n", SanitizeString(hdr.GetCommand()), m_node_id);
+        return -1;
+    }
+
+    if (hdr.nMessageSize > MAX_DESER_SIZE || hdr.nMessageSize > MAX_PROTOCOL_MESSAGE_LENGTH) {
+        LogPrint(BCLog::NET, "Oversized message from peer=%i, disconnecting\n", m_node_id);
+        return -1;
+    }
+
+    in_data = true;
+    return nCopy;
+}
+
+int V1Transport::readData(std::span<const uint8_t> msg_bytes)
+{
+    AssertLockHeld(m_recv_mutex);
+    unsigned int nRemaining = hdr.nMessageSize - nDataPos;
+    unsigned int nCopy = std::min<unsigned int>(nRemaining, msg_bytes.size());
+
+    if (vRecv.size() < nDataPos + nCopy) {
+        vRecv.resize(std::min(hdr.nMessageSize, nDataPos + nCopy + 256 * 1024));
+    }
+
+    hasher.Write(msg_bytes.data(), nCopy);
+    memcpy(&vRecv[nDataPos], msg_bytes.data(), nCopy);
+    nDataPos += nCopy;
+
+    return nCopy;
+}
+
+const uint256& V1Transport::GetMessageHash() const
+{
+    AssertLockHeld(m_recv_mutex);
+    assert(CompleteInternal());
+    if (data_hash.IsNull())
+        hasher.Finalize(data_hash.begin());
+    return data_hash;
+}
+
+CNetMessage V1Transport::GetReceivedMessage(int64_t time, bool& reject_message)
+{
+    reject_message = false;
+    LOCK(m_recv_mutex);
+    CNetMessage msg(std::move(vRecv));
+
+    msg.m_type = hdr.GetCommand();
+    msg.m_time = time;
+    msg.m_message_size = hdr.nMessageSize;
+    msg.m_raw_message_size = hdr.nMessageSize + CMessageHeader::HEADER_SIZE;
+
+    uint256 hash = GetMessageHash();
+
+    if (memcmp(hash.begin(), hdr.pchChecksum, CMessageHeader::CHECKSUM_SIZE) != 0) {
+        LogPrint(BCLog::NET, "%s(%s, %u bytes): CHECKSUM ERROR expected %s was %s\n", __func__,
+            SanitizeString(msg.m_type), msg.m_message_size,
+            HexStr(hash.begin(), hash.begin() + CMessageHeader::CHECKSUM_SIZE),
+            HexStr(hdr.pchChecksum, hdr.pchChecksum + CMessageHeader::CHECKSUM_SIZE));
+        reject_message = true;
+    } else if (!hdr.IsValid(m_magic_bytes)) {
+        LogPrint(BCLog::NET, "PROCESSMESSAGE: ERRORS IN HEADER %s peer=%d\n", SanitizeString(msg.m_type), m_node_id);
+        reject_message = true;
+    }
+
+    Reset();
+    return msg;
+}
+
+bool V1Transport::SetMessageToSend(CSerializedNetMsg& msg) noexcept
+{
+    LOCK(m_send_mutex);
+    if (m_sending_header || m_bytes_sent < m_message_to_send.data.size()) return false;
+
+    uint256 hash = Hash(msg.data.data(), msg.data.data() + msg.data.size());
+    CMessageHeader hdr_out(m_magic_bytes, msg.command.c_str(), msg.data.size());
+    memcpy(hdr_out.pchChecksum, hash.begin(), CMessageHeader::CHECKSUM_SIZE);
+
+    m_header_to_send.clear();
+    m_header_to_send.reserve(CMessageHeader::HEADER_SIZE);
+    CVectorWriter{SER_NETWORK, INIT_PROTO_VERSION, m_header_to_send, 0, hdr_out};
+
+    m_message_to_send = std::move(msg);
+    m_sending_header = true;
+    m_bytes_sent = 0;
+    return true;
+}
+
+Transport::BytesToSend V1Transport::GetBytesToSend(bool have_next_message) const noexcept
+{
+    LOCK(m_send_mutex);
+    if (m_sending_header) {
+        return {std::span{m_header_to_send}.subspan(m_bytes_sent),
+                have_next_message || !m_message_to_send.data.empty(),
+                m_message_to_send.command};
+    } else {
+        return {std::span{m_message_to_send.data}.subspan(m_bytes_sent),
+                have_next_message,
+                m_message_to_send.command};
+    }
+}
+
+void V1Transport::MarkBytesSent(size_t bytes_sent) noexcept
+{
+    LOCK(m_send_mutex);
+    m_bytes_sent += bytes_sent;
+    if (m_sending_header && m_bytes_sent == m_header_to_send.size()) {
+        m_sending_header = false;
+        m_bytes_sent = 0;
+        m_header_to_send.clear();
+    } else if (!m_sending_header && m_bytes_sent == m_message_to_send.data.size()) {
+        m_bytes_sent = 0;
+        m_message_to_send.data.clear();
+        m_message_to_send.data.shrink_to_fit();
+    }
+}
+
+size_t V1Transport::GetSendMemoryUsage() const noexcept
+{
+    LOCK(m_send_mutex);
+    return m_header_to_send.size() + m_message_to_send.data.size();
+}
+
+namespace {
+
+/** BIP324 short message type ID table (exact upstream slots 1..37; DFI-specific commands use 13-byte fallback). */
+const std::array<std::string, BIP324_SHORTIDS_IMPLEMENTED> V2_MESSAGE_IDS = {
+    "", // 0: 12 bytes follow encoding the message type like in V1
+    NetMsgType::ADDR,
+    NetMsgType::BLOCK,
+    NetMsgType::BLOCKTXN,
+    NetMsgType::CMPCTBLOCK,
+    NetMsgType::FEEFILTER,
+    NetMsgType::FILTERADD,
+    NetMsgType::FILTERCLEAR,
+    NetMsgType::FILTERLOAD,
+    NetMsgType::GETBLOCKS,
+    NetMsgType::GETBLOCKTXN,
+    NetMsgType::GETDATA,
+    NetMsgType::GETHEADERS,
+    NetMsgType::HEADERS,
+    NetMsgType::INV,
+    NetMsgType::MEMPOOL,
+    NetMsgType::MERKLEBLOCK,
+    NetMsgType::NOTFOUND,
+    NetMsgType::PING,
+    NetMsgType::PONG,
+    NetMsgType::SENDCMPCT,
+    NetMsgType::TX,
+    "getcfilters",
+    "cfilter",
+    "getcfheaders",
+    "cfheaders",
+    "getcfcheckpt",
+    "cfcheckpt",
+    NetMsgType::ADDRV2,
+    "", "", "", // Unimplemented message types 29-31
+    "", "", "", "", // Unimplemented message types 32-35
+    "", // Unimplemented message type 36
+    "feature",
+};
+
+class V2MessageMap
+{
+    std::unordered_map<std::string, uint8_t> m_map;
+
+public:
+    V2MessageMap() noexcept
+    {
+        for (size_t i = 1; i < std::size(V2_MESSAGE_IDS); ++i) {
+            if (!V2_MESSAGE_IDS[i].empty()) {
+                m_map.emplace(V2_MESSAGE_IDS[i], static_cast<uint8_t>(i));
+            }
+        }
+    }
+
+    std::optional<uint8_t> operator()(const std::string& message_name) const noexcept
+    {
+        auto it = m_map.find(message_name);
+        if (it == m_map.end()) return std::nullopt;
+        return it->second;
+    }
+};
+
+const V2MessageMap V2_MESSAGE_MAP;
+
+std::vector<uint8_t> GenerateRandomGarbage() noexcept
+{
+    std::vector<uint8_t> ret;
+    FastRandomContext rng;
+    size_t len = rng.randrange(V2Transport::MAX_GARBAGE_LEN + 1);
+    ret.resize(len);
+    if (len > 0) {
+        auto rand_bytes = rng.randbytes(len);
+        std::copy(rand_bytes.begin(), rand_bytes.end(), ret.begin());
+    }
+    return ret;
+}
+
+template <typename T>
+void ClearShrink(T& container) noexcept
+{
+    container.clear();
+    container.shrink_to_fit();
+}
+
+} // namespace
+
+std::unique_ptr<Transport> CConnman::CreateNodeTransport(NodeId id, bool inbound, bool use_v2transport) const
+{
+    if (use_v2transport) {
+        return std::make_unique<V2Transport>(id, /*initiating=*/!inbound);
+    }
+    return std::make_unique<V1Transport>(id);
+}
+
+void V2Transport::StartSendingHandshake() noexcept
+{
+    AssertLockHeld(m_send_mutex);
+    assert(m_send_state == SendState::AWAITING_KEY);
+    assert(m_send_buffer.empty());
+    m_send_buffer.resize(EllSwiftPubKey::size() + m_send_garbage.size());
+    std::copy(std::begin(m_cipher.GetOurPubKey()), std::end(m_cipher.GetOurPubKey()), MakeWritableByteSpan(m_send_buffer).begin());
+    std::copy(m_send_garbage.begin(), m_send_garbage.end(), m_send_buffer.begin() + EllSwiftPubKey::size());
+}
+
+V2Transport::V2Transport(NodeId nodeid, bool initiating, const CKey& key, std::span<const std::byte> ent32, std::vector<uint8_t> garbage) noexcept
+    : m_cipher{key, ent32},
+      m_initiating{initiating},
+      m_nodeid{nodeid},
+      m_v1_fallback{nodeid},
+      m_recv_state{initiating ? RecvState::KEY : RecvState::KEY_MAYBE_V1},
+      m_send_garbage{std::move(garbage)},
+      m_send_state{initiating ? SendState::AWAITING_KEY : SendState::MAYBE_V1}
+{
+    assert(m_send_garbage.size() <= MAX_GARBAGE_LEN);
+    if (initiating) {
+        LOCK(m_send_mutex);
+        StartSendingHandshake();
+    }
+}
+
+V2Transport::V2Transport(NodeId nodeid, bool initiating) noexcept
+    : V2Transport{nodeid, initiating, GenerateRandomKey(),
+                  MakeByteSpan(GetRandHash()), GenerateRandomGarbage()} {}
+
+Transport::Info V2Transport::GetInfo() const noexcept
+{
+    LOCK(m_recv_mutex);
+    if (m_recv_state == RecvState::V1) return m_v1_fallback.GetInfo();
+    if (m_recv_state == RecvState::KEY_MAYBE_V1) {
+        return {.transport_type = TransportProtocolType::DETECTING, .session_id = std::nullopt};
+    }
+    std::optional<uint256> session_id;
+    if (m_cipher) {
+        uint256 sid;
+        auto sid_span = m_cipher.GetSessionID();
+        std::copy(UCharCast(sid_span.data()), UCharCast(sid_span.data()) + sid_span.size(), sid.begin());
+        session_id = sid;
+    }
+    return {.transport_type = TransportProtocolType::V2, .session_id = session_id};
+}
+
+void V2Transport::SetReceiveState(RecvState recv_state) noexcept
+{
+    AssertLockHeld(m_recv_mutex);
+    m_recv_state = recv_state;
+}
+
+void V2Transport::SetSendState(SendState send_state) noexcept
+{
+    AssertLockHeld(m_send_mutex);
+    m_send_state = send_state;
+}
+
+bool V2Transport::ReceivedMessageComplete() const noexcept
+{
+    LOCK(m_recv_mutex);
+    if (m_recv_state == RecvState::V1) return m_v1_fallback.ReceivedMessageComplete();
+    return m_recv_state == RecvState::APP_READY;
+}
+
+void V2Transport::ProcessReceivedMaybeV1Bytes() noexcept
+{
+    AssertLockHeld(m_recv_mutex);
+    assert(m_recv_state == RecvState::KEY_MAYBE_V1);
+    std::array<uint8_t, V1_PREFIX_LEN> v1_prefix = {0, 0, 0, 0, 'v', 'e', 'r', 's', 'i', 'o', 'n', 0, 0, 0, 0, 0};
+    const auto& magic = Params().MessageStartPostAMK();
+    std::copy(std::begin(magic), std::end(magic), v1_prefix.begin());
+    assert(m_recv_buffer.size() <= v1_prefix.size());
+    if (!std::equal(m_recv_buffer.begin(), m_recv_buffer.end(), v1_prefix.begin())) {
+        SetReceiveState(RecvState::KEY);
+        LOCK(m_send_mutex);
+        SetSendState(SendState::AWAITING_KEY);
+        StartSendingHandshake();
+    } else if (m_recv_buffer.size() == v1_prefix.size()) {
+        LOCK(m_send_mutex);
+        std::span<const uint8_t> feedback{m_recv_buffer};
+        bool ret = m_v1_fallback.ReceivedBytes(feedback);
+        assert(feedback.empty());
+        assert(ret);
+        SetReceiveState(RecvState::V1);
+        SetSendState(SendState::V1);
+        ClearShrink(m_recv_buffer);
+        ClearShrink(m_send_buffer);
+    }
+}
+
+bool V2Transport::ProcessReceivedKeyBytes() noexcept
+{
+    AssertLockHeld(m_recv_mutex);
+    assert(m_recv_state == RecvState::KEY);
+    assert(m_recv_buffer.size() <= EllSwiftPubKey::size());
+
+    static constexpr std::array<uint8_t, 12> MATCH = {'v', 'e', 'r', 's', 'i', 'o', 'n', 0, 0, 0, 0, 0};
+    static constexpr size_t OFFSET = CMessageHeader::MESSAGE_START_SIZE;
+    if (!m_initiating && m_recv_buffer.size() >= OFFSET + MATCH.size()) {
+        if (std::equal(MATCH.begin(), MATCH.end(), m_recv_buffer.begin() + OFFSET)) {
+            LogPrint(BCLog::NET, "V2 transport error: V1 peer with wrong MessageStart %s\n",
+                     HexStr(m_recv_buffer.begin(), m_recv_buffer.begin() + OFFSET));
+            return false;
+        }
+    }
+
+    if (m_recv_buffer.size() == EllSwiftPubKey::size()) {
+        EllSwiftPubKey ellswift(MakeByteSpan(m_recv_buffer));
+        LOCK(m_send_mutex);
+        m_cipher.Initialize(ellswift, m_initiating);
+
+        SetReceiveState(RecvState::GARB_GARBTERM);
+        m_recv_buffer.clear();
+
+        SetSendState(SendState::READY);
+
+        m_send_buffer.resize(m_send_buffer.size() + BIP324Cipher::GARBAGE_TERMINATOR_LEN);
+        std::copy(m_cipher.GetSendGarbageTerminator().begin(),
+                  m_cipher.GetSendGarbageTerminator().end(),
+                  MakeWritableByteSpan(m_send_buffer).last(BIP324Cipher::GARBAGE_TERMINATOR_LEN).begin());
+
+        m_send_buffer.resize(m_send_buffer.size() + BIP324Cipher::EXPANSION + VERSION_CONTENTS.size());
+        m_cipher.Encrypt(
+            VERSION_CONTENTS,
+            MakeByteSpan(m_send_garbage),
+            false,
+            MakeWritableByteSpan(m_send_buffer).last(BIP324Cipher::EXPANSION + VERSION_CONTENTS.size()));
+        ClearShrink(m_send_garbage);
+    }
+    return true;
+}
+
+bool V2Transport::ProcessReceivedGarbageBytes() noexcept
+{
+    AssertLockHeld(m_recv_mutex);
+    assert(m_recv_state == RecvState::GARB_GARBTERM);
+    assert(m_recv_buffer.size() <= MAX_GARBAGE_LEN + BIP324Cipher::GARBAGE_TERMINATOR_LEN);
+    if (m_recv_buffer.size() >= BIP324Cipher::GARBAGE_TERMINATOR_LEN) {
+        auto last_bytes = MakeByteSpan(m_recv_buffer).last(BIP324Cipher::GARBAGE_TERMINATOR_LEN);
+        auto expected = m_cipher.GetReceiveGarbageTerminator();
+        if (std::equal(last_bytes.begin(), last_bytes.end(), expected.begin(), expected.end())) {
+            m_recv_aad = std::move(m_recv_buffer);
+            m_recv_aad.resize(m_recv_aad.size() - BIP324Cipher::GARBAGE_TERMINATOR_LEN);
+            m_recv_buffer.clear();
+            SetReceiveState(RecvState::VERSION);
+        } else if (m_recv_buffer.size() == MAX_GARBAGE_LEN + BIP324Cipher::GARBAGE_TERMINATOR_LEN) {
+            LogPrint(BCLog::NET, "V2 transport error: missing garbage terminator, peer=%d\n", m_nodeid);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool V2Transport::ProcessReceivedPacketBytes() noexcept
+{
+    AssertLockHeld(m_recv_mutex);
+    assert(m_recv_state == RecvState::VERSION || m_recv_state == RecvState::APP);
+
+    static constexpr size_t MAX_CONTENTS_LEN = std::min<size_t>(
+        1 + CMessageHeader::COMMAND_SIZE + std::min<size_t>(MAX_DESER_SIZE, MAX_PROTOCOL_MESSAGE_LENGTH),
+        MAX_V2_CONTENTS_LEN);
+
+    if (m_recv_buffer.size() == BIP324Cipher::LENGTH_LEN) {
+        m_recv_len = m_cipher.DecryptLength(MakeByteSpan(m_recv_buffer));
+        if (m_recv_len > MAX_CONTENTS_LEN) {
+            LogPrint(BCLog::NET, "V2 transport error: packet too large (%u bytes), peer=%d\n", m_recv_len, m_nodeid);
+            return false;
+        }
+    } else if (m_recv_buffer.size() > BIP324Cipher::LENGTH_LEN && m_recv_buffer.size() == m_recv_len + BIP324Cipher::EXPANSION) {
+        m_recv_decode_buffer.resize(m_recv_len);
+        bool ignore{false};
+        bool ret = m_cipher.Decrypt(
+            MakeByteSpan(m_recv_buffer).subspan(BIP324Cipher::LENGTH_LEN),
+            MakeByteSpan(m_recv_aad),
+            ignore,
+            MakeWritableByteSpan(m_recv_decode_buffer));
+        if (!ret) {
+            LogPrint(BCLog::NET, "V2 transport error: packet decryption failure (%u bytes), peer=%d\n", m_recv_len, m_nodeid);
+            return false;
+        }
+        ClearShrink(m_recv_aad);
+
+        if (!ignore) {
+            switch (m_recv_state) {
+            case RecvState::VERSION:
+                SetReceiveState(RecvState::APP);
+                break;
+            case RecvState::APP:
+                SetReceiveState(RecvState::APP_READY);
+                break;
+            default:
+                assert(false);
+            }
+        }
+        ClearShrink(m_recv_buffer);
+        if (m_recv_state != RecvState::APP_READY) ClearShrink(m_recv_decode_buffer);
+    }
+    return true;
+}
+
+size_t V2Transport::GetMaxBytesToProcess() noexcept
+{
+    AssertLockHeld(m_recv_mutex);
+    switch (m_recv_state) {
+    case RecvState::KEY_MAYBE_V1:
+        return V1_PREFIX_LEN - m_recv_buffer.size();
+    case RecvState::KEY:
+        return EllSwiftPubKey::size() - m_recv_buffer.size();
+    case RecvState::GARB_GARBTERM:
+        return 1;
+    case RecvState::VERSION:
+    case RecvState::APP:
+        if (m_recv_buffer.size() < BIP324Cipher::LENGTH_LEN) {
+            return BIP324Cipher::LENGTH_LEN - m_recv_buffer.size();
+        } else {
+            return BIP324Cipher::EXPANSION + m_recv_len - m_recv_buffer.size();
+        }
+    case RecvState::APP_READY:
+        return 0;
+    case RecvState::V1:
+        assert(false);
+        return 0;
+    }
+    assert(false);
+    return 0;
+}
+
+bool V2Transport::ReceivedBytes(std::span<const uint8_t>& msg_bytes) noexcept
+{
+    static constexpr size_t MAX_RESERVE_AHEAD = 256 * 1024;
+
+    LOCK(m_recv_mutex);
+    if (m_recv_state == RecvState::V1) return m_v1_fallback.ReceivedBytes(msg_bytes);
+
+    while (!msg_bytes.empty()) {
+        size_t max_read = GetMaxBytesToProcess();
+        if (m_recv_buffer.size() + std::min(msg_bytes.size(), max_read) > m_recv_buffer.capacity()) {
+            switch (m_recv_state) {
+            case RecvState::KEY_MAYBE_V1:
+            case RecvState::KEY:
+            case RecvState::GARB_GARBTERM:
+                m_recv_buffer.reserve(MAX_GARBAGE_LEN + BIP324Cipher::GARBAGE_TERMINATOR_LEN);
+                break;
+            case RecvState::VERSION:
+            case RecvState::APP: {
+                size_t alloc_add = std::min(max_read, msg_bytes.size() + MAX_RESERVE_AHEAD);
+                m_recv_buffer.reserve(m_recv_buffer.size() + alloc_add);
+                break;
+            }
+            case RecvState::APP_READY:
+                assert(m_recv_buffer.empty());
+                break;
+            case RecvState::V1:
+                assert(false);
+                break;
+            }
+        }
+
+        max_read = std::min(msg_bytes.size(), max_read);
+        m_recv_buffer.insert(m_recv_buffer.end(), msg_bytes.data(), msg_bytes.data() + max_read);
+        msg_bytes = msg_bytes.subspan(max_read);
+
+        switch (m_recv_state) {
+        case RecvState::KEY_MAYBE_V1:
+            ProcessReceivedMaybeV1Bytes();
+            if (m_recv_state == RecvState::V1) return true;
+            break;
+        case RecvState::KEY:
+            if (!ProcessReceivedKeyBytes()) return false;
+            break;
+        case RecvState::GARB_GARBTERM:
+            if (!ProcessReceivedGarbageBytes()) return false;
+            break;
+        case RecvState::VERSION:
+        case RecvState::APP:
+            if (!ProcessReceivedPacketBytes()) return false;
+            break;
+        case RecvState::APP_READY:
+            return true;
+        case RecvState::V1:
+            assert(false);
+            break;
+        }
+        assert(max_read > 0);
+    }
+
+    return true;
+}
+
+std::optional<std::string> V2Transport::GetMessageType(std::span<const uint8_t>& contents) noexcept
+{
+    if (contents.empty()) return std::nullopt;
+    uint8_t first_byte = contents[0];
+    contents = contents.subspan(1);
+
+    if (first_byte != 0) {
+        if (first_byte < std::size(V2_MESSAGE_IDS) && !V2_MESSAGE_IDS[first_byte].empty()) {
+            return V2_MESSAGE_IDS[first_byte];
+        } else {
+            return std::nullopt;
+        }
+    }
+
+    if (contents.size() < CMessageHeader::COMMAND_SIZE) {
+        return std::nullopt;
+    }
+
+    size_t msg_type_len{0};
+    while (msg_type_len < CMessageHeader::COMMAND_SIZE && contents[msg_type_len] != 0) {
+        if (contents[msg_type_len] < ' ' || contents[msg_type_len] > 0x7E) {
+            return std::nullopt;
+        }
+        ++msg_type_len;
+    }
+    std::string ret{reinterpret_cast<const char*>(contents.data()), msg_type_len};
+    while (msg_type_len < CMessageHeader::COMMAND_SIZE) {
+        if (contents[msg_type_len] != 0) return std::nullopt;
+        ++msg_type_len;
+    }
+    contents = contents.subspan(CMessageHeader::COMMAND_SIZE);
+    return ret;
+}
+
+CNetMessage V2Transport::GetReceivedMessage(int64_t time, bool& reject_message) noexcept
+{
+    LOCK(m_recv_mutex);
+    if (m_recv_state == RecvState::V1) return m_v1_fallback.GetReceivedMessage(time, reject_message);
+
+    assert(m_recv_state == RecvState::APP_READY);
+    std::span<const uint8_t> contents{m_recv_decode_buffer};
+    auto msg_type = GetMessageType(contents);
+    CNetMessage msg{CDataStream{SER_NETWORK, INIT_PROTO_VERSION}};
+    msg.m_raw_message_size = m_recv_decode_buffer.size() + BIP324Cipher::EXPANSION;
+    if (msg_type) {
+        reject_message = false;
+        msg.m_type = std::move(*msg_type);
+        msg.m_time = time;
+        msg.m_message_size = contents.size();
+        msg.m_recv.resize(contents.size());
+        if (!contents.empty()) {
+            std::copy(contents.begin(), contents.end(), UCharCast(msg.m_recv.data()));
+        }
+    } else {
+        LogPrint(BCLog::NET, "V2 transport error: invalid message type (%zu bytes contents), peer=%d\n", m_recv_decode_buffer.size(), m_nodeid);
+        reject_message = true;
+    }
+    ClearShrink(m_recv_decode_buffer);
+    SetReceiveState(RecvState::APP);
+    return msg;
+}
+
+bool V2Transport::SetMessageToSend(CSerializedNetMsg& msg) noexcept
+{
+    LOCK(m_send_mutex);
+    if (m_send_state == SendState::V1) return m_v1_fallback.SetMessageToSend(msg);
+    if (!(m_send_state == SendState::READY && m_send_buffer.empty())) return false;
+
+    auto short_message_id = V2_MESSAGE_MAP(msg.command);
+    const size_t header_bytes = short_message_id ? 1 : (1 + CMessageHeader::COMMAND_SIZE);
+    const size_t contents_size = header_bytes + msg.data.size();
+    if (contents_size > MAX_V2_CONTENTS_LEN) {
+        LogPrint(BCLog::NET, "V2 transport error: message %s too large for BIP324 packet (%zu > %zu bytes), peer=%d\n",
+                 SanitizeString(msg.command), contents_size, MAX_V2_CONTENTS_LEN, m_nodeid);
+        return false;
+    }
+
+    std::vector<uint8_t> contents;
+    if (short_message_id) {
+        contents.resize(contents_size);
+        contents[0] = *short_message_id;
+        std::copy(msg.data.begin(), msg.data.end(), contents.begin() + 1);
+    } else {
+        contents.resize(contents_size, 0);
+        std::copy(msg.command.begin(), msg.command.end(), contents.data() + 1);
+        std::copy(msg.data.begin(), msg.data.end(), contents.begin() + 1 + CMessageHeader::COMMAND_SIZE);
+    }
+    m_send_buffer.resize(contents.size() + BIP324Cipher::EXPANSION);
+    m_cipher.Encrypt(MakeByteSpan(contents), {}, false, MakeWritableByteSpan(m_send_buffer));
+    m_send_type = msg.command;
+    ClearShrink(msg.data);
+    return true;
+}
+
+Transport::BytesToSend V2Transport::GetBytesToSend(bool have_next_message) const noexcept
+{
+    LOCK(m_send_mutex);
+    if (m_send_state == SendState::V1) return m_v1_fallback.GetBytesToSend(have_next_message);
+
+    if (m_send_state == SendState::MAYBE_V1) assert(m_send_buffer.empty());
+    assert(m_send_pos <= m_send_buffer.size());
+    return {
+        std::span{m_send_buffer}.subspan(m_send_pos),
+        have_next_message && m_send_state == SendState::READY,
+        m_send_type
+    };
+}
+
+void V2Transport::MarkBytesSent(size_t bytes_sent) noexcept
+{
+    LOCK(m_send_mutex);
+    if (m_send_state == SendState::V1) return m_v1_fallback.MarkBytesSent(bytes_sent);
+
+    if (m_send_state == SendState::AWAITING_KEY && m_send_pos == 0 && bytes_sent > 0) {
+        LogPrint(BCLog::NET, "start sending v2 handshake to peer=%d\n", m_nodeid);
+    }
+
+    m_send_pos += bytes_sent;
+    assert(m_send_pos <= m_send_buffer.size());
+    if (m_send_pos >= CMessageHeader::HEADER_SIZE) {
+        m_sent_v1_header_worth = true;
+    }
+    if (m_send_pos == m_send_buffer.size()) {
+        m_send_pos = 0;
+        ClearShrink(m_send_buffer);
+    }
+}
+
+bool V2Transport::ShouldReconnectV1() const noexcept
+{
+    if (!m_initiating) return false;
+
+    LOCK(m_recv_mutex);
+    if (m_recv_state != RecvState::KEY) return false;
+    if (!m_recv_buffer.empty()) return false;
+    {
+        LOCK(m_send_mutex);
+        return m_sent_v1_header_worth;
+    }
+}
+
+size_t V2Transport::GetSendMemoryUsage() const noexcept
+{
+    LOCK(m_send_mutex);
+    if (m_send_state == SendState::V1) return m_v1_fallback.GetSendMemoryUsage();
+    return m_send_buffer.size() + m_send_garbage.size();
+}
 
 bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete)
 {
@@ -637,43 +1341,28 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete
     LOCK(cs_vRecv);
     nLastRecv = nTimeMicros / 1000000;
     nRecvBytes += nBytes;
-    while (nBytes > 0) {
-
-        // get current incomplete message, or create a new one
-        if (vRecvMsg.empty() ||
-            vRecvMsg.back().complete())
-            vRecvMsg.push_back(CNetMessage(Params().MessageStartPostAMK(), SER_NETWORK, INIT_PROTO_VERSION));
-
-        CNetMessage& msg = vRecvMsg.back();
-
-        // absorb network data
-        int handled;
-        if (!msg.in_data)
-            handled = msg.readHeader(pch, nBytes);
-        else
-            handled = msg.readData(pch, nBytes);
-
-        if (handled < 0)
-            return false;
-
-        if (msg.in_data && msg.hdr.nMessageSize > MAX_PROTOCOL_MESSAGE_LENGTH) {
-            LogPrint(BCLog::NET, "Oversized message from peer=%i, disconnecting\n", GetId());
+    std::span<const uint8_t> msg_bytes{UCharCast(pch), nBytes};
+    while (!msg_bytes.empty()) {
+        if (!m_transport->ReceivedBytes(msg_bytes)) {
             return false;
         }
-
-        pch += handled;
-        nBytes -= handled;
-
-        if (msg.complete()) {
-            //store received bytes per message command
-            //to prevent a memory DOS, only allow valid commands
-            mapMsgCmdSize::iterator i = mapRecvBytesPerMsgCmd.find(msg.hdr.pchCommand);
+        if (m_transport->ReceivedMessageComplete()) {
+            bool reject_message{false};
+            CNetMessage msg = m_transport->GetReceivedMessage(nTimeMicros, reject_message);
+            if (reject_message) {
+                mapMsgCmdSize::iterator i = mapRecvBytesPerMsgCmd.find(NET_MESSAGE_COMMAND_OTHER);
+                assert(i != mapRecvBytesPerMsgCmd.end());
+                i->second += msg.m_raw_message_size;
+                continue;
+            }
+            // Store received bytes per message command; to prevent a memory DoS, only allow valid commands
+            mapMsgCmdSize::iterator i = mapRecvBytesPerMsgCmd.find(msg.m_type);
             if (i == mapRecvBytesPerMsgCmd.end())
                 i = mapRecvBytesPerMsgCmd.find(NET_MESSAGE_COMMAND_OTHER);
             assert(i != mapRecvBytesPerMsgCmd.end());
-            i->second += msg.hdr.nMessageSize + CMessageHeader::HEADER_SIZE;
+            i->second += msg.m_raw_message_size;
 
-            msg.nTime = nTimeMicros;
+            vRecvMsg.push_back(std::move(msg));
             complete = true;
         }
     }
@@ -708,113 +1397,61 @@ int CNode::GetSendVersion() const
 }
 
 
-int CNetMessage::readHeader(const char *pch, unsigned int nBytes)
-{
-    // copy data to temporary parsing buffer
-    unsigned int nRemaining = 24 - nHdrPos;
-    unsigned int nCopy = std::min(nRemaining, nBytes);
-
-    memcpy(&hdrbuf[nHdrPos], pch, nCopy);
-    nHdrPos += nCopy;
-
-    // if header incomplete, exit
-    if (nHdrPos < 24)
-        return nCopy;
-
-    // deserialize to CMessageHeader
-    try {
-        hdrbuf >> hdr;
-    }
-    catch (const std::exception&) {
-        return -1;
-    }
-
-    // reject messages larger than MAX_SIZE
-    if (hdr.nMessageSize > MAX_DESER_SIZE) {
-        error("Reject messages larger than max deserialization size: (%u > %u)", hdr.nMessageSize, MAX_DESER_SIZE);
-        return -1;
-    }
-
-    // switch state to reading message data
-    in_data = true;
-
-    return nCopy;
-}
-
-int CNetMessage::readData(const char *pch, unsigned int nBytes)
-{
-    unsigned int nRemaining = hdr.nMessageSize - nDataPos;
-    unsigned int nCopy = std::min(nRemaining, nBytes);
-
-    if (vRecv.size() < nDataPos + nCopy) {
-        // Allocate up to 256 KiB ahead, but never more than the total message size.
-        vRecv.resize(std::min(hdr.nMessageSize, nDataPos + nCopy + 256 * 1024));
-    }
-
-    hasher.Write((const unsigned char*)pch, nCopy);
-    memcpy(&vRecv[nDataPos], pch, nCopy);
-    nDataPos += nCopy;
-
-    return nCopy;
-}
-
-const uint256& CNetMessage::GetMessageHash() const
-{
-    assert(complete());
-    if (data_hash.IsNull())
-        hasher.Finalize(data_hash.begin());
-    return data_hash;
-}
-
 size_t CConnman::SocketSendData(CNode *pnode) const EXCLUSIVE_LOCKS_REQUIRED(pnode->cs_vSend)
 {
-    auto it = pnode->vSendMsg.begin();
     size_t nSentSize = 0;
+    bool sent_something = false;
 
-    while (it != pnode->vSendMsg.end()) {
-        const auto &data = *it;
-        assert(data.size() > pnode->nSendOffset);
+    while (true) {
+        auto [data, more, msg_type] = pnode->m_transport->GetBytesToSend(!pnode->vSendMsg.empty());
+        if (data.empty() && !pnode->vSendMsg.empty()) {
+            size_t front_size = pnode->vSendMsg.front().data.size();
+            if (pnode->m_transport->SetMessageToSend(pnode->vSendMsg.front())) {
+                pnode->vSendMsg.pop_front();
+                pnode->nSendSize -= front_size;
+                continue;
+            } else {
+                // If v2 transport rejected an oversized message (> MAX_V2_CONTENTS_LEN), disconnect cleanly.
+                if (front_size + 1 + CMessageHeader::COMMAND_SIZE > V2Transport::MAX_V2_CONTENTS_LEN &&
+                    pnode->m_transport->GetInfo().transport_type == TransportProtocolType::V2) {
+                    pnode->CloseSocketDisconnect();
+                }
+                break;
+            }
+        }
+        if (data.empty()) break;
+
         int nBytes = 0;
         {
             LOCK(pnode->cs_hSocket);
             if (pnode->hSocket == INVALID_SOCKET)
                 break;
-            nBytes = send(pnode->hSocket, reinterpret_cast<const char*>(data.data()) + pnode->nSendOffset, data.size() - pnode->nSendOffset, MSG_NOSIGNAL | MSG_DONTWAIT);
+            nBytes = send(pnode->hSocket, reinterpret_cast<const char*>(data.data()), data.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
         }
         if (nBytes > 0) {
             pnode->nLastSend = GetSystemTimeInSeconds();
             pnode->nSendBytes += nBytes;
-            pnode->nSendOffset += nBytes;
             nSentSize += nBytes;
-            if (pnode->nSendOffset == data.size()) {
-                pnode->nSendOffset = 0;
-                pnode->nSendSize -= data.size();
-                pnode->fPauseSend = pnode->nSendSize > nSendBufferMaxSize;
-                it++;
-            } else {
-                // could not send full message; stop sending more
+            sent_something = true;
+            pnode->m_transport->MarkBytesSent(nBytes);
+            pnode->fPauseSend = (pnode->nSendSize + pnode->m_transport->GetSendMemoryUsage()) > nSendBufferMaxSize;
+            if (static_cast<size_t>(nBytes) != data.size()) {
+                // could not send full buffer; stop sending more
                 break;
             }
         } else {
             if (nBytes < 0) {
-                // error
                 int nErr = WSAGetLastError();
-                if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
-                {
+                if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS) {
                     LogPrintf("socket send error %s\n", NetworkErrorString(nErr));
                     pnode->CloseSocketDisconnect();
                 }
             }
-            // couldn't send anything at all
             break;
         }
     }
 
-    if (it == pnode->vSendMsg.end()) {
-        assert(pnode->nSendOffset == 0);
-        assert(pnode->nSendSize == 0);
-    }
-    pnode->vSendMsg.erase(pnode->vSendMsg.begin(), it);
+    (void)sent_something;
     return nSentSize;
 }
 
@@ -1057,7 +1694,8 @@ void CConnman::AcceptConnection(const ListenSocket& hListenSocket) {
     if (NetPermissions::HasFlag(permissionFlags, PF_BLOOMFILTER)) {
         nodeServices = static_cast<ServiceFlags>(nodeServices | NODE_BLOOM);
     }
-    CNode* pnode = new CNode(id, nodeServices, GetBestHeight(), hSocket, addr, CalculateKeyedNetGroup(addr), nonce, addr_bind, network_key, "", true);
+    auto transport = CreateNodeTransport(id, /*inbound=*/true, m_use_v2transport);
+    CNode* pnode = new CNode(id, nodeServices, GetBestHeight(), hSocket, addr, CalculateKeyedNetGroup(addr), nonce, addr_bind, network_key, "", true, std::move(transport));
     pnode->AddRef();
     pnode->m_permissionFlags = permissionFlags;
     // If this flag is present, the user probably expect that RPC and QT report it as whitelisted (backward compatibility)
@@ -1209,6 +1847,11 @@ void CConnman::DisconnectNodes()
                 // close socket and cleanup
                 pnode->CloseSocketDisconnect();
 
+                if (pnode->m_transport->ShouldReconnectV1()) {
+                    LogPrint(BCLog::NET, "retrying with v1 transport for peer=%d (%s)\n", pnode->GetId(), pnode->addr.ToString());
+                    m_reconnections.push_back({pnode->addr, pnode->addrName, pnode->m_manual_connection});
+                }
+
                 // hold in disconnected pool until all refs are released
                 pnode->Release();
                 vNodesDisconnected.push_back(pnode);
@@ -1313,7 +1956,8 @@ bool CConnman::GenerateSelectSet(std::set<SOCKET> &recv_set, std::set<SOCKET> &s
             bool select_send;
             {
                 LOCK(pnode->cs_vSend);
-                select_send = !pnode->vSendMsg.empty();
+                const auto [to_send, more, _] = pnode->m_transport->GetBytesToSend(!pnode->vSendMsg.empty());
+                select_send = !to_send.empty() || more;
             }
 
             LOCK(pnode->cs_hSocket);
@@ -1518,15 +2162,12 @@ void CConnman::SocketHandler()
                 RecordBytesRecv(nBytes);
                 if (notify) {
                     size_t nSizeAdded = 0;
-                    auto it(pnode->vRecvMsg.begin());
-                    for (; it != pnode->vRecvMsg.end(); ++it) {
-                        if (!it->complete())
-                            break;
-                        nSizeAdded += it->vRecv.size() + CMessageHeader::HEADER_SIZE;
+                    for (const auto& msg : pnode->vRecvMsg) {
+                        nSizeAdded += msg.m_raw_message_size;
                     }
                     {
                         LOCK(pnode->cs_vProcessMsg);
-                        pnode->vProcessMsg.splice(pnode->vProcessMsg.end(), pnode->vRecvMsg, pnode->vRecvMsg.begin(), it);
+                        pnode->vProcessMsg.splice(pnode->vProcessMsg.end(), pnode->vRecvMsg);
                         pnode->nProcessQueueSize += nSizeAdded;
                         pnode->fPauseRecv = pnode->nProcessQueueSize > nReceiveFloodSize;
                     }
@@ -1959,6 +2600,16 @@ void CConnman::ThreadOpenAddedConnections()
 {
     while (true)
     {
+        // Process any pending v2->v1 fallback reconnections.
+        std::list<ReconnectionInfo> reconnections;
+        {
+            LOCK(cs_vNodes);
+            reconnections.splice(reconnections.end(), m_reconnections);
+        }
+        for (const auto& info : reconnections) {
+            OpenNetworkConnection(info.addr, false, nullptr, info.addr_name.empty() ? nullptr : info.addr_name.c_str(), false, false, info.manual_connection, /*use_v2transport=*/false);
+        }
+
         CSemaphoreGrant grant(*semAddnode);
         std::vector<AddedNodeInfo> vInfo = GetAddedNodeInfo();
         bool tried = false;
@@ -1983,7 +2634,7 @@ void CConnman::ThreadOpenAddedConnections()
 }
 
 // if successful, this moves the passed grant to the constructed node
-void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound, const char *pszDest, bool fOneShot, bool fFeeler, bool manual_connection)
+void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound, const char *pszDest, bool fOneShot, bool fFeeler, bool manual_connection, std::optional<bool> use_v2transport)
 {
     //
     // Initiate outbound network connection
@@ -2002,7 +2653,7 @@ void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
     } else if (FindNode(std::string(pszDest)))
         return;
 
-    CNode* pnode = ConnectNode(addrConnect, pszDest, fCountFailure, manual_connection);
+    CNode* pnode = ConnectNode(addrConnect, pszDest, fCountFailure, manual_connection, use_v2transport.value_or(m_use_v2transport));
 
     if (!pnode)
         return;
@@ -2742,8 +3393,9 @@ int CConnman::GetBestHeight() const
 
 unsigned int CConnman::GetReceiveFloodSize() const { return nReceiveFloodSize; }
 
-CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress& addrBindIn, uint64_t networkKeyIn, const std::string& addrNameIn, bool fInboundIn)
-    : nTimeConnected(GetSystemTimeInSeconds()),
+CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress& addrBindIn, uint64_t networkKeyIn, const std::string& addrNameIn, bool fInboundIn, std::unique_ptr<Transport> transport)
+    : m_transport(transport ? std::move(transport) : std::make_unique<V1Transport>(idIn)),
+    nTimeConnected(GetSystemTimeInSeconds()),
     addr(addrIn),
     addrBind(addrBindIn),
     fInbound(fInboundIn),
@@ -2789,33 +3441,24 @@ void CConnman::PushMessage(CNode* pnode, CSerializedNetMsg&& msg)
 {
     size_t nMessageSize = msg.data.size();
     size_t nTotalSize = nMessageSize + CMessageHeader::HEADER_SIZE;
-    LogPrint(BCLog::NET, "sending %s (%d bytes) peer=%d\n",  SanitizeString(msg.command.c_str()), nMessageSize, pnode->GetId());
-
-    std::vector<unsigned char> serializedHeader;
-    serializedHeader.reserve(CMessageHeader::HEADER_SIZE);
-    uint256 hash = Hash(msg.data.data(), msg.data.data() + nMessageSize);
-    CMessageHeader hdr(Params().MessageStartPostAMK(), msg.command.c_str(), nMessageSize);
-    memcpy(hdr.pchChecksum, hash.begin(), CMessageHeader::CHECKSUM_SIZE);
-
-    CVectorWriter{SER_NETWORK, INIT_PROTO_VERSION, serializedHeader, 0, hdr};
+    LogPrint(BCLog::NET, "sending %s (%d bytes) peer=%d\n", SanitizeString(msg.command.c_str()), nMessageSize, pnode->GetId());
 
     size_t nBytesSent = 0;
     {
         LOCK(pnode->cs_vSend);
-        bool optimisticSend(pnode->vSendMsg.empty());
+        const auto [to_send, more, _] = pnode->m_transport->GetBytesToSend(!pnode->vSendMsg.empty());
+        bool optimisticSend = to_send.empty() && !more && pnode->vSendMsg.empty();
 
-        //log total amount of bytes per command
+        // log total amount of bytes per command
         pnode->mapSendBytesPerMsgCmd[msg.command] += nTotalSize;
-        pnode->nSendSize += nTotalSize;
+        pnode->nSendSize += nMessageSize;
+        pnode->vSendMsg.push_back(std::move(msg));
 
-        if (pnode->nSendSize > nSendBufferMaxSize)
+        if (pnode->nSendSize + pnode->m_transport->GetSendMemoryUsage() > nSendBufferMaxSize)
             pnode->fPauseSend = true;
-        pnode->vSendMsg.push_back(std::move(serializedHeader));
-        if (nMessageSize)
-            pnode->vSendMsg.push_back(std::move(msg.data));
 
         // If write queue empty, attempt "optimistic write"
-        if (optimisticSend == true)
+        if (optimisticSend)
             nBytesSent = SocketSendData(pnode);
     }
     if (nBytesSent)

@@ -123,6 +123,7 @@ BASE_SCRIPTS = [
     "wallet_address_types.py",  # nodes = 6
     "feature_bip68_sequence.py",
     "p2p_feefilter.py",
+    "p2p_v2transport.py",
     "feature_reindex.py",
     "feature_abortnode.py",
     # TODO: check timing and position accordingly

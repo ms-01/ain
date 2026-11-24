@@ -10,6 +10,7 @@
 #include <addrdb.h>
 #include <addrman.h>
 #include <amount.h>
+#include <bip324.h>
 #include <bloom.h>
 #include <compat.h>
 #include <crypto/siphash.h>
@@ -22,6 +23,7 @@
 #include <policy/feerate.h>
 #include <protocol.h>
 #include <random.h>
+#include <span.h>
 #include <streams.h>
 #include <sync.h>
 #include <uint256.h>
@@ -32,6 +34,7 @@
 #include <optional>
 #include <stdint.h>
 #include <thread>
+#include <tuple>
 #include <memory>
 #include <condition_variable>
 
@@ -42,6 +45,15 @@
 
 class CScheduler;
 class CNode;
+class Transport;
+
+enum class TransportProtocolType : uint8_t {
+    DETECTING, //!< peer could be v1 or v2
+    V1,        //!< plaintext v1 transport
+    V2,        //!< BIP324 encrypted v2 transport
+};
+
+std::string TransportTypeAsString(TransportProtocolType transport_type);
 class BanMan;
 
 /** Default for -whitelistrelay. */
@@ -71,6 +83,8 @@ static const int MAX_OUTBOUND_CONNECTIONS = 8;
 static const int MAX_ADDNODE_CONNECTIONS = 8;
 /** -listen default */
 static const bool DEFAULT_LISTEN = true;
+/** Default for -v2transport (opt-in in Stage S1). */
+static const bool DEFAULT_V2_TRANSPORT = false;
 /** -i2pacceptincoming default */
 static const bool DEFAULT_I2P_ACCEPT_INCOMING = false;
 /** The default port of an I2P SAM v3 bridge. */
@@ -158,6 +172,8 @@ public:
         bool m_i2p_accept_incoming = false;
         //! The file the I2P private key is stored in.
         fs::path m_i2p_private_key_path;
+        //! Whether to use BIP324 v2 transport by default (opt-in via -v2transport).
+        bool m_use_v2transport = false;
     };
 
     void Init(const Options& connOptions) {
@@ -174,6 +190,7 @@ public:
         nSendBufferMaxSize = connOptions.nSendBufferMaxSize;
         nReceiveFloodSize = connOptions.nReceiveFloodSize;
         m_peer_connect_timeout = connOptions.m_peer_connect_timeout;
+        m_use_v2transport = connOptions.m_use_v2transport;
         {
             LOCK(cs_totalBytesSent);
             nMaxOutboundTimeframe = connOptions.nMaxOutboundTimeframe;
@@ -205,7 +222,7 @@ public:
     bool GetNetworkActive() const { return fNetworkActive; };
     bool GetUseAddrmanOutgoing() const { return m_use_addrman_outgoing; };
     void SetNetworkActive(bool active);
-    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, bool fOneShot = false, bool fFeeler = false, bool manual_connection = false);
+    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, bool fOneShot = false, bool fFeeler = false, bool manual_connection = false, std::optional<bool> use_v2transport = std::nullopt);
     bool CheckIncomingNonce(uint64_t nonce);
 
     bool ForNode(NodeId id, std::function<bool(CNode* pnode)> func);
@@ -389,7 +406,7 @@ private:
     CNode* FindNode(const CService& addr);
 
     bool AttemptToEvictConnection();
-    CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, bool manual_connection);
+    CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, bool manual_connection, bool use_v2transport = false);
     void AddWhitelistPermissionFlags(NetPermissionFlags& flags, const CNetAddr &addr) const;
 
     void DeleteNode(CNode* pnode);
@@ -459,6 +476,14 @@ private:
     int nMaxAddnode;
     int nMaxFeeler;
     bool m_use_addrman_outgoing;
+    bool m_use_v2transport{false};
+    struct ReconnectionInfo {
+        CAddress addr;
+        std::string addr_name;
+        bool manual_connection;
+    };
+    std::list<ReconnectionInfo> m_reconnections GUARDED_BY(cs_vNodes);
+    std::unique_ptr<Transport> CreateNodeTransport(NodeId id, bool inbound, bool use_v2transport) const;
     std::atomic<int> nBestHeight;
     CClientUIInterface* clientInterface;
     NetEventsInterface* m_msgproc;
@@ -651,52 +676,205 @@ public:
     CAddress addrBind;
     uint64_t nProcessedAddrs;
     uint64_t nRatelimitedAddrs;
+    TransportProtocolType m_transport_type{TransportProtocolType::V1};
+    std::string m_session_id;
 };
 
 
 
 
 class CNetMessage {
-private:
-    mutable CHash256 hasher;
-    mutable uint256 data_hash;
 public:
-    bool in_data;                   // parsing header (false) or data (true)
+    CDataStream m_recv;          //!< received message data
+    int64_t m_time{0};           //!< time (in microseconds) of message receipt
+    uint32_t m_message_size{0};  //!< size of the payload
+    uint32_t m_raw_message_size{0}; //!< used wire size of the message (including header/overhead)
+    std::string m_type;          //!< message command/type
 
-    CDataStream hdrbuf;             // partially received header
-    CMessageHeader hdr;             // complete header
-    unsigned int nHdrPos;
-
-    CDataStream vRecv;              // received message data
-    unsigned int nDataPos;
-
-    int64_t nTime;                  // time (in microseconds) of message receipt.
-
-    CNetMessage(const CMessageHeader::MessageStartChars& pchMessageStartIn, int nTypeIn, int nVersionIn) : hdrbuf(nTypeIn, nVersionIn), hdr(pchMessageStartIn), vRecv(nTypeIn, nVersionIn) {
-        hdrbuf.resize(24);
-        in_data = false;
-        nHdrPos = 0;
-        nDataPos = 0;
-        nTime = 0;
-    }
-
-    bool complete() const
-    {
-        if (!in_data)
-            return false;
-        return (hdr.nMessageSize == nDataPos);
-    }
-
-    const uint256& GetMessageHash() const;
+    explicit CNetMessage(CDataStream&& recv_in) : m_recv(std::move(recv_in)) {}
 
     void SetVersion(int nVersionIn)
     {
-        hdrbuf.SetVersion(nVersionIn);
-        vRecv.SetVersion(nVersionIn);
+        m_recv.SetVersion(nVersionIn);
+    }
+};
+
+/** The Transport converts one connection's sent messages to wire bytes, and received bytes back. */
+class Transport {
+public:
+    virtual ~Transport() = default;
+
+    struct Info
+    {
+        TransportProtocolType transport_type;
+        std::optional<uint256> session_id;
+    };
+
+    virtual Info GetInfo() const noexcept = 0;
+
+    virtual bool ReceivedMessageComplete() const = 0;
+    virtual bool ReceivedBytes(std::span<const uint8_t>& msg_bytes) = 0;
+    virtual CNetMessage GetReceivedMessage(int64_t time, bool& reject_message) = 0;
+
+    virtual bool SetMessageToSend(CSerializedNetMsg& msg) noexcept = 0;
+
+    using BytesToSend = std::tuple<
+        std::span<const uint8_t> /*to_send*/,
+        bool /*more*/,
+        const std::string& /*m_type*/
+    >;
+
+    virtual BytesToSend GetBytesToSend(bool have_next_message) const noexcept = 0;
+    virtual void MarkBytesSent(size_t bytes_sent) noexcept = 0;
+    virtual size_t GetSendMemoryUsage() const noexcept = 0;
+    virtual bool ShouldReconnectV1() const noexcept = 0;
+};
+
+class V1Transport final : public Transport
+{
+private:
+    const CMessageHeader::MessageStartChars m_magic_bytes;
+    const NodeId m_node_id;
+    mutable CCriticalSection m_recv_mutex;
+    mutable CHash256 hasher GUARDED_BY(m_recv_mutex);
+    mutable uint256 data_hash GUARDED_BY(m_recv_mutex);
+    bool in_data GUARDED_BY(m_recv_mutex);
+    CDataStream hdrbuf GUARDED_BY(m_recv_mutex);
+    CMessageHeader hdr GUARDED_BY(m_recv_mutex);
+    CDataStream vRecv GUARDED_BY(m_recv_mutex);
+    unsigned int nHdrPos GUARDED_BY(m_recv_mutex);
+    unsigned int nDataPos GUARDED_BY(m_recv_mutex);
+
+    const uint256& GetMessageHash() const EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    int readHeader(std::span<const uint8_t> msg_bytes) EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    int readData(std::span<const uint8_t> msg_bytes) EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+
+    void Reset() EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex) {
+        AssertLockHeld(m_recv_mutex);
+        vRecv.clear();
+        hdrbuf.clear();
+        hdrbuf.resize(CMessageHeader::HEADER_SIZE);
+        in_data = false;
+        nHdrPos = 0;
+        nDataPos = 0;
+        data_hash.SetNull();
+        hasher.Reset();
     }
 
-    int readHeader(const char *pch, unsigned int nBytes);
-    int readData(const char *pch, unsigned int nBytes);
+    bool CompleteInternal() const noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex)
+    {
+        AssertLockHeld(m_recv_mutex);
+        if (!in_data) return false;
+        return hdr.nMessageSize == nDataPos;
+    }
+
+    mutable CCriticalSection m_send_mutex;
+    std::vector<uint8_t> m_header_to_send GUARDED_BY(m_send_mutex);
+    CSerializedNetMsg m_message_to_send GUARDED_BY(m_send_mutex);
+    bool m_sending_header GUARDED_BY(m_send_mutex) {false};
+    size_t m_bytes_sent GUARDED_BY(m_send_mutex) {0};
+
+public:
+    explicit V1Transport(NodeId node_id) noexcept;
+
+    bool ReceivedMessageComplete() const override
+    {
+        LOCK(m_recv_mutex);
+        return CompleteInternal();
+    }
+
+    Info GetInfo() const noexcept override;
+
+    bool ReceivedBytes(std::span<const uint8_t>& msg_bytes) override
+    {
+        LOCK(m_recv_mutex);
+        int ret = in_data ? readData(msg_bytes) : readHeader(msg_bytes);
+        if (ret < 0) {
+            Reset();
+        } else {
+            msg_bytes = msg_bytes.subspan(ret);
+        }
+        return ret >= 0;
+    }
+
+    CNetMessage GetReceivedMessage(int64_t time, bool& reject_message) override;
+    bool SetMessageToSend(CSerializedNetMsg& msg) noexcept override;
+    BytesToSend GetBytesToSend(bool have_next_message) const noexcept override;
+    void MarkBytesSent(size_t bytes_sent) noexcept override;
+    size_t GetSendMemoryUsage() const noexcept override;
+    bool ShouldReconnectV1() const noexcept override { return false; }
+};
+
+class V2Transport final : public Transport
+{
+private:
+    static constexpr std::array<std::byte, 0> VERSION_CONTENTS = {};
+    static constexpr size_t V1_PREFIX_LEN = 16;
+
+    enum class RecvState : uint8_t {
+        KEY_MAYBE_V1,
+        KEY,
+        GARB_GARBTERM,
+        VERSION,
+        APP,
+        APP_READY,
+        V1,
+    };
+
+    enum class SendState : uint8_t {
+        MAYBE_V1,
+        AWAITING_KEY,
+        READY,
+        V1,
+    };
+
+    BIP324Cipher m_cipher;
+    const bool m_initiating;
+    const NodeId m_nodeid;
+    V1Transport m_v1_fallback;
+
+    mutable CCriticalSection m_recv_mutex;
+    uint32_t m_recv_len GUARDED_BY(m_recv_mutex) {0};
+    std::vector<uint8_t> m_recv_buffer GUARDED_BY(m_recv_mutex);
+    std::vector<uint8_t> m_recv_aad GUARDED_BY(m_recv_mutex);
+    std::vector<uint8_t> m_recv_decode_buffer GUARDED_BY(m_recv_mutex);
+    RecvState m_recv_state GUARDED_BY(m_recv_mutex);
+
+    mutable CCriticalSection m_send_mutex;
+    std::vector<uint8_t> m_send_buffer GUARDED_BY(m_send_mutex);
+    uint32_t m_send_pos GUARDED_BY(m_send_mutex) {0};
+    std::vector<uint8_t> m_send_garbage GUARDED_BY(m_send_mutex);
+    std::string m_send_type GUARDED_BY(m_send_mutex);
+    bool m_sent_v1_header_worth GUARDED_BY(m_send_mutex) {false};
+    SendState m_send_state GUARDED_BY(m_send_mutex);
+
+    void SetReceiveState(RecvState recv_state) noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    void SetSendState(SendState send_state) noexcept EXCLUSIVE_LOCKS_REQUIRED(m_send_mutex);
+    void StartSendingHandshake() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_send_mutex);
+    size_t GetMaxBytesToProcess() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    void ProcessReceivedMaybeV1Bytes() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    bool ProcessReceivedKeyBytes() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    bool ProcessReceivedGarbageBytes() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    bool ProcessReceivedPacketBytes() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+
+public:
+    static constexpr size_t MAX_GARBAGE_LEN = 4095;
+    static constexpr size_t MAX_V2_CONTENTS_LEN = (1U << 24) - 1;
+
+    V2Transport(NodeId nodeid, bool initiating) noexcept;
+    V2Transport(NodeId nodeid, bool initiating, const CKey& key, std::span<const std::byte> ent32, std::vector<uint8_t> garbage) noexcept;
+
+    Info GetInfo() const noexcept override;
+    bool ReceivedMessageComplete() const noexcept override;
+    bool ReceivedBytes(std::span<const uint8_t>& msg_bytes) noexcept override;
+    CNetMessage GetReceivedMessage(int64_t time, bool& reject_message) noexcept override;
+    bool SetMessageToSend(CSerializedNetMsg& msg) noexcept override;
+    BytesToSend GetBytesToSend(bool have_next_message) const noexcept override;
+    void MarkBytesSent(size_t bytes_sent) noexcept override;
+    size_t GetSendMemoryUsage() const noexcept override;
+    bool ShouldReconnectV1() const noexcept override;
+
+    static std::optional<std::string> GetMessageType(std::span<const uint8_t>& contents) noexcept;
 };
 
 
@@ -709,9 +887,9 @@ public:
     std::atomic<ServiceFlags> nServices{NODE_NONE};
     SOCKET hSocket GUARDED_BY(cs_hSocket);
     size_t nSendSize{0}; // total size of all vSendMsg entries
-    size_t nSendOffset{0}; // offset inside the first vSendMsg already sent
     uint64_t nSendBytes GUARDED_BY(cs_vSend){0};
-    std::deque<std::vector<unsigned char>> vSendMsg GUARDED_BY(cs_vSend);
+    std::deque<CSerializedNetMsg> vSendMsg GUARDED_BY(cs_vSend);
+    std::unique_ptr<Transport> m_transport;
     CCriticalSection cs_vSend;
     CCriticalSection cs_hSocket;
     CCriticalSection cs_vRecv;
@@ -859,7 +1037,7 @@ public:
 
     std::set<uint256> orphan_work_set;
 
-    CNode(NodeId id, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress &addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress &addrBindIn, uint64_t networkKeyIn, const std::string &addrNameIn = "", bool fInboundIn = false);
+    CNode(NodeId id, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress &addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress &addrBindIn, uint64_t networkKeyIn, const std::string &addrNameIn = "", bool fInboundIn = false, std::unique_ptr<Transport> transport = nullptr);
     ~CNode();
     CNode(const CNode&) = delete;
     CNode& operator=(const CNode&) = delete;

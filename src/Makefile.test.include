@@ -126,6 +126,7 @@ DEFI_TESTS =\
   test/muhash_tests.cpp \
   test/multisig_tests.cpp \
   test/musig_tests.cpp \
+  test/bip324_tests.cpp \
   test/net_tests.cpp \
   test/net_processing_tests.cpp \
   test/netgroup_tests.cpp \

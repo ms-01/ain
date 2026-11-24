@@ -184,6 +184,8 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
         obj.pushKV("bip152_hb_to", stats.m_bip152_highbandwidth_to);
         obj.pushKV("bip152_hb_from", stats.m_bip152_highbandwidth_from);
         obj.pushKV("addrv2", stats.m_wants_addrv2);
+        obj.pushKV("transport_protocol_type", TransportTypeAsString(stats.m_transport_type));
+        obj.pushKV("session_id", stats.m_session_id);
         obj.pushKV("startingheight", stats.nStartingHeight);
         if (fStateStats) {
             obj.pushKV("synced_headers", statestats.nSyncHeight);

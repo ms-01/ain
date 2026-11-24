@@ -307,6 +307,27 @@ bool CExtPubKey::Derive(CExtPubKey &out, unsigned int _nChild) const {
 
 /* static */ int ECCVerifyHandle::refcount = 0;
 
+#include <secp256k1_ellswift.h>
+#include <span.h>
+
+EllSwiftPubKey::EllSwiftPubKey(std::span<const std::byte> ellswift) noexcept
+{
+    assert(ellswift.size() == SIZE);
+    std::copy(ellswift.begin(), ellswift.end(), m_pubkey.begin());
+}
+
+CPubKey EllSwiftPubKey::Decode() const
+{
+    secp256k1_pubkey pubkey;
+    secp256k1_ellswift_decode(secp256k1_context_static, &pubkey, UCharCast(m_pubkey.data()));
+
+    size_t sz = CPubKey::COMPRESSED_PUBLIC_KEY_SIZE;
+    std::vector<uint8_t> vch_pub(sz);
+    secp256k1_ec_pubkey_serialize(secp256k1_context_static, vch_pub.data(), &sz, &pubkey, SECP256K1_EC_COMPRESSED);
+    assert(sz == vch_pub.size());
+    return CPubKey{vch_pub};
+}
+
 ECCVerifyHandle::ECCVerifyHandle()
 {
     if (refcount == 0) {

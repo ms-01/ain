@@ -8,6 +8,8 @@
 #include <type_traits>
 #include <cstddef>
 #include <algorithm>
+#include <span>
+#include <utility>
 
 /** A Span is an object that can refer to a contiguous sequence of objects.
  *
@@ -75,5 +77,50 @@ constexpr Span<A> MakeSpan(A (&a)[N]) { return Span<A>(a, N); }
 
 template<typename V>
 constexpr Span<typename std::remove_pointer<decltype(std::declval<V>().data())>::type> MakeSpan(V& v) { return Span<typename std::remove_pointer<decltype(std::declval<V>().data())>::type>(v.data(), v.size()); }
+
+/** Pop the last element off a span, and return a reference to that element. */
+template <typename T>
+T& SpanPopBack(std::span<T>& span)
+{
+    size_t size = span.size();
+    T& back = span.back();
+    span = span.first(size - 1);
+    return back;
+}
+
+template <typename V>
+auto MakeByteSpan(const V& v) noexcept
+{
+    return std::as_bytes(std::span{v});
+}
+template <typename V>
+auto MakeWritableByteSpan(V&& v) noexcept
+{
+    return std::as_writable_bytes(std::span{std::forward<V>(v)});
+}
+
+// Helper functions to safely cast basic byte pointers to unsigned char pointers.
+inline unsigned char* UCharCast(char* c) { return reinterpret_cast<unsigned char*>(c); }
+inline unsigned char* UCharCast(unsigned char* c) { return c; }
+inline unsigned char* UCharCast(signed char* c) { return reinterpret_cast<unsigned char*>(c); }
+inline unsigned char* UCharCast(std::byte* c) { return reinterpret_cast<unsigned char*>(c); }
+inline const unsigned char* UCharCast(const char* c) { return reinterpret_cast<const unsigned char*>(c); }
+inline const unsigned char* UCharCast(const unsigned char* c) { return c; }
+inline const unsigned char* UCharCast(const signed char* c) { return reinterpret_cast<const unsigned char*>(c); }
+inline const unsigned char* UCharCast(const std::byte* c) { return reinterpret_cast<const unsigned char*>(c); }
+
+template <typename V>
+auto MakeUCharSpan(const V& v) noexcept
+{
+    auto sp = std::span{v};
+    return std::span<const unsigned char>{UCharCast(sp.data()), sp.size()};
+}
+
+template <typename V>
+auto MakeWritableUCharSpan(V&& v) noexcept
+{
+    auto sp = std::span{std::forward<V>(v)};
+    return std::span<unsigned char>{UCharCast(sp.data()), sp.size()};
+}
 
 #endif

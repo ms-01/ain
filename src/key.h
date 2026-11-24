@@ -12,8 +12,14 @@
 #include <support/allocators/secure.h>
 #include <uint256.h>
 
+#include <array>
+#include <cstddef>
+#include <span>
 #include <stdexcept>
 #include <vector>
+
+static constexpr size_t ECDH_SECRET_SIZE = 32;
+using ECDHSecret = std::array<std::byte, ECDH_SECRET_SIZE>;
 
 typedef std::array<uint8_t, 20> EvmAddressData;
 
@@ -143,7 +149,18 @@ public:
 
     //! Load private key and check that public key matches.
     bool Load(const CPrivKey& privkey, const CPubKey& vchPubKey, bool fSkipCheck);
+
+    /** Create an ElligatorSwift-encoded public key for this key, with specified 32-byte entropy. */
+    EllSwiftPubKey EllSwiftCreate(std::span<const std::byte> entropy) const;
+
+    /** Compute a BIP324 ECDH shared secret. */
+    ECDHSecret ComputeBIP324ECDHSecret(const EllSwiftPubKey& their_ellswift,
+                                       const EllSwiftPubKey& our_ellswift,
+                                       bool initiating) const;
 };
+
+/** Generate a random private key. */
+CKey GenerateRandomKey(bool compressed = true) noexcept;
 
 struct CExtKey {
     unsigned char nDepth;
