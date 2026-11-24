@@ -411,9 +411,12 @@ impl<'backend> AinExecutor<'backend> {
                     signed_tx.sender, contract_address, amount, direction
                 );
 
+                let df25_active =
+                    ctx.map_or(0, |c| c.dvm_block) >= ain_cpp_imports::get_df25_height();
+
                 if direction == TransferDirection::EvmIn {
                     let DST20BridgeInfo { address, storage } =
-                        bridge_dst20_in(self.backend, contract_address, amount)?;
+                        bridge_dst20_in(self.backend, contract_address, amount, df25_active)?;
                     self.update_storage(address, storage)?;
                 }
 
@@ -441,7 +444,7 @@ impl<'backend> AinExecutor<'backend> {
 
                 if direction == TransferDirection::EvmOut {
                     let DST20BridgeInfo { address, storage } =
-                        bridge_dst20_out(self.backend, contract_address, amount)?;
+                        bridge_dst20_out(self.backend, contract_address, amount, df25_active)?;
                     self.update_storage(address, storage)?;
                 }
 

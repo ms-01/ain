@@ -1,7 +1,7 @@
 use ain_contracts::{
-    get_dfi_reserved_contract, get_dst20_contract, get_dst20_v1_contract, get_dst20_v2_contract,
-    get_dst20_v3_contract, get_transfer_domain_contract, Contract, FixedContract,
-    IMPLEMENTATION_SLOT,
+    get_dfi_reserved_contract, get_dst20_contract_for_height, get_dst20_v1_contract,
+    get_dst20_v2_contract, get_dst20_v3_contract, get_transfer_domain_contract,
+    is_valid_dst20_codehash, Contract, FixedContract, IMPLEMENTATION_SLOT,
 };
 use anyhow::format_err;
 use ethereum::{
@@ -49,9 +49,10 @@ pub fn dst20_deploy_info(
         }
     }
 
+    let df25_active = dvm_block >= ain_cpp_imports::get_df25_height();
     let Contract {
         runtime_bytecode, ..
-    } = get_dst20_contract();
+    } = get_dst20_contract_for_height(df25_active);
     let storage = dst20_name_info(dvm_block, name, symbol);
 
     Ok(DeployContractInfo {
@@ -104,6 +105,7 @@ pub fn bridge_dst20_in(
     backend: &EVMBackend,
     contract: H160,
     amount: U256,
+    df25_active: bool,
 ) -> Result<DST20BridgeInfo> {
     // check if code of address matches DST20 bytecode
     let account = backend
@@ -112,8 +114,7 @@ pub fn bridge_dst20_in(
 
     let FixedContract { fixed_address, .. } = get_transfer_domain_contract();
 
-    let Contract { codehash, .. } = get_dst20_contract();
-    if account.code_hash != codehash {
+    if !is_valid_dst20_codehash(account.code_hash, df25_active) {
         return Err(format_err!("DST20 token code is not valid").into());
     }
 
@@ -140,6 +141,7 @@ pub fn bridge_dst20_out(
     backend: &EVMBackend,
     contract: H160,
     amount: U256,
+    df25_active: bool,
 ) -> Result<DST20BridgeInfo> {
     // check if code of address matches DST20 bytecode
     let account = backend
@@ -148,8 +150,7 @@ pub fn bridge_dst20_out(
 
     let FixedContract { fixed_address, .. } = get_transfer_domain_contract();
 
-    let Contract { codehash, .. } = get_dst20_contract();
-    if account.code_hash != codehash {
+    if !is_valid_dst20_codehash(account.code_hash, df25_active) {
         return Err(format_err!("DST20 token code is not valid").into());
     }
 
