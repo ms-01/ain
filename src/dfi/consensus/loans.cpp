@@ -902,6 +902,9 @@ Res CLoansConsensus::operator()(const CLoanPaybackLoanV2Message &obj) const {
     // Handle payback with collateral special case
     if (static_cast<int>(height) >= consensus.DF19FortCanningEpilogueHeight &&
         IsPaybackWithCollateral(mnview, obj.loans)) {
+        if (Consensus::IsDF25Active(height, consensus) && !HasAuth(vault->ownerAddress)) {
+            return DeFiErrors::TXMissingInput();
+        }
         return PaybackWithCollateral(mnview, *vault, obj.vaultId, height, time);
     }
 

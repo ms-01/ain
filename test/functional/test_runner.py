@@ -207,6 +207,7 @@ BASE_SCRIPTS = [
     "feature_loan_auctions.py",
     "feature_loan_dusd_as_collateral.py",
     "feature_loan_payback_with_collateral.py",
+    "feature_loan_payback_collateral_auth_df25.py",
     "feature_any_accounts_to_accounts.py",
     "feature_community_development_funds.py",
     "feature_sendtokenstoaddress.py",

@@ -169,9 +169,9 @@ class LoanPaybackWithCollateralTest(DefiTestFramework):
         )
         self.nodes[0].generate(1)
 
-        vault_address = self.nodes[0].getnewaddress()
+        self.vault_address = self.nodes[0].getnewaddress()
 
-        self.vaultId = self.nodes[0].createvault(vault_address, "LOAN001")
+        self.vaultId = self.nodes[0].createvault(self.vault_address, "LOAN001")
         self.nodes[0].generate(1)
 
     def test_guards(self):
@@ -825,7 +825,7 @@ class LoanPaybackWithCollateralTest(DefiTestFramework):
             lambda: self.nodes[0].paybackloan(
                 {
                     "vaultId": self.vaultId,
-                    "from": self.account0,
+                    "from": self.vault_address,
                     "amounts": "9999999999.99999999@" + self.symbolDUSD,
                 }
             ),
