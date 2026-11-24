@@ -1671,26 +1671,26 @@ bool IsAnchorTx(BRTransaction *tx, CAnchor & anchor)
     spv::TBytes opReturnData;
     if (!memo.GetOp(pc, opcode, opReturnData) ||
         (opcode > OP_PUSHDATA1 && opcode != OP_PUSHDATA2 && opcode != OP_PUSHDATA4) ||
-        memcmp(&opReturnData[0], &BtcAnchorMarker[0], BtcAnchorMarker.size()) != 0 ||
-        opReturnData.size() < BtcAnchorMarker.size() + 2) { // 80?
+        opReturnData.size() < BtcAnchorMarker.size() + sizeof(uint32_t) ||
+        memcmp(opReturnData.data(), BtcAnchorMarker.data(), BtcAnchorMarker.size()) != 0) {
         return false;
-    }
-    CDataStream ss(opReturnData, SER_NETWORK, PROTOCOL_VERSION);
-    ss.ignore(static_cast<int>(BtcAnchorMarker.size()));
-    uint32_t dataSize;
-    ss >> dataSize;
-    if (dataSize < ss.size() || (dataSize - ss.size() > (tx->outCount - 2) * 32)) {
-        return false;
-    }
-    for (size_t i = 2; i < tx->outCount && ss.size() < dataSize; ++i) {
-        if (tx->outputs[i].scriptLen != 34 || tx->outputs[i].script[0] != OP_0 || tx->outputs[i].script[1] != 32) { // p2wsh script
-            LogPrint(BCLog::SPV, "not a p2wsh output #%d\n", i);
-            return false;
-        }
-        auto script = (const char*)(tx->outputs[i].script);
-        ss.insert(ss.end(), script + 2, script + 34);
     }
     try {
+        CDataStream ss(opReturnData, SER_NETWORK, PROTOCOL_VERSION);
+        ss.ignore(static_cast<int>(BtcAnchorMarker.size()));
+        uint32_t dataSize;
+        ss >> dataSize;
+        if (dataSize < ss.size() || (dataSize - ss.size() > (tx->outCount - 2) * 32)) {
+            return false;
+        }
+        for (size_t i = 2; i < tx->outCount && ss.size() < dataSize; ++i) {
+            if (tx->outputs[i].scriptLen != 34 || tx->outputs[i].script[0] != OP_0 || tx->outputs[i].script[1] != 32) { // p2wsh script
+                LogPrint(BCLog::SPV, "not a p2wsh output #%d\n", i);
+                return false;
+            }
+            auto script = (const char*)(tx->outputs[i].script);
+            ss.insert(ss.end(), script + 2, script + 34);
+        }
         ss >> anchor;
     } catch (std::ios_base::failure const & e) {
         LogPrint(BCLog::SPV, "can't deserialize anchor from tx %s\n", to_uint256(tx->txHash).ToString());

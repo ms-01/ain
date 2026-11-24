@@ -136,6 +136,7 @@ BASE_SCRIPTS = [
     "feature_dfip8_communitybalances.py",
     "feature_anchor_rewards.py",
     "feature_anchorauths_pruning.py",
+    "feature_spv_anchor_dos.py",
     "feature_autoauth.py",
     "feature_auto_reset.py",
     "feature_lock_unspends.py",

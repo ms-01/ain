@@ -2,7 +2,9 @@
 #include <chainparams.h>
 #include <dfi/anchors.h>
 #include <dfi/masternodes.h>
+#include <spv/bitcoin/BRTransaction.h>
 #include <spv/spv_wrapper.h>
+#include <spv/support/BRAddress.h>
 #include <validation.h>
 
 #include <test/setup_common.h>
@@ -479,6 +481,102 @@ BOOST_AUTO_TEST_CASE(Test_AnchorMsgCount)
 
     // Should now meet quorum of unique keys
     BOOST_CHECK_EQUAL(anchor.CheckAuthSigs(team), true);
+}
+
+BOOST_AUTO_TEST_CASE(is_anchor_tx_bounds_and_malformed_inputs)
+{
+    auto make_tx = [](const std::string& addr, const std::vector<CScript>& extra_outputs) {
+        using TxPtr = std::unique_ptr<BRTransaction, decltype(&BRTransactionFree)>;
+        TxPtr tx(BRTransactionNew(), &BRTransactionFree);
+        BRTransactionAddOutput(tx.get(), 1000, nullptr, 0);
+        std::strncpy(tx->outputs[0].address, addr.c_str(), sizeof(tx->outputs[0].address) - 1);
+        for (const auto& s : extra_outputs) {
+            BRTransactionAddOutput(tx.get(), 0, s.data(), s.size());
+        }
+        return tx;
+    };
+
+    const std::string& anchorAddr = Params().GetConsensus().spv.anchors_address;
+    CAnchor parsed;
+
+    // 1. nullptr transaction
+    BOOST_CHECK(!spv::IsAnchorTx(nullptr, parsed));
+
+    // 2. Fewer than 2 outputs
+    {
+        auto tx = make_tx(anchorAddr, {});
+        BOOST_CHECK(!spv::IsAnchorTx(tx.get(), parsed));
+    }
+
+    // 3. Output 0 does not pay anchors_address
+    {
+        CScript opReturn = CScript() << OP_RETURN << std::vector<uint8_t>{'D', 'F', 'A', 0, 0, 0, 0};
+        auto tx = make_tx("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", {opReturn});
+        BOOST_CHECK(!spv::IsAnchorTx(tx.get(), parsed));
+    }
+
+    // 4. Output 1 is not OP_RETURN
+    {
+        CScript notOpReturn = CScript() << OP_NOP << std::vector<uint8_t>{'D', 'F', 'A', 0, 0, 0, 0};
+        auto tx = make_tx(anchorAddr, {notOpReturn});
+        BOOST_CHECK(!spv::IsAnchorTx(tx.get(), parsed));
+    }
+
+    // 5. OP_RETURN OP_0 (empty opReturnData -> previously nullptr dereference in memcmp)
+    {
+        CScript emptyPush = CScript() << OP_RETURN << OP_0;
+        auto tx = make_tx(anchorAddr, {emptyPush});
+        BOOST_CHECK(!spv::IsAnchorTx(tx.get(), parsed));
+    }
+
+    // 6. Short opReturnData (1 to BtcAnchorMarker.size() - 1 bytes -> previously heap OOB read)
+    for (size_t len = 1; len < spv::BtcAnchorMarker.size(); ++len) {
+        std::vector<uint8_t> shortData(spv::BtcAnchorMarker.begin(), spv::BtcAnchorMarker.begin() + len);
+        CScript shortPush = CScript() << OP_RETURN << shortData;
+        auto tx = make_tx(anchorAddr, {shortPush});
+        BOOST_CHECK(!spv::IsAnchorTx(tx.get(), parsed));
+    }
+
+    // 7. BtcAnchorMarker + 0, 1, 2, 3 trailing bytes (previously uncaught std::ios_base::failure for +2/+3)
+    for (size_t extra = 0; extra < sizeof(uint32_t); ++extra) {
+        std::vector<uint8_t> data(spv::BtcAnchorMarker.begin(), spv::BtcAnchorMarker.end());
+        data.insert(data.end(), extra, 0x01);
+        CScript truncatedPush = CScript() << OP_RETURN << data;
+        auto tx = make_tx(anchorAddr, {truncatedPush});
+        BOOST_CHECK(!spv::IsAnchorTx(tx.get(), parsed));
+    }
+
+    // 8. Wrong marker of full length
+    {
+        std::vector<uint8_t> wrongMarker{'X', 'Y', 'Z', 0, 0, 0, 0};
+        CScript wrongPush = CScript() << OP_RETURN << wrongMarker;
+        auto tx = make_tx(anchorAddr, {wrongPush});
+        BOOST_CHECK(!spv::IsAnchorTx(tx.get(), parsed));
+    }
+
+    // 9. Positive regression: valid anchor transaction
+    {
+        uint256 blockHash{uint256S("0000000000000000000000000000000000000000000000000000000000000042")};
+        uint256 prevAnchor{uint256S("0000000000000000000000000000000000000000000000000000000000000001")};
+        CAnchorData data{prevAnchor, 12345, blockHash, CAnchorData::CTeam{}};
+        CAnchor expected{data};
+        expected.rewardKeyType = 1;
+        expected.rewardKeyID = CKeyID(uint160(std::vector<unsigned char>(20, 0x42)));
+
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << expected;
+        spv::TBytes meta(ss.begin(), ss.end());
+        auto metaScripts = spv::EncapsulateMeta(meta);
+
+        auto tx = make_tx(anchorAddr, metaScripts);
+        CAnchor decoded;
+        BOOST_CHECK(spv::IsAnchorTx(tx.get(), decoded));
+        BOOST_CHECK_EQUAL(decoded.height, expected.height);
+        BOOST_CHECK(decoded.blockHash == expected.blockHash);
+        BOOST_CHECK(decoded.previousAnchor == expected.previousAnchor);
+        BOOST_CHECK_EQUAL(decoded.rewardKeyType, expected.rewardKeyType);
+        BOOST_CHECK(decoded.rewardKeyID == expected.rewardKeyID);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
