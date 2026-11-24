@@ -46,6 +46,14 @@
 class CScheduler;
 class CNode;
 class Transport;
+
+enum class TransportProtocolType : uint8_t {
+    DETECTING, //!< peer could be v1 or v2
+    V1,        //!< plaintext v1 transport
+    V2,        //!< BIP324 encrypted v2 transport
+};
+
+std::string TransportTypeAsString(TransportProtocolType transport_type);
 class BanMan;
 
 /** Default for -whitelistrelay. */
@@ -75,6 +83,8 @@ static const int MAX_OUTBOUND_CONNECTIONS = 8;
 static const int MAX_ADDNODE_CONNECTIONS = 8;
 /** -listen default */
 static const bool DEFAULT_LISTEN = true;
+/** Default for -v2transport (opt-in in Stage S1). */
+static const bool DEFAULT_V2_TRANSPORT = false;
 /** -i2pacceptincoming default */
 static const bool DEFAULT_I2P_ACCEPT_INCOMING = false;
 /** The default port of an I2P SAM v3 bridge. */
@@ -665,18 +675,12 @@ public:
     CAddress addrBind;
     uint64_t nProcessedAddrs;
     uint64_t nRatelimitedAddrs;
+    TransportProtocolType m_transport_type{TransportProtocolType::V1};
+    std::string m_session_id;
 };
 
 
 
-
-enum class TransportProtocolType : uint8_t {
-    DETECTING, //!< peer could be v1 or v2
-    V1,        //!< plaintext v1 transport
-    V2,        //!< BIP324 encrypted v2 transport
-};
-
-std::string TransportTypeAsString(TransportProtocolType transport_type);
 
 class CNetMessage {
 public:

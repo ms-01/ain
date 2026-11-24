@@ -628,6 +628,10 @@ void CNode::copyStats(CNodeStats &stats)
     // Leave string empty if addrLocal invalid (not filled in yet)
     CService addrLocalUnlocked = GetAddrLocal();
     stats.addrLocal = addrLocalUnlocked.IsValid() ? addrLocalUnlocked.ToString() : "";
+
+    const auto transport_info = m_transport->GetInfo();
+    stats.m_transport_type = transport_info.transport_type;
+    stats.m_session_id = transport_info.session_id ? HexStr(transport_info.session_id->begin(), transport_info.session_id->end()) : "";
 }
 #undef X
 
