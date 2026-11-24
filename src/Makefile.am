@@ -117,6 +117,7 @@ DEFI_CORE_H = \
   addr_response_cache.h \
   addrdb.h \
   addrman.h \
+  bip324.h \
   attributes.h \
   banman.h \
   base58.h \
@@ -410,6 +411,7 @@ libdefi_server_a_SOURCES = \
   addr_response_cache.cpp \
   addrdb.cpp \
   addrman.cpp \
+  bip324.cpp \
   banman.cpp \
   blockencodings.cpp \
   blockfilter.cpp \

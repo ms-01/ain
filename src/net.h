@@ -10,6 +10,7 @@
 #include <addrdb.h>
 #include <addrman.h>
 #include <amount.h>
+#include <bip324.h>
 #include <bloom.h>
 #include <compat.h>
 #include <crypto/siphash.h>
@@ -44,6 +45,7 @@
 
 class CScheduler;
 class CNode;
+class Transport;
 class BanMan;
 
 /** Default for -whitelistrelay. */
@@ -160,6 +162,8 @@ public:
         bool m_i2p_accept_incoming = false;
         //! The file the I2P private key is stored in.
         fs::path m_i2p_private_key_path;
+        //! Whether to use BIP324 v2 transport by default (opt-in via -v2transport).
+        bool m_use_v2transport = false;
     };
 
     void Init(const Options& connOptions) {
@@ -176,6 +180,7 @@ public:
         nSendBufferMaxSize = connOptions.nSendBufferMaxSize;
         nReceiveFloodSize = connOptions.nReceiveFloodSize;
         m_peer_connect_timeout = connOptions.m_peer_connect_timeout;
+        m_use_v2transport = connOptions.m_use_v2transport;
         {
             LOCK(cs_totalBytesSent);
             nMaxOutboundTimeframe = connOptions.nMaxOutboundTimeframe;
@@ -207,7 +212,7 @@ public:
     bool GetNetworkActive() const { return fNetworkActive; };
     bool GetUseAddrmanOutgoing() const { return m_use_addrman_outgoing; };
     void SetNetworkActive(bool active);
-    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, bool fOneShot = false, bool fFeeler = false, bool manual_connection = false);
+    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, bool fOneShot = false, bool fFeeler = false, bool manual_connection = false, std::optional<bool> use_v2transport = std::nullopt);
     bool CheckIncomingNonce(uint64_t nonce);
 
     bool ForNode(NodeId id, std::function<bool(CNode* pnode)> func);
@@ -391,7 +396,7 @@ private:
     CNode* FindNode(const CService& addr);
 
     bool AttemptToEvictConnection();
-    CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, bool manual_connection);
+    CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, bool manual_connection, bool use_v2transport = false);
     void AddWhitelistPermissionFlags(NetPermissionFlags& flags, const CNetAddr &addr) const;
 
     void DeleteNode(CNode* pnode);
@@ -461,6 +466,13 @@ private:
     int nMaxAddnode;
     int nMaxFeeler;
     bool m_use_addrman_outgoing;
+    bool m_use_v2transport{false};
+    struct ReconnectionInfo {
+        CAddress addr;
+        bool manual_connection;
+    };
+    std::list<ReconnectionInfo> m_reconnections GUARDED_BY(cs_vNodes);
+    std::unique_ptr<Transport> CreateNodeTransport(NodeId id, bool inbound, bool use_v2transport) const;
     std::atomic<int> nBestHeight;
     CClientUIInterface* clientInterface;
     NetEventsInterface* m_msgproc;
@@ -786,6 +798,78 @@ public:
     void MarkBytesSent(size_t bytes_sent) noexcept override;
     size_t GetSendMemoryUsage() const noexcept override;
     bool ShouldReconnectV1() const noexcept override { return false; }
+};
+
+class V2Transport final : public Transport
+{
+private:
+    static constexpr std::array<std::byte, 0> VERSION_CONTENTS = {};
+    static constexpr size_t V1_PREFIX_LEN = 16;
+
+    enum class RecvState : uint8_t {
+        KEY_MAYBE_V1,
+        KEY,
+        GARB_GARBTERM,
+        VERSION,
+        APP,
+        APP_READY,
+        V1,
+    };
+
+    enum class SendState : uint8_t {
+        MAYBE_V1,
+        AWAITING_KEY,
+        READY,
+        V1,
+    };
+
+    BIP324Cipher m_cipher;
+    const bool m_initiating;
+    const NodeId m_nodeid;
+    V1Transport m_v1_fallback;
+
+    mutable CCriticalSection m_recv_mutex;
+    uint32_t m_recv_len GUARDED_BY(m_recv_mutex) {0};
+    std::vector<uint8_t> m_recv_buffer GUARDED_BY(m_recv_mutex);
+    std::vector<uint8_t> m_recv_aad GUARDED_BY(m_recv_mutex);
+    std::vector<uint8_t> m_recv_decode_buffer GUARDED_BY(m_recv_mutex);
+    RecvState m_recv_state GUARDED_BY(m_recv_mutex);
+
+    mutable CCriticalSection m_send_mutex;
+    std::vector<uint8_t> m_send_buffer GUARDED_BY(m_send_mutex);
+    uint32_t m_send_pos GUARDED_BY(m_send_mutex) {0};
+    std::vector<uint8_t> m_send_garbage GUARDED_BY(m_send_mutex);
+    std::string m_send_type GUARDED_BY(m_send_mutex);
+    bool m_sent_v1_header_worth GUARDED_BY(m_send_mutex) {false};
+    SendState m_send_state GUARDED_BY(m_send_mutex);
+
+    void SetReceiveState(RecvState recv_state) noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    void SetSendState(SendState send_state) noexcept EXCLUSIVE_LOCKS_REQUIRED(m_send_mutex);
+    void StartSendingHandshake() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_send_mutex);
+    size_t GetMaxBytesToProcess() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    void ProcessReceivedMaybeV1Bytes() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    bool ProcessReceivedKeyBytes() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    bool ProcessReceivedGarbageBytes() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+    bool ProcessReceivedPacketBytes() noexcept EXCLUSIVE_LOCKS_REQUIRED(m_recv_mutex);
+
+public:
+    static constexpr size_t MAX_GARBAGE_LEN = 4095;
+    static constexpr size_t MAX_V2_CONTENTS_LEN = (1U << 24) - 1;
+
+    V2Transport(NodeId nodeid, bool initiating) noexcept;
+    V2Transport(NodeId nodeid, bool initiating, const CKey& key, std::span<const std::byte> ent32, std::vector<uint8_t> garbage) noexcept;
+
+    Info GetInfo() const noexcept override;
+    bool ReceivedMessageComplete() const noexcept override;
+    bool ReceivedBytes(std::span<const uint8_t>& msg_bytes) noexcept override;
+    CNetMessage GetReceivedMessage(int64_t time, bool& reject_message) noexcept override;
+    bool SetMessageToSend(CSerializedNetMsg& msg) noexcept override;
+    BytesToSend GetBytesToSend(bool have_next_message) const noexcept override;
+    void MarkBytesSent(size_t bytes_sent) noexcept override;
+    size_t GetSendMemoryUsage() const noexcept override;
+    bool ShouldReconnectV1() const noexcept override;
+
+    static std::optional<std::string> GetMessageType(std::span<const uint8_t>& contents) noexcept;
 };
 
 
