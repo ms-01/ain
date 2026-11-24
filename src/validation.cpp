@@ -3444,6 +3444,15 @@ bool CChainState::ConnectTip(CValidationState &state,
 
     SetLastValidatedHeight(pindexNew->nHeight);
 
+    // Re-evaluate pindexBestHeader now that pindexNew is validated (BLOCK_VALID_SCRIPTS).
+    // If a forged high-work fork at the previous tip temporarily won the tie-break,
+    // advancing the anchored height snaps pindexBestHeader back to the honest chain.
+    // Do NOT call NotifyHeaderTip() here (it is LOCKS_EXCLUDED(cs_main)); ActivateBestChain()
+    // emits the notification outside cs_main.
+    if (IsBetterHeaderTip(pindexNew, pindexBestHeader, m_chain.Tip(), m_blockman.GetHeaderTipMode())) {
+        pindexBestHeader = pindexNew;
+    }
+
     // ConnectTip might be called before psnapshotManager has been initialised
     // as part of start-up so check psnapshotManager before using it.
     if (psnapshotManager) {
@@ -4057,6 +4066,15 @@ bool CChainState::InvalidateBlock(CValidationState &state, const CChainParams &c
         }
 
         InvalidChainFound(to_mark_failed);
+
+        // If pindexBestHeader itself was invalidated or descends from to_mark_failed,
+        // recompute the best surviving header tip. Otherwise O(1) no-op.
+        if (pindexBestHeader != nullptr &&
+            ((pindexBestHeader->nStatus & BLOCK_FAILED_MASK) ||
+             (pindexBestHeader->nHeight >= to_mark_failed->nHeight &&
+              pindexBestHeader->GetAncestor(to_mark_failed->nHeight) == to_mark_failed))) {
+            m_blockman.RecomputeBestHeader(m_chain.Tip());
+        }
     }
 
     // Only notify about a new block tip if the active chain was modified.
@@ -4139,6 +4157,99 @@ std::map<int64_t, int64_t> BlockManager::UnanchorHeaders(const CBlockIndex *tip)
     return unanchored;
 }
 
+bool ParseHeaderTipMode(const std::string &str, HeaderTipMode &mode) {
+    if (str == "anchored") {
+        mode = HeaderTipMode::ANCHORED;
+        return true;
+    }
+    if (str == "chainwork") {
+        mode = HeaderTipMode::CHAINWORK;
+        return true;
+    }
+    return false;
+}
+
+int GetAnchoredHeight(const CBlockIndex *pindex, const CBlockIndex *active_tip, int max_walk_depth) {
+    if (pindex == nullptr || (pindex->nStatus & BLOCK_FAILED_MASK)) {
+        return 0;
+    }
+    if (pindex->IsValid(BLOCK_VALID_SCRIPTS)) {
+        return pindex->nHeight;
+    }
+    // Active-chain fast path: O(log N) via pskip so honest headers-first IBD works
+    // arbitrarily far ahead of active_tip without hitting the bounded walk limit.
+    if (active_tip != nullptr && pindex->nHeight >= active_tip->nHeight) {
+        const CBlockIndex *anc = pindex->GetAncestor(active_tip->nHeight);
+        if (anc != nullptr && anc == active_tip) {
+            return active_tip->nHeight;
+        }
+    }
+    // Bounded pprev walk for non-active side chains or startup before active_tip is set.
+    const CBlockIndex *p = pindex->pprev;
+    for (int steps = 0; p != nullptr && steps < max_walk_depth; p = p->pprev, ++steps) {
+        if (p->nStatus & BLOCK_FAILED_MASK) {
+            return 0;
+        }
+        if (p->IsValid(BLOCK_VALID_SCRIPTS)) {
+            return p->nHeight;
+        }
+    }
+    return 0;
+}
+
+bool IsBetterHeaderTip(const CBlockIndex *candidate,
+                       const CBlockIndex *current,
+                       const CBlockIndex *active_tip,
+                       HeaderTipMode mode) {
+    if (candidate == nullptr) {
+        return false;
+    }
+    if (current == nullptr) {
+        return true;
+    }
+    if (candidate == current) {
+        return false;
+    }
+    if (mode == HeaderTipMode::ANCHORED) {
+        const int cand_anchored = GetAnchoredHeight(candidate, active_tip);
+        const int curr_anchored = GetAnchoredHeight(current, active_tip);
+        if (cand_anchored != curr_anchored) {
+            return cand_anchored > curr_anchored;
+        }
+    }
+    if (candidate->nChainWork != current->nChainWork) {
+        return candidate->nChainWork > current->nChainWork;
+    }
+    if (candidate->phashBlock != nullptr && current->phashBlock != nullptr) {
+        return candidate->GetBlockHash() < current->GetBlockHash();
+    }
+    return candidate < current;
+}
+
+void BlockManager::RecomputeBestHeader(const CBlockIndex *active_tip) {
+    AssertLockHeld(cs_main);
+    pindexBestHeader = nullptr;
+    for (const auto &entry : m_block_index) {
+        CBlockIndex *pindex = entry.second;
+        if (!pindex->IsValid(BLOCK_VALID_TREE) || (pindex->nStatus & BLOCK_FAILED_MASK)) {
+            continue;
+        }
+        bool has_failed_ancestor = false;
+        for (const CBlockIndex *failed : m_failed_blocks) {
+            if (pindex->nHeight >= failed->nHeight && pindex->GetAncestor(failed->nHeight) == failed) {
+                has_failed_ancestor = true;
+                break;
+            }
+        }
+        if (has_failed_ancestor) {
+            continue;
+        }
+        if (IsBetterHeaderTip(pindex, pindexBestHeader, active_tip, m_header_tip_mode)) {
+            pindexBestHeader = pindex;
+        }
+    }
+}
+
 CBlockIndex *BlockManager::AddToBlockIndex(const CBlockHeader &block) {
     AssertLockHeld(cs_main);
 
@@ -4167,7 +4278,7 @@ CBlockIndex *BlockManager::AddToBlockIndex(const CBlockHeader &block) {
         (pindexNew->pprev ? std::max(pindexNew->pprev->nTimeMax, pindexNew->nTime) : pindexNew->nTime);
     pindexNew->nChainWork = (pindexNew->pprev ? pindexNew->pprev->nChainWork : 0) + GetBlockProof(*pindexNew);
     pindexNew->RaiseValidity(BLOCK_VALID_TREE);
-    if (pindexBestHeader == nullptr || pindexBestHeader->nChainWork < pindexNew->nChainWork) {
+    if (IsBetterHeaderTip(pindexNew, pindexBestHeader, ::ChainActive().Tip(), m_header_tip_mode)) {
         pindexBestHeader = pindexNew;
     }
 
@@ -5691,8 +5802,11 @@ bool BlockManager::LoadBlockIndex(const Consensus::Params &consensus_params,
         if (pindex->pprev) {
             pindex->BuildSkip();
         }
+        // Active tip is not yet known during LoadBlockIndex(); validated blocks are O(1)
+        // via IsValid(BLOCK_VALID_SCRIPTS) and unvalidated on-disk headers fall back to
+        // the bounded pprev walk.
         if (pindex->IsValid(BLOCK_VALID_TREE) &&
-            (pindexBestHeader == nullptr || CBlockIndexWorkComparator()(pindexBestHeader, pindex))) {
+            IsBetterHeaderTip(pindex, pindexBestHeader, nullptr, m_header_tip_mode)) {
             pindexBestHeader = pindex;
         }
     }
@@ -6106,6 +6220,13 @@ void CChainState::EraseBlockData(CBlockIndex *index) {
 bool CChainState::RewindBlockIndex(const CChainParams &params) {
     // Note that during -reindex-chainstate we are called with an empty m_chain!
 
+    bool best_header_affected = false;
+    auto is_best_header_or_ancestor = [](const CBlockIndex *target) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+        return pindexBestHeader != nullptr && target != nullptr &&
+               pindexBestHeader->nHeight >= target->nHeight &&
+               pindexBestHeader->GetAncestor(target->nHeight) == target;
+    };
+
     // First erase all post-segwit blocks without witness not in the main chain,
     // as this can we done without costly DisconnectTip calls. Active
     // blocks will be dealt with below (releasing cs_main in between).
@@ -6114,6 +6235,9 @@ bool CChainState::RewindBlockIndex(const CChainParams &params) {
         for (const auto &entry : m_blockman.m_block_index) {
             if (IsWitnessEnabled(entry.second->pprev, params.GetConsensus()) &&
                 !(entry.second->nStatus & BLOCK_OPT_WITNESS) && !m_chain.Contains(entry.second)) {
+                if (is_best_header_or_ancestor(entry.second)) {
+                    best_header_affected = true;
+                }
                 EraseBlockData(entry.second);
             }
         }
@@ -6174,6 +6298,9 @@ bool CChainState::RewindBlockIndex(const CChainParams &params) {
             // this block or some successor doesn't HAVE_DATA, so we were unable to
             // rewind all the way.  Blocks remaining on m_chain at this point
             // must not have their validity reduced.
+            if (is_best_header_or_ancestor(tip)) {
+                best_header_affected = true;
+            }
             EraseBlockData(tip);
 
             tip = tip->pprev;
@@ -6190,6 +6317,9 @@ bool CChainState::RewindBlockIndex(const CChainParams &params) {
 
     {
         LOCK(cs_main);
+        if (best_header_affected) {
+            m_blockman.RecomputeBestHeader(m_chain.Tip());
+        }
         if (m_chain.Tip() != nullptr) {
             // We can't prune block index candidates based on our tip if we have
             // no tip due to m_chain being empty!
