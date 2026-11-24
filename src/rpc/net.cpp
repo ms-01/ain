@@ -4,6 +4,7 @@
 
 #include <rpc/server.h>
 
+#include <addrdb.h>
 #include <banman.h>
 #include <clientversion.h>
 #include <core_io.h>
@@ -106,6 +107,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
             "    \"subver\": \"/Satoshi:0.8.5/\",  (string) The string version\n"
             "    \"inbound\": true|false,     (boolean) Inbound (true) or Outbound (false)\n"
             "    \"connection_type\": \"str\",  (string) Type of connection (inbound, outbound-full-relay, block-relay-only, manual, feeler, addr-fetch)\n"
+            "    \"is_anchor_peer\": true|false, (boolean) Whether the peer is an operator-configured anchor peer\n"
             "    \"bip152_hb_to\": true|false,(boolean) Whether we selected peer as (compact blocks) high-bandwidth peer\n"
             "    \"bip152_hb_from\": true|false,(boolean) Whether peer selected us as (compact blocks) high-bandwidth peer\n"
             "    \"addrv2\": true|false,(boolean) Whether peer announced its support for the BIP155 address relay\n"
@@ -183,6 +185,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
         obj.pushKV("subver", stats.cleanSubVer);
         obj.pushKV("inbound", stats.fInbound);
         obj.pushKV("connection_type", ConnectionTypeAsString(stats.m_conn_type));
+        obj.pushKV("is_anchor_peer", stats.m_is_anchor_peer);
         obj.pushKV("bip152_hb_to", stats.m_bip152_highbandwidth_to);
         obj.pushKV("bip152_hb_from", stats.m_bip152_highbandwidth_from);
         obj.pushKV("addrv2", stats.m_wants_addrv2);
@@ -982,6 +985,144 @@ static UniValue addconnection(const JSONRPCRequest& request)
     return info;
 }
 
+/**
+ * Parse an anchor peer address.
+ *
+ * Only literal IP addresses are accepted (no name resolution), the port
+ * defaults to the default port of the network.
+ */
+static CAddress ParseAnchorPeerAddress(const std::string& address)
+{
+    CService service;
+    if (!Lookup(address.c_str(), service, Params().GetDefaultPort(), false)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Error: Invalid anchor peer address '%s'", address));
+    }
+    const CAddress addr(service, NODE_NETWORK);
+    if (!addr.IsValid()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Error: Invalid anchor peer address '%s'", address));
+    }
+    return addr;
+}
+
+/** Persist the current anchor peer set (write-through). */
+static void PersistAnchorPeers()
+{
+    const fs::path anchors_dir = GetDataDir() / "net";
+    fs::create_directories(anchors_dir);
+    DumpAnchors(anchors_dir / ANCHORS_DATABASE_FILENAME, g_connman->GetAnchorPeers());
+}
+
+static UniValue listanchorpeers(const JSONRPCRequest& request)
+{
+    RPCHelpMan{"listanchorpeers",
+        "\nList the operator-configured anchor peers (block-relay anchors).\n"
+        "\nAnchor peers are prioritized for the limited block-relay-only outbound connections.\n"
+        "They are a connectivity/priority concept only: blocks and headers received from an\n"
+        "anchor peer are validated exactly like blocks and headers received from any other peer.\n"
+        "\nThe anchor peers are only used when peer anchoring is enabled (-peeranchoring=1).\n"
+        "\nAn anchor peer that is banned or that is already connected (e.g. as a manual peer) is\n"
+        "skipped until the situation changes; the anchor peer stays configured in any case.\n"
+        "\nNote that the anchor connections are only established when the node opens outbound\n"
+        "connections on its own: with -connect=<addr> (or -onlyconnect=<addr>) the node does\n"
+        "not open any other outbound connection and the anchor peers are therefore not used.\n",
+        {},
+        RPCResult{
+            "[\n"
+            "  {\n"
+            "    \"address\": \"str\",   (string) The IP address and port of the anchor peer.\n"
+            "  },\n"
+            "  ...\n"
+            "]\n"
+        },
+        RPCExamples{
+            HelpExampleCli("listanchorpeers", "")
+            + HelpExampleRpc("listanchorpeers", "")
+        },
+    }.Check(request);
+
+    if (!g_connman) {
+        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+    }
+
+    UniValue anchors(UniValue::VARR);
+    for (const CAddress& addr : g_connman->GetAnchorPeers()) {
+        UniValue entry(UniValue::VOBJ);
+        entry.pushKV("address", addr.ToStringIPPort());
+        anchors.push_back(entry);
+    }
+    return anchors;
+}
+
+static UniValue addanchorpeer(const JSONRPCRequest& request)
+{
+    RPCHelpMan{"addanchorpeer",
+        "\nAdd an anchor peer (block-relay anchor).\n"
+        "\nThe anchor peer is prioritized for the limited block-relay-only outbound connections.\n"
+        "The anchor peer set is stored in the anchors file and is written through immediately.\n"
+        "\nThe anchor peer is only used when peer anchoring is enabled (-peeranchoring=1) and\n"
+        "when at least one block-relay-only outbound slot is available (-blockrelayconnections>0).\n"
+        "\nNote that the anchor connections are only established when the node opens outbound\n"
+        "connections on its own: with -connect=<addr> (or -onlyconnect=<addr>) the node does\n"
+        "not open any other outbound connection and the anchor peers are therefore not used.\n",
+        {
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The IP address and port of the anchor peer."},
+        },
+        RPCResult{
+            "null\n"
+        },
+        RPCExamples{
+            HelpExampleCli("addanchorpeer", "\"192.168.0.6:8555\"")
+            + HelpExampleRpc("addanchorpeer", "\"192.168.0.6:8555\"")
+        },
+    }.Check(request);
+
+    if (!g_connman) {
+        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+    }
+
+    const CAddress addr = ParseAnchorPeerAddress(request.params[0].get_str());
+    if (g_connman->IsAnchorPeer(addr)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strprintf("Error: %s is already an anchor peer", addr.ToStringIPPort()));
+    }
+    if (!g_connman->AddAnchorPeer(addr)) {
+        throw JSONRPCError(RPC_MISC_ERROR, strprintf("Error: Cannot add %s as anchor peer, the maximum of %u anchor peers is reached", addr.ToStringIPPort(), MAX_BLOCK_RELAY_ONLY_ANCHORS));
+    }
+    if (!g_connman->GetPeerAnchoring()) {
+        LogPrintf("Warning: peer anchoring is disabled (-peeranchoring=0), the anchor peer %s is not used until peer anchoring is enabled.\n", addr.ToStringIPPort());
+    }
+    PersistAnchorPeers();
+    return UniValue();
+}
+
+static UniValue removeanchorpeer(const JSONRPCRequest& request)
+{
+    RPCHelpMan{"removeanchorpeer",
+        "\nRemove an anchor peer (block-relay anchor).\n"
+        "\nThe anchor peer set is stored in the anchors file and is written through immediately.\n",
+        {
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The IP address and port of the anchor peer."},
+        },
+        RPCResult{
+            "true|false   (boolean) Whether the anchor peer was removed.\n"
+        },
+        RPCExamples{
+            HelpExampleCli("removeanchorpeer", "\"192.168.0.6:8555\"")
+            + HelpExampleRpc("removeanchorpeer", "\"192.168.0.6:8555\"")
+        },
+    }.Check(request);
+
+    if (!g_connman) {
+        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+    }
+
+    const CAddress addr = ParseAnchorPeerAddress(request.params[0].get_str());
+    if (!g_connman->RemoveAnchorPeer(addr)) {
+        return false;
+    }
+    PersistAnchorPeers();
+    return true;
+}
+
 // clang-format off
 static const CRPCCommand commands[] =
 { //  category              name                      actor (function)         argNames
@@ -1002,6 +1143,9 @@ static const CRPCCommand commands[] =
     { "network",            "setnetworkactive",       &setnetworkactive,       {"state"} },
     { "network",            "getnodeaddresses",       &getnodeaddresses,       {"count", "network"} },
     { "network",            "getaddrmaninfo",         &getaddrmaninfo,         {} },
+    { "network",            "listanchorpeers",        &listanchorpeers,        {} },
+    { "network",            "addanchorpeer",          &addanchorpeer,          {"address"} },
+    { "network",            "removeanchorpeer",       &removeanchorpeer,       {"address"} },
     { "hidden",             "addconnection",          &addconnection,          {"address", "connection_type", "v2transport"} },
 };
 // clang-format on

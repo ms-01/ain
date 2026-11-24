@@ -79,6 +79,7 @@ DEFI_TESTS =\
   test/amount_tests.cpp \
   test/allocator_tests.cpp \
   test/anchor_tests.cpp \
+  test/anchor_peers_tests.cpp \
   test/assumevalid_tests.cpp \
   test/applytx_tests.cpp \
   test/banman_tests.cpp \

@@ -9,6 +9,7 @@
 
 #include <init.h>
 
+#include <addrdb.h>
 #include <amount.h>
 #include <banman.h>
 #include <blockfilter.h>
@@ -44,6 +45,7 @@
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <pos_kernel.h>
+#include <protocol.h>
 #include <rpc/blockchain.h>
 #include <rpc/register.h>
 #include <rpc/stats.h>
@@ -524,6 +526,8 @@ void SetupServerArgs()
     gArgs.AddArg("-listenonion", strprintf("Automatically create Tor hidden service (default: %d)", DEFAULT_LISTEN_ONION), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxconnections=<n>", strprintf("Maintain at most <n> connections to peers (default: %u)", DEFAULT_MAX_PEER_CONNECTIONS), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-blockrelayconnections=<n>", strprintf("Maintain at most <n> outbound block-relay-only connections (default: %d, 0 = disabled)", DEFAULT_MAX_OUTBOUND_BLOCK_RELAY), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-peeranchoring", strprintf("Enable peer anchoring: operator-configured anchor peers are prioritized for the block-relay-only outbound connections (default: %d)", DEFAULT_PEER_ANCHORING), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-anchorpeer=<ip:port>", "Add an anchor peer (<ip:port>) for the block-relay-only outbound connections, can be specified multiple times. Note that the anchor connections are only established when the node opens outbound connections on its own: with -connect=<addr> (or -onlyconnect=<addr>) the node does not open any other outbound connection and the anchor peers are therefore not used", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxreceivebuffer=<n>", strprintf("Maximum per-connection receive buffer, <n>*1000 bytes (default: %u)", DEFAULT_MAXRECEIVEBUFFER), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxsendbuffer=<n>", strprintf("Maximum per-connection send buffer, <n>*1000 bytes (default: %u)", DEFAULT_MAXSENDBUFFER), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxtimeadjustment", strprintf("Maximum allowed median peer time offset adjustment. Local perspective of time may be influenced by peers forward or backward by this amount. (default: %u seconds)", DEFAULT_MAX_TIME_ADJUSTMENT), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
@@ -2593,6 +2597,53 @@ bool AppInitMain(InitInterfaces& interfaces)
     }
     connOptions.nMaxOutboundBlockRelay = nBlockRelayConnections;
     connOptions.nMaxAddnode = MAX_ADDNODE_CONNECTIONS;
+
+    // Peer anchoring (block-relay anchor peers).
+    //
+    // Anchor peers are operator-configured and prioritized for the limited
+    // block-relay-only outbound slots. They are a connectivity/priority concept
+    // only: blocks and headers received from an anchor peer are validated
+    // exactly like blocks and headers received from any other peer.
+    const bool peer_anchoring = gArgs.GetBoolArg("-peeranchoring", Params().PeerAnchoring());
+    if (peer_anchoring && nBlockRelayConnections == 0) {
+        InitWarning("Peer anchoring is enabled, but no block-relay-only outbound slots are available (-blockrelayconnections=0). Peer anchoring is inert.");
+    }
+    connOptions.m_peer_anchoring = peer_anchoring;
+
+    const fs::path anchors_dir = GetDataDir() / "net";
+    const fs::path anchors_path = anchors_dir / ANCHORS_DATABASE_FILENAME;
+    // The persisted anchor peer set is loaded first, the anchor peers given on
+    // the command line are merged into it (they never replace it silently).
+    std::vector<CAddress> anchors = ReadAnchors(anchors_path);
+    for (const std::string& str_anchor : gArgs.GetArgs("-anchorpeer")) {
+        CService anchor_service;
+        if (!Lookup(str_anchor.c_str(), anchor_service, Params().GetDefaultPort(), false)) {
+            InitWarning(strprintf("Invalid -anchorpeer address '%s', ignoring", str_anchor));
+            continue;
+        }
+        const CAddress anchor_addr(anchor_service, NODE_NETWORK);
+        if (!anchor_addr.IsValid()) {
+            InitWarning(strprintf("Invalid -anchorpeer address '%s', ignoring", str_anchor));
+            continue;
+        }
+        const std::string anchor_key = anchor_addr.ToStringIPPort();
+        const bool duplicate = std::any_of(anchors.begin(), anchors.end(),
+                                           [&anchor_key](const CAddress& existing) { return existing.ToStringIPPort() == anchor_key; });
+        if (duplicate) continue;
+        if (anchors.size() >= MAX_BLOCK_RELAY_ONLY_ANCHORS) {
+            InitWarning(strprintf("Ignoring -anchorpeer '%s': the maximum of %u anchor peers is already configured", str_anchor, MAX_BLOCK_RELAY_ONLY_ANCHORS));
+            continue;
+        }
+        anchors.push_back(anchor_addr);
+    }
+    if (!anchors.empty()) {
+        fs::create_directories(anchors_dir);
+        DumpAnchors(anchors_path, anchors);
+        LogPrintf("Peer anchoring: %u anchor peer(s) configured%s\n", anchors.size(),
+                  peer_anchoring ? "" : " (peer anchoring is disabled, the anchor peers are not used)");
+    }
+    g_connman->SetAnchorPeers(anchors);
+
     LogPrintf("Outbound connection slots: full-relay=%d, block-relay-only=%d, max-inbound=%d\n",
               connOptions.nMaxOutboundFullRelay,
               connOptions.nMaxOutboundBlockRelay,

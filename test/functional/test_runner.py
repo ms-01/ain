@@ -265,6 +265,7 @@ BASE_SCRIPTS = [
     "p2p_wtxid_relay.py",
     "feature_foundation_migration.py",
     "feature_assumevalid.py",
+    "feature_anchor_peers.py",
     "example_test.py",
     "feature_jellyfish_initial_funds.py",
     "wallet_txn_doublespend.py",

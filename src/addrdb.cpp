@@ -12,11 +12,15 @@
 #include <hash.h>
 #include <netaddress.h>
 #include <netbase.h>
+#include <protocol.h>
 #include <random.h>
 #include <streams.h>
 #include <tinyformat.h>
 #include <univalue.h>
 #include <util/system.h>
+
+#include <algorithm>
+#include <fstream>
 
 CBanEntry::CBanEntry(const UniValue& json)
     : nVersion(json["version"].getInt<int>()), nCreateTime(json["ban_created"].getInt<int64_t>()),
@@ -379,4 +383,69 @@ bool CAddrDB::Read(CAddrMan& addr, CDataStream& ssPeers)
         addr.Clear();
     }
     return ret;
+}
+
+std::vector<CAddress> ReadAnchors(const fs::path& anchors_db_path)
+{
+    std::vector<CAddress> anchors;
+    std::ifstream stream{anchors_db_path};
+    if (!stream.good()) {
+        // No anchors file (yet): this is not an error.
+        return anchors;
+    }
+
+    std::string line;
+    while (std::getline(stream, line)) {
+        // Trim whitespace.
+        const auto first = line.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) continue;
+        const auto last = line.find_last_not_of(" \t\r\n");
+        line = line.substr(first, last - first + 1);
+        // Skip empty lines and comments.
+        if (line.empty() || line[0] == '#') continue;
+
+        CService service;
+        if (!Lookup(line.c_str(), service, Params().GetDefaultPort(), false)) {
+            LogPrintf("Invalid anchor peer address '%s' in %s, ignoring\n", line, fs::PathToString(anchors_db_path.filename()));
+            continue;
+        }
+        CAddress addr(service, NODE_NETWORK);
+        if (!addr.IsValid()) {
+            LogPrintf("Invalid anchor peer address '%s' in %s, ignoring\n", line, fs::PathToString(anchors_db_path.filename()));
+            continue;
+        }
+        const std::string key = addr.ToStringIPPort();
+        const bool duplicate = std::any_of(anchors.begin(), anchors.end(),
+                                           [&key](const CAddress& existing) { return existing.ToStringIPPort() == key; });
+        if (duplicate) continue;
+        anchors.push_back(addr);
+        if (anchors.size() >= MAX_BLOCK_RELAY_ONLY_ANCHORS) break;
+    }
+    return anchors;
+}
+
+void DumpAnchors(const fs::path& anchors_db_path, const std::vector<CAddress>& anchors)
+{
+    const fs::path tmp_path = fs::PathFromString(fs::PathToString(anchors_db_path) + ".tmp");
+    {
+        std::ofstream stream{tmp_path, std::ios::out | std::ios::trunc};
+        if (!stream.good()) {
+            LogPrintf("Failed to open %s for writing\n", fs::PathToString(tmp_path.filename()));
+            return;
+        }
+        for (const CAddress& addr : anchors) {
+            stream << addr.ToStringIPPort() << "\n";
+        }
+        stream.flush();
+        if (!stream.good()) {
+            LogPrintf("Failed to write %s\n", fs::PathToString(tmp_path.filename()));
+            return;
+        }
+    }
+    std::error_code ec;
+    fs::rename(tmp_path, anchors_db_path, ec);
+    if (ec) {
+        LogPrintf("Failed to rename %s to %s: %s\n", fs::PathToString(tmp_path.filename()),
+                  fs::PathToString(anchors_db_path.filename()), ec.message());
+    }
 }
