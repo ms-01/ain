@@ -58,6 +58,7 @@ enum class ValidationInvalidReason {
      */
     TX_CONFLICT,
     TX_MEMPOOL_POLICY,        //!< violated mempool's fee/size/descendant/RBF/etc limits
+    TX_RECONSIDERABLE,        //!< failed some policy, but might be acceptable if submitted in a (1p1c) package
 };
 
 inline bool IsTransactionReason(ValidationInvalidReason r)
@@ -72,7 +73,8 @@ inline bool IsTransactionReason(ValidationInvalidReason r)
            r == ValidationInvalidReason::TX_WITNESS_MUTATED ||
            r == ValidationInvalidReason::TX_WITNESS_STRIPPED ||
            r == ValidationInvalidReason::TX_CONFLICT ||
-           r == ValidationInvalidReason::TX_MEMPOOL_POLICY;
+           r == ValidationInvalidReason::TX_MEMPOOL_POLICY ||
+           r == ValidationInvalidReason::TX_RECONSIDERABLE;
 }
 
 inline bool IsBlockReason(ValidationInvalidReason r)

@@ -108,4 +108,7 @@ bool CheckPackage(const Package &txns, PackageValidationState &state);
  */
 bool IsChildWithParents(const Package &package);
 
+/** Get a deterministic hash of a package's transactions (sorted by wtxid in ascending order). */
+uint256 GetPackageHash(const Package &transactions);
+
 #endif // DEFI_POLICY_PACKAGES_H

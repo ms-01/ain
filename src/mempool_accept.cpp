@@ -716,7 +716,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     CAmount mempoolRejectFee =
         m_pool.GetMinFee(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000).GetFee(ws.nSize);
     if (!bypass_limits && mempoolRejectFee > 0 && nModifiedFees < mempoolRejectFee) {
-        return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY,
+        return state.Invalid(ValidationInvalidReason::TX_RECONSIDERABLE,
                              false,
                              "mempool min fee not met",
                              strprintf("%d < %d", nModifiedFees, mempoolRejectFee));
@@ -724,7 +724,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
 
     // No transactions are allowed below minRelayTxFee except from disconnected blocks
     if (!ws.isEVMTx && !bypass_limits && nModifiedFees < ::minRelayTxFee.GetFee(ws.nSize)) {
-        return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY,
+        return state.Invalid(ValidationInvalidReason::TX_RECONSIDERABLE,
                              false,
                              "min relay fee not met",
                              strprintf("%d < %d", nModifiedFees, ::minRelayTxFee.GetFee(ws.nSize)));
@@ -819,7 +819,7 @@ bool MemPoolAccept::ReplacementChecks(ATMPArgs &args, Workspace &ws) {
     // Rule #6: the replacement transaction must have a higher feerate than its
     // direct conflicts.
     if (const auto err{PaysMoreThanConflicts(setIterConflicting, newFeeRate, hash)}) {
-        return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "insufficient fee", *err);
+        return state.Invalid(ValidationInvalidReason::TX_RECONSIDERABLE, false, "insufficient fee", *err);
     }
 
     // Rule #5: don't replace more than MAX_REPLACEMENT_CANDIDATES entries and
@@ -842,7 +842,7 @@ bool MemPoolAccept::ReplacementChecks(ATMPArgs &args, Workspace &ws) {
     // Rules #3 and #4: the replacement must pay greater fees than the
     // transactions it replaces and must pay for its own bandwidth.
     if (const auto err{PaysForRBF(ws.nConflictingFees, ws.nModifiedFees, ws.nSize, ::incrementalRelayFee, hash)}) {
-        return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "insufficient fee", *err);
+        return state.Invalid(ValidationInvalidReason::TX_RECONSIDERABLE, false, "insufficient fee", *err);
     }
 
     return true;
@@ -1101,7 +1101,7 @@ bool MemPoolAccept::Finalize(ATMPArgs &args, Workspace &ws) {
                          MempoolExpirySeconds(gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_DVM_EXPIRY)),
                          MempoolExpirySeconds(gArgs.GetArg("-mempoolexpiryevm", DEFAULT_MEMPOOL_EVM_EXPIRY)));
         if (!m_pool.exists(hash)) {
-            return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, "mempool full");
+            return state.Invalid(ValidationInvalidReason::TX_RECONSIDERABLE, false, "mempool full");
         }
     }
 
