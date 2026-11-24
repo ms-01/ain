@@ -59,6 +59,7 @@ fn main() -> Result<()> {
         // The pin matches the current effective default of `ethers-solc` (`Shanghai`), so the
         // emitted bytecode stays byte-identical.
         solc_config.settings.evm_version = Some(EvmVersion::Shanghai);
+        let effective_settings_json = serde_json::to_string(&solc_config.settings)?;
 
         let project = Project::builder()
             .solc(solc)
@@ -83,14 +84,30 @@ fn main() -> Result<()> {
                 .deployed_bytecode
                 .context("Deployed bytecode not found")?;
 
-            let items = [
-                ("abi.json", serde_json::to_string(&abi)?),
-                ("bytecode.json", serde_json::to_string(&bytecode)?),
-                (
+            // Only the per-token `dst20` proxy facade uses solc 0.8.28 bytecode (at/above
+            // DF25Height). All 8 fixed-address / reserved-namespace contracts stay frozen to
+            // the legacy 0.8.20 artifacts so `sol_artifacts/` matches on-chain deployments.
+            let is_df25_upgraded = sol_project_name == "dst20";
+            let legacy_dir = manifest_path.join("legacy_0_8_20").join(sol_project_name);
+
+            let mut items = vec![("abi.json", serde_json::to_string(&abi)?)];
+            if is_df25_upgraded {
+                items.push(("bytecode.json", serde_json::to_string(&bytecode)?));
+                items.push((
                     "deployed_bytecode.json",
                     serde_json::to_string(&deployed_bytecode)?,
-                ),
-            ];
+                ));
+                items.push(("settings.json", effective_settings_json.clone()));
+            } else {
+                items.push((
+                    "bytecode.json",
+                    fs::read_to_string(legacy_dir.join("bytecode.json"))?,
+                ));
+                items.push((
+                    "deployed_bytecode.json",
+                    fs::read_to_string(legacy_dir.join("deployed_bytecode.json"))?,
+                ));
+            }
 
             fs::create_dir_all(&sol_project_outdir)?;
             for (file_name, contents) in items {

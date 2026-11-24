@@ -345,6 +345,7 @@ BASE_SCRIPTS = [
     "feature_loan.py",
     "feature_evm_miner.py",
     "feature_evm.py",
+    "feature_evm_df25_solc_upgrade.py",
     "feature_evm_dst20.py",
     "feature_evm_contracts.py",
     "feature_evm_proxy.py",
