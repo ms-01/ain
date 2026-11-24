@@ -39,7 +39,10 @@ pub fn check_tx_intrinsic_gas(signed_tx: &SignedTx) -> Result<()> {
 mod tests {
     use ethereum::TransactionAction;
     use ethereum_types::{H160, H256, U256};
-    use evm::Config;
+    use evm::{
+        gasometer::{GasCost, Gasometer},
+        Config,
+    };
 
     use crate::{
         gas::check_tx_intrinsic_gas,
@@ -363,5 +366,79 @@ mod tests {
         );
         let error = check_tx_intrinsic_gas(&tx).unwrap_err();
         assert_eq!(error.to_string(), REJECTION_MESSAGE);
+    }
+
+    #[test]
+    fn eip3529_sstore_config_constants_are_pinned() {
+        // Pins the EIP-2929 / EIP-3529 SSTORE and refund constants on `Config::shanghai()`.
+        let config = Config::shanghai();
+        assert!(config.sstore_gas_metering);
+        assert_eq!(config.gas_sstore_set, 20_000);
+        assert_eq!(config.gas_sstore_reset, 2_900);
+        assert_eq!(config.gas_sload, 100);
+        assert_eq!(config.gas_sload_cold, 2_100);
+        assert_eq!(config.refund_sstore_clears, 4_800);
+        assert!(config.decrease_clears_refund);
+        assert_eq!(config.max_refund_quotient, 5);
+    }
+
+    #[test]
+    fn eip3529_sstore_refund_reference_vectors() {
+        // All 17 vectors from the EIP-2200 "Test Cases" table with EIP-3529 refund values
+        // applied. Each vector is an explicit sequence of `(original, current, new)` SSTORE
+        // transitions on a single slot paired with its literal expected raw refund total.
+        type SStoreTransition = (u64, u64, u64);
+        type RefundVector = (&'static str, &'static [SStoreTransition], i64);
+
+        const VECTORS: &[RefundVector] = &[
+            ("0 -> 0 -> 0", &[(0, 0, 0), (0, 0, 0)], 0),
+            ("0 -> 0 -> 1", &[(0, 0, 0), (0, 0, 1)], 0),
+            ("0 -> 1 -> 0", &[(0, 0, 1), (0, 1, 0)], 19_900),
+            ("0 -> 1 -> 2", &[(0, 0, 1), (0, 1, 2)], 0),
+            ("0 -> 1 -> 1", &[(0, 0, 1), (0, 1, 1)], 0),
+            ("1 -> 0 -> 0", &[(1, 1, 0), (1, 0, 0)], 4_800),
+            ("1 -> 0 -> 1", &[(1, 1, 0), (1, 0, 1)], 2_800),
+            ("1 -> 0 -> 2", &[(1, 1, 0), (1, 0, 2)], 0),
+            ("1 -> 2 -> 0", &[(1, 1, 2), (1, 2, 0)], 4_800),
+            ("1 -> 2 -> 3", &[(1, 1, 2), (1, 2, 3)], 0),
+            ("1 -> 2 -> 1", &[(1, 1, 2), (1, 2, 1)], 2_800),
+            ("1 -> 2 -> 2", &[(1, 1, 2), (1, 2, 2)], 0),
+            ("1 -> 1 -> 0", &[(1, 1, 1), (1, 1, 0)], 4_800),
+            ("1 -> 1 -> 2", &[(1, 1, 1), (1, 1, 2)], 0),
+            ("1 -> 1 -> 1", &[(1, 1, 1), (1, 1, 1)], 0),
+            (
+                "0 -> 1 -> 0 -> 1",
+                &[(0, 0, 1), (0, 1, 0), (0, 0, 1)],
+                19_900,
+            ),
+            (
+                "1 -> 0 -> 1 -> 0",
+                &[(1, 1, 0), (1, 0, 1), (1, 1, 0)],
+                7_600,
+            ),
+        ];
+
+        assert_eq!(VECTORS.len(), 17);
+
+        let config = Config::shanghai();
+        for &(label, ops, expected_refund) in VECTORS {
+            let mut gasometer = Gasometer::new(1_000_000, &config);
+            for (idx, &(original, current, new)) in ops.iter().enumerate() {
+                let cost = GasCost::SStore {
+                    original: H256::from_low_u64_be(original),
+                    current: H256::from_low_u64_be(current),
+                    new: H256::from_low_u64_be(new),
+                    target_is_cold: idx == 0,
+                };
+                gasometer
+                    .record_dynamic_cost(cost, None)
+                    .unwrap_or_else(|err| panic!("vector {label} op {idx} failed: {err:?}"));
+            }
+            assert_eq!(
+                gasometer.refunded_gas(),
+                expected_refund,
+                "unexpected EIP-3529 SSTORE refund for vector {label}"
+            );
+        }
     }
 }
