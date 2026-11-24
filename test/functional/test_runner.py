@@ -252,6 +252,7 @@ BASE_SCRIPTS = [
     "p2p_ibd_stalling.py",
     "p2p_ibd_getheaders_guardrails.py",
     "p2p_headers_budget.py",
+    "p2p_header_tip_selection.py",
     "p2p_mn_version_gate_stall.py",
     "mining_prioritisetransaction.py",
     "p2p_invalid_locator.py",

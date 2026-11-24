@@ -669,6 +669,12 @@ struct PruneLockInfo {
  * This data is used mostly in `CChainState` - information about, e.g.,
  * candidate tips is not maintained here.
  */
+/** Policy mode for selecting pindexBestHeader (non-consensus). */
+enum class HeaderTipMode {
+    ANCHORED,
+    CHAINWORK,
+};
+
 class BlockManager {
 public:
     BlockMap m_block_index GUARDED_BY(cs_main);
@@ -788,7 +794,46 @@ public:
      * lock was removed.
      */
     bool DeletePruneLock(const std::string& name) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+    /** Policy mode for selecting pindexBestHeader (non-consensus). */
+    HeaderTipMode m_header_tip_mode{HeaderTipMode::ANCHORED};
+
+    void SetHeaderTipMode(HeaderTipMode mode) { m_header_tip_mode = mode; }
+    HeaderTipMode GetHeaderTipMode() const { return m_header_tip_mode; }
+
+    /**
+     * Recompute pindexBestHeader across m_block_index after an invalidation or
+     * rewind that affected the current best header chain.
+     */
+    void RecomputeBestHeader(const CBlockIndex *active_tip) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 };
+
+/** Maximum pprev hops in GetAnchoredHeight() when not on the active chain fast path. */
+static constexpr int MAX_ANCHORED_WALK_DEPTH = 64;
+
+/** Parse -headertipmode CLI value ("anchored" or "chainwork"). */
+bool ParseHeaderTipMode(const std::string &str, HeaderTipMode &mode);
+
+/**
+ * Return the height of the highest validated (BLOCK_VALID_SCRIPTS) ancestor of
+ * pindex, using an O(log N) pskip fast path for extensions of active_tip and a
+ * bounded pprev walk (max_walk_depth hops) otherwise. Returns 0 for null,
+ * failed, or unanchored entries beyond max_walk_depth.
+ */
+int GetAnchoredHeight(const CBlockIndex *pindex,
+                      const CBlockIndex *active_tip,
+                      int max_walk_depth = MAX_ANCHORED_WALK_DEPTH);
+
+/**
+ * Deterministic comparator for pindexBestHeader selection across all update sites
+ * (AddToBlockIndex, LoadBlockIndex, ConnectTip, RecomputeBestHeader).
+ * In ANCHORED mode: higher anchored height -> higher nChainWork -> lower block hash.
+ * In CHAINWORK mode: higher nChainWork -> lower block hash.
+ */
+bool IsBetterHeaderTip(const CBlockIndex *candidate,
+                       const CBlockIndex *current,
+                       const CBlockIndex *active_tip,
+                       HeaderTipMode mode);
 
 /** The global block manager (tree of blocks, prune locks, ...). */
 extern BlockManager g_blockman;

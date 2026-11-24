@@ -705,6 +705,7 @@ void SetupServerArgs()
     gArgs.AddArg("-maxaddrprocessingtokenbucket=<n>", strprintf("Sets MAX_ADDR_PROCESSING_TOKEN_BUCKET limit for ADDR messages(default: %d)", MAX_ADDR_PROCESSING_TOKEN_BUCKET), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxunanchoredheaders=<n>", strprintf("Maximum number of side chain headers (headers that do not extend the best header chain) that all peers together may add to the block index. On a proof of stake chain such headers are cheap to create, so they are bounded to keep the memory and the disk usage of the block index bounded. Use a negative value to disable the limit (default: %d)", DEFAULT_MAX_UNANCHORED_HEADERS), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxunanchoredheadersperpeer=<n>", strprintf("Maximum number of side chain headers (headers that do not extend the best header chain) that a single peer may add to the block index. Use a negative value to disable the limit (default: %d)", DEFAULT_MAX_UNANCHORED_HEADERS_PER_PEER), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-headertipmode=<anchored|chainwork>", "Header-tip selection policy (default: anchored). 'anchored' prefers chains backed by validated PoS blocks to mitigate forged-chainwork tip hijacking on PoS. 'chainwork' restores the legacy raw-nChainWork selection, which is vulnerable to forged-header tip hijacking on PoS.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-ethrpcbind=<addr>[:port]", "Bind to given address to listen for ETH-JSON-RPC connections. Do not expose the ETH-RPC server to untrusted networks such as the public internet! This option is ignored unless -rpcallowip is also passed. Port is optional and overrides -ethrpcport. This option can be specified multiple times (default: 127.0.0.1 i.e., localhost)", ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::RPC);
     gArgs.AddArg("-ethrpcport=<port>", strprintf("Listen for ETH-JSON-RPC connections on <port>. If -1 flag specified, ETH RPC server initialization will be disabled. (default: %u, testnet: %u, changi: %u, devnet: %u, regtest: %u)", defaultBaseParams->ETHRPCPort(), testnetBaseParams->ETHRPCPort(), changiBaseParams->ETHRPCPort(), devnetBaseParams->ETHRPCPort(), regtestBaseParams->ETHRPCPort()), ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::RPC);
     gArgs.AddArg("-wsbind=<addr>[:port]", "Bind to given address to listen for ETH-WebSockets connections. Do not expose the Eth-WebSockets server to untrusted networks such as the public internet! This option is ignored unless -rpcallowip is also passed. Port is optional and overrides -wsport. This option can be specified multiple times (default: 127.0.0.1 i.e., localhost)", ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::RPC);
@@ -1451,6 +1452,13 @@ bool AppInitParameterInteraction()
     nMaxTipAge = gArgs.GetArg("-maxtipage", DEFAULT_MAX_TIP_AGE);
     fIsFakeNet = Params().NetworkIDString() == "regtest" && gArgs.GetArg("-dummypos", false);
     CTxOut::SERIALIZE_FORCED_TO_OLD_IN_TESTS = Params().NetworkIDString() == "regtest" && gArgs.GetArg("-txnotokens", false);
+
+    HeaderTipMode header_tip_mode = HeaderTipMode::ANCHORED;
+    const std::string header_tip_mode_str = gArgs.GetArg("-headertipmode", "anchored");
+    if (!ParseHeaderTipMode(header_tip_mode_str, header_tip_mode)) {
+        return InitError(strprintf("Invalid -headertipmode value '%s'. Must be 'anchored' or 'chainwork'.", header_tip_mode_str));
+    }
+    g_blockman.SetHeaderTipMode(header_tip_mode);
 
     return true;
 }
