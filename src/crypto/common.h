@@ -9,6 +9,7 @@
 #include <config/defi-config.h>
 #endif
 
+#include <cstddef>
 #include <stdint.h>
 #include <string.h>
 
@@ -22,6 +23,13 @@ uint16_t static inline ReadLE16(const unsigned char* ptr)
 }
 
 uint32_t static inline ReadLE32(const unsigned char* ptr)
+{
+    uint32_t x;
+    memcpy((char*)&x, ptr, 4);
+    return le32toh(x);
+}
+
+uint32_t static inline ReadLE32(const std::byte* ptr)
 {
     uint32_t x;
     memcpy((char*)&x, ptr, 4);
@@ -47,7 +55,19 @@ void static inline WriteLE32(unsigned char* ptr, uint32_t x)
     memcpy(ptr, (char*)&v, 4);
 }
 
+void static inline WriteLE32(std::byte* ptr, uint32_t x)
+{
+    uint32_t v = htole32(x);
+    memcpy(ptr, (char*)&v, 4);
+}
+
 void static inline WriteLE64(unsigned char* ptr, uint64_t x)
+{
+    uint64_t v = htole64(x);
+    memcpy(ptr, (char*)&v, 8);
+}
+
+void static inline WriteLE64(std::byte* ptr, uint64_t x)
 {
     uint64_t v = htole64(x);
     memcpy(ptr, (char*)&v, 8);

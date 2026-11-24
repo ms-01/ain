@@ -367,6 +367,47 @@ void ECC_Start() {
     secp256k1_context_sign = ctx;
 }
 
+#include <secp256k1_ellswift.h>
+#include <span.h>
+
+EllSwiftPubKey CKey::EllSwiftCreate(std::span<const std::byte> ent32) const
+{
+    assert(fValid);
+    assert(ent32.size() == 32);
+    std::array<std::byte, EllSwiftPubKey::size()> encoded_pubkey;
+
+    auto success = secp256k1_ellswift_create(secp256k1_context_sign,
+                                             UCharCast(encoded_pubkey.data()),
+                                             keydata.data(),
+                                             UCharCast(ent32.data()));
+    assert(success);
+    return {encoded_pubkey};
+}
+
+ECDHSecret CKey::ComputeBIP324ECDHSecret(const EllSwiftPubKey& their_ellswift, const EllSwiftPubKey& our_ellswift, bool initiating) const
+{
+    assert(fValid);
+
+    ECDHSecret output;
+    bool success = secp256k1_ellswift_xdh(secp256k1_context_static,
+                                          UCharCast(output.data()),
+                                          UCharCast(initiating ? our_ellswift.data() : their_ellswift.data()),
+                                          UCharCast(initiating ? their_ellswift.data() : our_ellswift.data()),
+                                          keydata.data(),
+                                          initiating ? 0 : 1,
+                                          secp256k1_ellswift_xdh_hash_function_bip324,
+                                          nullptr);
+    assert(success);
+    return output;
+}
+
+CKey GenerateRandomKey(bool compressed) noexcept
+{
+    CKey key;
+    key.MakeNewKey(compressed);
+    return key;
+}
+
 void ECC_Stop() {
     secp256k1_context *ctx = secp256k1_context_sign;
     secp256k1_context_sign = nullptr;

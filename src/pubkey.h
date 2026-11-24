@@ -12,6 +12,9 @@
 #include <script/standard.h>
 #include <uint256.h>
 
+#include <array>
+#include <cstddef>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -304,6 +307,29 @@ struct CExtPubKey {
             throw std::runtime_error("Invalid extended key size\n");
         s.read((char *)&code[0], len);
         Decode(code);
+    }
+};
+
+/** An encapsulated ElligatorSwift-encoded public key (BIP324). */
+struct EllSwiftPubKey
+{
+private:
+    static constexpr size_t SIZE = 64;
+    std::array<std::byte, SIZE> m_pubkey;
+
+public:
+    EllSwiftPubKey() noexcept = default;
+    EllSwiftPubKey(std::span<const std::byte> ellswift) noexcept;
+    CPubKey Decode() const;
+
+    const std::byte* data() const { return m_pubkey.data(); }
+    static constexpr size_t size() { return SIZE; }
+    auto begin() const { return m_pubkey.cbegin(); }
+    auto end() const { return m_pubkey.cend(); }
+
+    bool friend operator==(const EllSwiftPubKey& a, const EllSwiftPubKey& b)
+    {
+        return a.m_pubkey == b.m_pubkey;
     }
 };
 
