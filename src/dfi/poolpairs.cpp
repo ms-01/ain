@@ -180,6 +180,20 @@ inline CAmount liquidityReward(CAmount reward, CAmount liquidity, CAmount totalL
         (arith_uint256(reward) * arith_uint256(liquidity) / arith_uint256(totalLiquidity)).GetLow64());
 }
 
+inline CAmount legacyLiquidityReward(CAmount reward, CAmount liquidity, CAmount totalLiquidity) {
+    if (reward <= 0 || liquidity <= 0 || totalLiquidity <= 0) {
+        return 0;
+    }
+    constexpr uint32_t PRECISION = 10000;
+    const arith_uint256 liqWeight = (arith_uint256(liquidity) * PRECISION) / arith_uint256(totalLiquidity);
+    const arith_uint256 result = (arith_uint256(reward) * liqWeight) / PRECISION;
+    if (result > arith_uint256(MAX_MONEY)) {
+        return 0;
+    }
+    const auto amount = static_cast<CAmount>(result.GetLow64());
+    return MoneyRange(amount) ? amount : 0;
+}
+
 template <typename TIterator>
 bool MatchPoolId(TIterator &it, DCT_ID poolId) {
     return it.Valid() && it.Key().poolID == poolId;
@@ -319,7 +333,8 @@ void CPoolPairView::CalculatePoolRewards(DCT_ID const &poolId,
         return;
     }
     constexpr const uint32_t PRECISION = 10000;
-    const auto newCalcHeight = uint32_t(Params().GetConsensus().DF4BayfrontGardensHeight);
+    const auto &consensus = Params().GetConsensus();
+    const auto newCalcHeight = uint32_t(consensus.DF4BayfrontGardensHeight);
 
     auto tokenIds = ReadBy<ByIDPair, ByPairKey>(poolId);
     assert(tokenIds);  // contract to verify pool data
@@ -373,8 +388,12 @@ void CPoolPairView::CalculatePoolRewards(DCT_ID const &poolId,
         if (height >= startPoolReward && poolReward != 0) {
             CAmount providerReward = 0;
             if (height < newCalcHeight) {  // old calculation
-                uint32_t liqWeight = liquidity * PRECISION / totalLiquidity;
-                providerReward = poolReward * liqWeight / PRECISION;
+                if (Consensus::IsDF25Active(static_cast<int>(height), consensus)) {
+                    providerReward = legacyLiquidityReward(poolReward, liquidity, totalLiquidity);
+                } else {
+                    uint32_t liqWeight = liquidity * PRECISION / totalLiquidity;
+                    providerReward = poolReward * liqWeight / PRECISION;
+                }
             } else {  // new calculation
                 providerReward = liquidityReward(poolReward, liquidity, totalLiquidity);
             }
@@ -388,12 +407,21 @@ void CPoolPairView::CalculatePoolRewards(DCT_ID const &poolId,
         if (poolSwapHeight == height && poolSwap.swapEvent) {
             CAmount feeA{}, feeB{};
             if (height < newCalcHeight) {
-                uint32_t liqWeight = liquidity * PRECISION / totalLiquidity;
-                if (poolSwap.blockCommissionA) {
-                    feeA = poolSwap.blockCommissionA * liqWeight / PRECISION;
-                }
-                if (poolSwap.blockCommissionB) {
-                    feeB = poolSwap.blockCommissionB * liqWeight / PRECISION;
+                if (Consensus::IsDF25Active(static_cast<int>(height), consensus)) {
+                    if (poolSwap.blockCommissionA) {
+                        feeA = legacyLiquidityReward(poolSwap.blockCommissionA, liquidity, totalLiquidity);
+                    }
+                    if (poolSwap.blockCommissionB) {
+                        feeB = legacyLiquidityReward(poolSwap.blockCommissionB, liquidity, totalLiquidity);
+                    }
+                } else {
+                    uint32_t liqWeight = liquidity * PRECISION / totalLiquidity;
+                    if (poolSwap.blockCommissionA) {
+                        feeA = poolSwap.blockCommissionA * liqWeight / PRECISION;
+                    }
+                    if (poolSwap.blockCommissionB) {
+                        feeB = poolSwap.blockCommissionB * liqWeight / PRECISION;
+                    }
                 }
             } else {
                 if (poolSwap.blockCommissionA) {
@@ -432,7 +460,8 @@ void CPoolPairView::CalculatePoolRewardsSegmented(
         return;
     }
     constexpr const uint32_t PRECISION = 10000;
-    const auto newCalcHeight = uint32_t(Params().GetConsensus().DF4BayfrontGardensHeight);
+    const auto &consensus = Params().GetConsensus();
+    const auto newCalcHeight = uint32_t(consensus.DF4BayfrontGardensHeight);
 
     auto tokenIds = ReadBy<ByIDPair, ByPairKey>(poolId);
     assert(tokenIds);  // contract to verify pool data
@@ -483,8 +512,12 @@ void CPoolPairView::CalculatePoolRewardsSegmented(
         if (height >= startPoolReward && poolReward != 0) {
             CAmount providerReward = 0;
             if (height < newCalcHeight) {  // old calculation
-                uint32_t liqWeight = liquidity * PRECISION / totalLiquidity;
-                providerReward = poolReward * liqWeight / PRECISION;
+                if (Consensus::IsDF25Active(static_cast<int>(height), consensus)) {
+                    providerReward = legacyLiquidityReward(poolReward, liquidity, totalLiquidity);
+                } else {
+                    uint32_t liqWeight = liquidity * PRECISION / totalLiquidity;
+                    providerReward = poolReward * liqWeight / PRECISION;
+                }
             } else {  // new calculation
                 providerReward = liquidityReward(poolReward, liquidity, totalLiquidity);
             }
@@ -498,12 +531,21 @@ void CPoolPairView::CalculatePoolRewardsSegmented(
         if (poolSwapHeight == height && poolSwap.swapEvent) {
             CAmount feeA{}, feeB{};
             if (height < newCalcHeight) {
-                uint32_t liqWeight = liquidity * PRECISION / totalLiquidity;
-                if (poolSwap.blockCommissionA) {
-                    feeA = poolSwap.blockCommissionA * liqWeight / PRECISION;
-                }
-                if (poolSwap.blockCommissionB) {
-                    feeB = poolSwap.blockCommissionB * liqWeight / PRECISION;
+                if (Consensus::IsDF25Active(static_cast<int>(height), consensus)) {
+                    if (poolSwap.blockCommissionA) {
+                        feeA = legacyLiquidityReward(poolSwap.blockCommissionA, liquidity, totalLiquidity);
+                    }
+                    if (poolSwap.blockCommissionB) {
+                        feeB = legacyLiquidityReward(poolSwap.blockCommissionB, liquidity, totalLiquidity);
+                    }
+                } else {
+                    uint32_t liqWeight = liquidity * PRECISION / totalLiquidity;
+                    if (poolSwap.blockCommissionA) {
+                        feeA = poolSwap.blockCommissionA * liqWeight / PRECISION;
+                    }
+                    if (poolSwap.blockCommissionB) {
+                        feeB = poolSwap.blockCommissionB * liqWeight / PRECISION;
+                    }
                 }
             } else {
                 if (poolSwap.blockCommissionA) {
@@ -576,6 +618,10 @@ void CPoolPairView::CalculatePoolRewardsSegmented(
         if (newCalcHeight > height) {
             // the calculation changes at the fork height
             segEnd = std::min(segEnd, newCalcHeight);
+        }
+        if (consensus.DF25Height != std::numeric_limits<int>::max() && consensus.DF25Height > 0 &&
+            static_cast<uint32_t>(consensus.DF25Height) > height) {
+            segEnd = std::min(segEnd, static_cast<uint32_t>(consensus.DF25Height));
         }
         if (segEnd <= height) {
             // should never happen, but never loop forever either
@@ -799,10 +845,12 @@ std::pair<CAmount, CAmount> CPoolPairView::UpdatePoolRewards(
     std::function<CTokenAmount(const CScript &, DCT_ID)> onGetBalance,
     std::function<Res(const CScript &, const CScript &, CTokenAmount)> onTransfer,
     int nHeight) {
-    const bool newRewardCalc = nHeight >= Params().GetConsensus().DF4BayfrontGardensHeight;
-    const bool newRewardLogic = nHeight >= Params().GetConsensus().DF8EunosHeight;
-    const bool newCustomRewards = nHeight >= Params().GetConsensus().DF5ClarkeQuayHeight;
-    const bool newRewardCalculations = nHeight >= Params().GetConsensus().DF24Height;
+    const auto &consensus = Params().GetConsensus();
+    const bool newRewardCalc = nHeight >= consensus.DF4BayfrontGardensHeight;
+    const bool newRewardLogic = nHeight >= consensus.DF8EunosHeight;
+    const bool newCustomRewards = nHeight >= consensus.DF5ClarkeQuayHeight;
+    const bool newRewardCalculations = nHeight >= consensus.DF24Height;
+    const bool df25Active = Consensus::IsDF25Active(nHeight, consensus);
 
     CAmount totalDistributed{};
     CAmount totalLoanDistributed{};
@@ -930,8 +978,11 @@ std::pair<CAmount, CAmount> CPoolPairView::UpdatePoolRewards(
                     }
                     CAmount const liquidity = onGetBalance(provider, poolId).nValue;
 
-                    uint32_t const liqWeight = liquidity * PRECISION / totalLiquidity;
-                    assert(liqWeight < PRECISION);
+                    uint32_t liqWeight = 0;
+                    if (!newRewardCalc && !df25Active) {
+                        liqWeight = liquidity * PRECISION / totalLiquidity;
+                        assert(liqWeight < PRECISION);
+                    }
 
                     // distribute trading fees
                     if (swapEvent) {
@@ -942,6 +993,13 @@ std::pair<CAmount, CAmount> CPoolPairView::UpdatePoolRewards(
                             }
                             if (swapValue->blockCommissionB) {
                                 feeB = liquidityReward(swapValue->blockCommissionB, liquidity, totalLiquidity);
+                            }
+                        } else if (df25Active) {
+                            if (swapValue->blockCommissionA) {
+                                feeA = legacyLiquidityReward(swapValue->blockCommissionA, liquidity, totalLiquidity);
+                            }
+                            if (swapValue->blockCommissionB) {
+                                feeB = legacyLiquidityReward(swapValue->blockCommissionB, liquidity, totalLiquidity);
                             }
                         } else {
                             if (swapValue->blockCommissionA) {
@@ -970,6 +1028,8 @@ std::pair<CAmount, CAmount> CPoolPairView::UpdatePoolRewards(
                         CAmount providerReward;
                         if (newRewardCalc) {
                             providerReward = liquidityReward(poolReward, liquidity, totalLiquidity);
+                        } else if (df25Active) {
+                            providerReward = legacyLiquidityReward(poolReward, liquidity, totalLiquidity);
                         } else {
                             providerReward = poolReward * liqWeight / PRECISION;
                         }
