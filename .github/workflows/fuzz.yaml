@@ -63,13 +63,13 @@ jobs:
           ../configure \
           --prefix="${REPO_ROOT}/build/depends/${TARGET}" \
           --enable-fuzz \
-          --with-sanitizers=fuzzer,address,undefined \
-          --disable-bench
+          --with-sanitizers=fuzzer,address,undefined
         # Build the Rust workspace first (it provides ain_rs_exports.h and
-        # libain_rs_exports.a), then the fuzz binary itself. The complete tree
-        # cannot be built in a fuzz configuration: --enable-fuzz sets use_bench=no
-        # and the ENABLE_BENCH automake conditional is inverted, so bench/bench_defi
-        # is built and fails to link (SQLITE_LIBS are missing from its LDADD).
+        # libain_rs_exports.a), then the fuzz binary itself. Only the fuzz
+        # target is built here; the complete tree is covered by the regular CI
+        # workflow. Note that --enable-fuzz sets use_bench=no, so bench/bench_defi
+        # is not part of a fuzz build tree (ENABLE_BENCH is true only when the
+        # benchmark is enabled).
         make -j"$(nproc)" -C lib
         make -j"$(nproc)" -C src test/fuzz/fuzz
 
