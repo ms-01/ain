@@ -36,6 +36,7 @@
 
 #include <unordered_map>
 
+#include <algorithm>
 #include <math.h>
 
 // Dump addresses to peers.dat every 15 minutes (900s)
@@ -592,6 +593,7 @@ void CNode::copyStats(CNodeStats &stats)
     X(m_bip152_highbandwidth_from);
     X(m_wants_addrv2);
     X(m_manual_connection);
+    X(m_is_anchor_peer);
     X(nStartingHeight);
     {
         LOCK(cs_vSend);
@@ -1850,6 +1852,14 @@ void CConnman::DisconnectNodes()
                 // close socket and cleanup
                 pnode->CloseSocketDisconnect();
 
+                if (pnode->m_is_anchor_peer) {
+                    // The connection to the anchor peer was lost: the anchor
+                    // peer stays configured, but the next connection attempt
+                    // is delayed by ANCHOR_RETRY_INTERVAL_SECONDS (the backoff
+                    // is cleared again once the version handshake succeeds).
+                    MarkAnchorAttemptFailed(pnode->addr);
+                }
+
                 if (pnode->m_transport->ShouldReconnectV1()) {
                     LogPrint(BCLog::NET, "retrying with v1 transport for peer=%d (%s)\n", pnode->GetId(), pnode->addr.ToString());
                     m_reconnections.push_back({pnode->addr, pnode->addrName, pnode->m_conn_type});
@@ -2471,13 +2481,48 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect)
         //  * Only make a feeler connection once every few minutes.
         //
         const int64_t nTime = GetTimeMicros();
-        const std::optional<ConnectionType> conn_type = SelectOutboundConnectionType(
-            nOutboundFullRelay,
-            nMaxOutboundFullRelay,
-            nOutboundBlockRelay,
-            nMaxOutboundBlockRelay,
-            GetTryNewOutboundPeer(),
-            nTime > nNextFeeler);
+
+        // Anchor peers (block-relay anchors) are operator-configured and get
+        // priority for the limited block-relay-only outbound slots. They are a
+        // connectivity/priority concept only: blocks and headers received from
+        // an anchor peer are validated exactly like those of any other peer.
+        //
+        // While peer anchoring is enabled and at least one anchor peer is
+        // configured, the block-relay-only outbound slots are *reserved* for
+        // the anchor peers: the addrman based selection never consumes them.
+        // This guarantees that a configured anchor peer can always obtain a
+        // block-relay-only slot, also after a failed connection attempt.
+        const bool anchors_reserve_block_relay = m_peer_anchoring && HasAnchorPeers();
+
+        bool is_anchor = false;
+        CAddress anchorAddr;
+        if (anchors_reserve_block_relay && nOutboundBlockRelay < nMaxOutboundBlockRelay) {
+            anchorAddr = SelectNextAnchorPeer();
+            is_anchor = anchorAddr.IsValid();
+        }
+
+        std::optional<ConnectionType> conn_type;
+        if (is_anchor) {
+            conn_type = ConnectionType::BLOCK_RELAY;
+        } else {
+            conn_type = SelectOutboundConnectionType(
+                nOutboundFullRelay,
+                nMaxOutboundFullRelay,
+                nOutboundBlockRelay,
+                nMaxOutboundBlockRelay,
+                GetTryNewOutboundPeer(),
+                nTime > nNextFeeler);
+            if (conn_type && *conn_type == ConnectionType::BLOCK_RELAY && anchors_reserve_block_relay) {
+                // The block-relay-only outbound slots are reserved for the
+                // configured anchor peers, they are not given to an
+                // addrman-selected peer.
+                if (nTime > nNextFeeler) {
+                    conn_type = ConnectionType::FEELER;
+                } else {
+                    conn_type = std::nullopt;
+                }
+            }
+        }
         if (!conn_type) {
             continue;
         }
@@ -2488,10 +2533,20 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect)
 
         addrman.ResolveCollisions();
 
+        if (is_anchor) {
+            // Anchor peers bypass the addrman selection and the netgroup
+            // diversity check: connecting to them is an explicit operator
+            // decision. This bypass is limited to the anchor candidates.
+            addrConnect = anchorAddr;
+            LogPrint(BCLog::NET, "Making anchor connection to %s\n", addrConnect.ToStringIPPort());
+        }
+
         int64_t nANow = GetAdjustedTime();
         int nTries = 0;
         while (!interruptNet)
         {
+            if (is_anchor) break;
+
             CAddrInfo addr = addrman.SelectTriedCollision();
 
             // SelectTriedCollision returns an invalid address if it is empty.
@@ -2550,7 +2605,30 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect)
                 LogPrint(BCLog::NET, "Making feeler connection to %s\n", addrConnect.ToString());
             }
 
-            OpenNetworkConnection(addrConnect, (int)setConnected.size() >= std::min(nMaxConnections - 1, 2), &grant, nullptr, *conn_type);
+            // Anchor peers are explicitly configured by the operator, hence the
+            // destination name is passed to allow connecting to local addresses
+            // (e.g. in regtest) and to skip the addrman-based local check.
+            const std::string anchor_dest = is_anchor ? anchorAddr.ToStringIPPort() : std::string();
+            const bool opened = OpenNetworkConnection(addrConnect, (int)setConnected.size() >= std::min(nMaxConnections - 1, 2), &grant,
+                                                       is_anchor ? anchor_dest.c_str() : nullptr, *conn_type, std::nullopt, is_anchor);
+            if (is_anchor) {
+                // The retry backoff is not cleared when the TCP connection is
+                // merely initiated: it is cleared once the version handshake
+                // with the anchor peer succeeded (see ClearAnchorBackoff()).
+                // An anchor peer that accepts the TCP connection but fails the
+                // handshake is therefore retried with the regular backoff and
+                // not in a tight loop.
+                if (!opened && !interruptNet && GetNetworkActive() &&
+                    !FindNode(static_cast<CService>(anchorAddr)) &&
+                    !FindNode(anchorAddr.ToStringIPPort())) {
+                    // The anchor peer could not be reached. It stays configured
+                    // and eligible, but the next connection attempt is delayed
+                    // by ANCHOR_RETRY_INTERVAL_SECONDS.
+                    MarkAnchorAttemptFailed(anchorAddr);
+                    LogPrintf("Anchor peer %s is not reachable, next connection attempt in %d seconds\n",
+                              anchorAddr.ToStringIPPort(), ANCHOR_RETRY_INTERVAL_SECONDS);
+                }
+            }
         }
     }
 }
@@ -2647,7 +2725,7 @@ void CConnman::ThreadOpenAddedConnections()
 }
 
 // if successful, this moves the passed grant to the constructed node
-void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound, const char *pszDest, ConnectionType conn_type, std::optional<bool> use_v2transport)
+bool CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound, const char *pszDest, ConnectionType conn_type, std::optional<bool> use_v2transport, bool is_anchor_peer)
 {
     assert(conn_type != ConnectionType::INBOUND);
 
@@ -2655,31 +2733,35 @@ void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
     // Initiate outbound network connection
     //
     if (interruptNet) {
-        return;
+        return false;
     }
     if (!fNetworkActive) {
-        return;
+        return false;
     }
     if (!pszDest) {
         if (IsLocal(addrConnect) ||
             FindNode(static_cast<CNetAddr>(addrConnect)) || (m_banman && m_banman->IsBanned(addrConnect)) ||
             FindNode(addrConnect.ToStringIPPort()))
-            return;
+            return false;
     } else if (FindNode(std::string(pszDest)))
-        return;
+        return false;
 
     CNode* pnode = ConnectNode(addrConnect, pszDest, fCountFailure, conn_type, use_v2transport.value_or(m_use_v2transport));
 
     if (!pnode)
-        return;
+        return false;
     if (grantOutbound)
         grantOutbound->MoveTo(pnode->grantOutbound);
+
+    // Remember that this connection targets an operator-configured anchor peer.
+    pnode->m_is_anchor_peer = is_anchor_peer;
 
     m_msgproc->InitializeNode(pnode);
     {
         LOCK(cs_vNodes);
         vNodes.push_back(pnode);
     }
+    return true;
 }
 
 bool CConnman::AddConnection(const std::string& address, ConnectionType conn_type, bool use_v2transport)
@@ -2917,6 +2999,192 @@ void CConnman::SetNetworkActive(bool active)
     fNetworkActive = active;
 
     uiInterface.NotifyNetworkActiveChanged(fNetworkActive);
+}
+
+namespace {
+/**
+ * Key used to compare two anchor peer addresses.
+ *
+ * CNetAddr's comparison operators only take the IP address into account, while
+ * anchors are identified by IP *and* port.
+ */
+std::string AnchorPeerKey(const CAddress& addr)
+{
+    return addr.ToStringIPPort();
+}
+} // namespace
+
+void CConnman::SetAnchorPeers(const std::vector<CAddress>& anchors)
+{
+    LOCK(cs_anchors);
+    m_anchors = anchors;
+    if (m_anchors.size() > MAX_BLOCK_RELAY_ONLY_ANCHORS) {
+        m_anchors.resize(MAX_BLOCK_RELAY_ONLY_ANCHORS);
+    }
+    m_anchor_next_attempt.clear();
+    m_anchor_index = 0;
+}
+
+std::vector<CAddress> CConnman::GetAnchorPeers() const
+{
+    LOCK(cs_anchors);
+    return m_anchors;
+}
+
+bool CConnman::HasAnchorPeers() const
+{
+    LOCK(cs_anchors);
+    return !m_anchors.empty();
+}
+
+bool CConnman::AddAnchorPeer(const CAddress& addr)
+{
+    LOCK(cs_anchors);
+    const std::string key = AnchorPeerKey(addr);
+    for (const CAddress& existing : m_anchors) {
+        if (AnchorPeerKey(existing) == key) return false;
+    }
+    if (m_anchors.size() >= MAX_BLOCK_RELAY_ONLY_ANCHORS) return false;
+    m_anchors.push_back(addr);
+    // A newly configured anchor peer is tried immediately.
+    m_anchor_next_attempt.erase(key);
+    return true;
+}
+
+bool CConnman::RemoveAnchorPeer(const CAddress& addr)
+{
+    LOCK(cs_anchors);
+    const std::string key = AnchorPeerKey(addr);
+    auto matches = [&key](const CAddress& candidate) { return AnchorPeerKey(candidate) == key; };
+    const auto removed = std::remove_if(m_anchors.begin(), m_anchors.end(), matches);
+    if (removed == m_anchors.end()) return false;
+    m_anchors.erase(removed, m_anchors.end());
+    m_anchor_next_attempt.erase(key);
+    if (m_anchors.empty()) m_anchor_index = 0;
+    return true;
+}
+
+bool CConnman::IsAnchorPeer(const CAddress& addr) const
+{
+    LOCK(cs_anchors);
+    const std::string key = AnchorPeerKey(addr);
+    for (const CAddress& existing : m_anchors) {
+        if (AnchorPeerKey(existing) == key) return true;
+    }
+    return false;
+}
+
+void CConnman::MarkAnchorAttemptFailed(const CAddress& addr)
+{
+    LOCK(cs_anchors);
+    // The retry backoff uses the system time (and not the mockable node
+    // time): the delay must elapse in real time, also when the node time
+    // is mocked (e.g. in the functional tests).
+    m_anchor_next_attempt[AnchorPeerKey(addr)] = GetSystemTimeInSeconds() + ANCHOR_RETRY_INTERVAL_SECONDS;
+}
+
+int64_t CConnman::GetNextAnchorAttempt(const CAddress& addr) const
+{
+    LOCK(cs_anchors);
+    const auto it = m_anchor_next_attempt.find(AnchorPeerKey(addr));
+    return it == m_anchor_next_attempt.end() ? 0 : it->second;
+}
+
+void CConnman::ClearAnchorBackoff(const CAddress& addr)
+{
+    LOCK(cs_anchors);
+    m_anchor_next_attempt.erase(AnchorPeerKey(addr));
+}
+
+CAddress CConnman::SelectNextAnchorPeer()
+{
+    // The retry backoff uses the system time (and not the mockable node
+    // time), see MarkAnchorAttemptFailed().
+    const int64_t now = GetSystemTimeInSeconds();
+
+    // Work on a snapshot of the configured anchor peers: every configured
+    // anchor peer is examined at most once per round, so the selection always
+    // terminates (an unbounded loop would block the net thread and prevent the
+    // node from shutting down).
+    std::vector<CAddress> candidates;
+    size_t start{0};
+    {
+        LOCK(cs_anchors);
+        if (m_anchors.empty()) return CAddress();
+        candidates = m_anchors;
+        start = m_anchor_index % candidates.size();
+    }
+    // Rotate the snapshot so that the round-robin continues where the previous
+    // round stopped.
+    std::rotate(candidates.begin(), candidates.begin() + start, candidates.end());
+
+    CAddress selected;
+    std::string last_examined;
+    for (const CAddress& candidate : candidates) {
+        // Never block the shutdown of the node in the anchor selection.
+        if (interruptNet) return CAddress();
+
+        last_examined = AnchorPeerKey(candidate);
+        {
+            LOCK(cs_anchors);
+            const auto it = m_anchor_next_attempt.find(last_examined);
+            if (it != m_anchor_next_attempt.end() && it->second > now) {
+                // The anchor peer is inside its retry backoff.
+                continue;
+            }
+        }
+
+        // Skip anchor peers we are already connected to or that are banned.
+        if (FindNode(static_cast<CService>(candidate))) {
+            ReportAnchorSkipped(candidate, "already connected");
+            continue;
+        }
+        if (FindNode(candidate.ToStringIPPort())) {
+            ReportAnchorSkipped(candidate, "already connected");
+            continue;
+        }
+        if (m_banman && m_banman->IsBanned(candidate)) {
+            ReportAnchorSkipped(candidate, "banned");
+            continue;
+        }
+
+        selected = candidate;
+        break;
+    }
+
+    // Advance the round-robin cursor deterministically, also when the
+    // candidates were skipped: the next round starts after the last examined
+    // anchor peer, so a skipped anchor peer is never selected twice in a row.
+    {
+        LOCK(cs_anchors);
+        if (!last_examined.empty()) {
+            for (size_t i = 0; i < m_anchors.size(); ++i) {
+                if (AnchorPeerKey(m_anchors[i]) == last_examined) {
+                    m_anchor_index = (i + 1) % m_anchors.size();
+                    break;
+                }
+            }
+        }
+        if (selected.IsValid()) {
+            // The anchor peer is eligible again: a future skip is reported
+            // again.
+            m_anchor_skip_reported.erase(AnchorPeerKey(selected));
+        }
+    }
+
+    return selected;
+}
+
+void CConnman::ReportAnchorSkipped(const CAddress& addr, const std::string& reason)
+{
+    const std::string key = AnchorPeerKey(addr);
+    {
+        LOCK(cs_anchors);
+        // Report a skipped anchor peer only once per state to avoid flooding
+        // the log with the same message.
+        if (!m_anchor_skip_reported.insert(key).second) return;
+    }
+    LogPrintf("Anchor peer %s is currently not used: %s\n", key, reason);
 }
 
 CConnman::CConnman(uint64_t nSeed0In, uint64_t nSeed1In, std::shared_ptr<const NetgroupManager> netgroupman)

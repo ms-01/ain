@@ -2917,6 +2917,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         }
         pfrom->fSuccessfullyConnected = true;
 
+        if (pfrom->IsAnchorPeer() && connman != nullptr) {
+            // The version handshake with the anchor peer succeeded: the retry
+            // backoff of the anchor peer is cleared, so that a lost anchor
+            // connection is re-established without an additional delay.
+            connman->ClearAnchorBackoff(pfrom->addr);
+        }
+
         // announcing existent anchor confirmations for new connected node:
         {
             LOCK_PEER();

@@ -12,10 +12,25 @@
 
 #include <string>
 #include <map>
+#include <vector>
 
 class CSubNet;
 class CAddrMan;
 class CDataStream;
+class CAddress;
+
+/** File name of the anchor peer database (inside the network data directory). */
+static const char* const ANCHORS_DATABASE_FILENAME = "anchors.dat";
+
+/**
+ * Maximum number of operator-configured anchor peers (block-relay anchors).
+ *
+ * Anchor peers are prioritized for the limited block-relay-only outbound
+ * slots. They are a connectivity/priority concept only: blocks and headers
+ * received from an anchor peer are validated exactly like blocks and headers
+ * received from any other peer.
+ */
+static const size_t MAX_BLOCK_RELAY_ONLY_ANCHORS = 2;
 
 typedef enum BanReason
 {
@@ -149,5 +164,28 @@ public:
      */
     bool Read(banmap_t& banSet, bool& dirty);
 };
+
+/**
+ * Read the operator-configured anchor peers (block-relay anchors) from disk.
+ * The file contains one "ip:port" entry per line. Empty lines and lines
+ * starting with '#' are ignored. Invalid, unspecified and duplicate entries
+ * are skipped individually, so that a single broken entry never discards the
+ * remaining valid anchors. A missing or unreadable file yields an empty list.
+ *
+ * @param[in] anchors_db_path Path of the anchors file.
+ * @return The list of valid anchor peer addresses (at most
+ *         MAX_BLOCK_RELAY_ONLY_ANCHORS entries).
+ */
+std::vector<CAddress> ReadAnchors(const fs::path& anchors_db_path);
+
+/**
+ * Write the operator-configured anchor peers (block-relay anchors) to disk.
+ *
+ * The file is written atomically (temporary file + rename).
+ *
+ * @param[in] anchors_db_path Path of the anchors file.
+ * @param[in] anchors The anchor peer addresses to store.
+ */
+void DumpAnchors(const fs::path& anchors_db_path, const std::vector<CAddress>& anchors);
 
 #endif // DEFI_ADDRDB_H

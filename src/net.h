@@ -31,7 +31,10 @@
 
 #include <atomic>
 #include <deque>
+#include <map>
 #include <optional>
+#include <set>
+#include <string>
 #include <stdint.h>
 #include <thread>
 #include <tuple>
@@ -81,6 +84,17 @@ static const unsigned int MAX_SUBVERSION_LENGTH = 256;
 static const int MAX_OUTBOUND_CONNECTIONS = 8;
 /** Default maximum number of automatic block-relay-only outgoing nodes (opt-in, disabled by default) */
 static const int DEFAULT_MAX_OUTBOUND_BLOCK_RELAY = 0;
+/** Default for -peeranchoring (opt-in, disabled by default on every network) */
+static const bool DEFAULT_PEER_ANCHORING = false;
+/**
+ * Minimum delay (in seconds) before a failed connection attempt to an anchor
+ * peer is retried.
+ *
+ * A failed attempt never removes the anchor peer from the configured set: the
+ * anchor stays configured (and is reported by listanchorpeers) and is retried
+ * with this backoff.
+ */
+static const int ANCHOR_RETRY_INTERVAL_SECONDS = 60;
 /** Maximum number of addnode outgoing nodes */
 static const int MAX_ADDNODE_CONNECTIONS = 8;
 /** -listen default */
@@ -241,6 +255,8 @@ public:
         fs::path m_i2p_private_key_path;
         //! Whether to use BIP324 v2 transport by default (opt-in via -v2transport).
         bool m_use_v2transport = false;
+        //! Whether peer anchoring (block-relay anchor peers) is enabled.
+        bool m_peer_anchoring = false;
     };
 
     void Init(const Options& connOptions) {
@@ -259,6 +275,7 @@ public:
         nReceiveFloodSize = connOptions.nReceiveFloodSize;
         m_peer_connect_timeout = connOptions.m_peer_connect_timeout;
         m_use_v2transport = connOptions.m_use_v2transport;
+        m_peer_anchoring = connOptions.m_peer_anchoring;
         {
             LOCK(cs_totalBytesSent);
             nMaxOutboundTimeframe = connOptions.nMaxOutboundTimeframe;
@@ -294,7 +311,22 @@ public:
     int GetMaxOutboundBlockRelay() const { return nMaxOutboundBlockRelay; };
     int GetMaxInbound() const { return std::max(0, nMaxConnections - (nMaxOutboundFullRelay + nMaxOutboundBlockRelay + nMaxFeeler)); };
     void SetNetworkActive(bool active);
-    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, ConnectionType conn_type = ConnectionType::OUTBOUND_FULL_RELAY, std::optional<bool> use_v2transport = std::nullopt);
+    /**
+     * Open an outbound connection.
+     *
+     * @param[in] addrConnect The address to connect to.
+     * @param[in] fCountFailure Whether a failure should be counted against the address.
+     * @param[in] grantOutbound Optional semaphore grant for the outbound slot.
+     * @param[in] strDest Optional destination name. When set, the address is
+     *                    treated as explicitly requested by the operator (e.g.
+     *                    anchor peers) and the "is this a local address" check
+     *                    is skipped.
+     * @param[in] conn_type The type of the connection.
+     * @param[in] use_v2transport Whether to use the BIP324 v2 transport.
+     * @param[in] is_anchor_peer Whether the connection targets an operator-configured anchor peer.
+     * @return true if the connection was initiated, false otherwise.
+     */
+    bool OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, ConnectionType conn_type = ConnectionType::OUTBOUND_FULL_RELAY, std::optional<bool> use_v2transport = std::nullopt, bool is_anchor_peer = false);
     bool AddConnection(const std::string& address, ConnectionType conn_type, bool use_v2transport);
     bool CheckIncomingNonce(uint64_t nonce);
 
@@ -433,6 +465,62 @@ public:
 
     unsigned int GetReceiveFloodSize() const;
 
+    //! Whether peer anchoring (block-relay anchor peers) is enabled for this node.
+    bool GetPeerAnchoring() const { return m_peer_anchoring; }
+
+    //! Replace the set of operator-configured anchor peers.
+    void SetAnchorPeers(const std::vector<CAddress>& anchors);
+
+    //! Return the set of operator-configured anchor peers.
+    std::vector<CAddress> GetAnchorPeers() const;
+
+    //! Whether at least one anchor peer is configured.
+    bool HasAnchorPeers() const;
+
+    /**
+     * Add an anchor peer.
+     * @return false if the address is invalid, already configured or the maximum
+     *         number of anchor peers (MAX_BLOCK_RELAY_ONLY_ANCHORS) is reached.
+     */
+    bool AddAnchorPeer(const CAddress& addr);
+
+    /**
+     * Remove an anchor peer.
+     * @return false if the address was not configured as an anchor peer.
+     */
+    bool RemoveAnchorPeer(const CAddress& addr);
+
+    //! Whether the given address is a configured anchor peer.
+    bool IsAnchorPeer(const CAddress& addr) const;
+
+    /**
+     * Record a failed connection attempt to an anchor peer.
+     *
+     * The anchor peer stays configured and eligible, but the next connection
+     * attempt to it is delayed by ANCHOR_RETRY_INTERVAL_SECONDS.
+     */
+    void MarkAnchorAttemptFailed(const CAddress& addr);
+
+    /**
+     * The point in time (unix time) at which the next connection attempt to the
+     * given anchor peer is allowed. Zero if no retry backoff is active.
+     */
+    int64_t GetNextAnchorAttempt(const CAddress& addr) const;
+
+    //! Clear the retry backoff of an anchor peer.
+    void ClearAnchorBackoff(const CAddress& addr);
+
+    /**
+     * Return the next anchor peer eligible for a block-relay-only connection attempt.
+     *
+     * The configured anchor peers are visited in a round-robin fashion. Every
+     * configured anchor peer is examined at most once per call, therefore the
+     * selection always terminates and returns an invalid address when no
+     * anchor peer is eligible (e.g. all of them are banned, already connected
+     * or inside their retry backoff).
+     */
+    CAddress SelectNextAnchorPeer();
+
     void WakeMessageHandler();
 
     /** Attempts to obfuscate tx time through exponentially distributed emitting.
@@ -458,6 +546,8 @@ private:
     void AddOneShot(const std::string& strDest);
     void ProcessOneShot();
     void ThreadOpenConnections(std::vector<std::string> connect);
+    //! Log (once per state) why an anchor peer is currently not eligible.
+    void ReportAnchorSkipped(const CAddress& addr, const std::string& reason);
     void ThreadMessageHandler();
     void AcceptConnection(const ListenSocket& hListenSocket);
     void DisconnectNodes();
@@ -551,6 +641,23 @@ private:
     int nMaxFeeler;
     bool m_use_addrman_outgoing;
     bool m_use_v2transport{false};
+    bool m_peer_anchoring{false};
+    //! Operator-configured anchor peers (block-relay anchors).
+    std::vector<CAddress> m_anchors GUARDED_BY(cs_anchors);
+    /**
+     * Point in time (unix time) at which the next connection attempt to an
+     * anchor peer is allowed. Only contains anchors with an active backoff.
+     */
+    std::map<std::string, int64_t> m_anchor_next_attempt GUARDED_BY(cs_anchors);
+    //! Round-robin cursor over m_anchors.
+    size_t m_anchor_index{0};
+    /**
+     * Anchor peers whose current skip reason has already been logged. It is
+     * used to report a skipped anchor peer (banned, already connected, ...)
+     * once instead of on every selection round.
+     */
+    std::set<std::string> m_anchor_skip_reported GUARDED_BY(cs_anchors);
+    mutable CCriticalSection cs_anchors;
     struct ReconnectionInfo {
         CAddress addr;
         std::string addr_name;
@@ -733,6 +840,8 @@ public:
     // with a "sendaddrv2" message
     bool m_wants_addrv2{false};
     bool m_manual_connection;
+    //! Whether the connection was opened towards an operator-configured anchor peer
+    bool m_is_anchor_peer{false};
     int nStartingHeight;
     uint64_t nSendBytes;
     mapMsgCmdSize mapSendBytesPerMsgCmd;
@@ -1004,6 +1113,10 @@ public:
     bool fFeeler{false}; // If true this node is being used as a short lived feeler.
     bool fOneShot{false};
     bool m_manual_connection{false};
+    //! True if this connection was opened towards an operator-configured anchor peer.
+    bool m_is_anchor_peer{false};
+    //! Whether the peer is an operator-configured anchor peer.
+    bool IsAnchorPeer() const { return m_is_anchor_peer; }
     bool fClient{false}; // set by version message
     bool m_limited_node{false}; //after BIP159, set by version message
     const bool fInbound;

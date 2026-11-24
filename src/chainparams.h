@@ -74,6 +74,14 @@ public:
     bool RequireStandard() const { return fRequireStandard; }
     /** If this chain is exclusively used for testing */
     bool IsTestChain() const { return m_is_test_chain; }
+    /**
+     * Whether peer anchoring (block-relay anchor peers) is enabled by default.
+     *
+     * Disabled on every network: enabling requires an explicit operator flag
+     * (-peeranchoring=1) or an explicit change of this default in a later
+     * release.
+     */
+    bool PeerAnchoring() const { return m_peer_anchoring; }
     uint64_t PruneAfterHeight() const { return nPruneAfterHeight; }
     /** Minimum free space (in GB) needed for data directory */
     uint64_t AssumedBlockchainSize() const { return m_assumed_blockchain_size; }
@@ -110,6 +118,7 @@ protected:
     bool fDefaultConsistencyChecks;
     bool fRequireStandard;
     bool m_is_test_chain;
+    bool m_peer_anchoring;
     CCheckpointData checkpointData;
     ChainTxData chainTxData;
 
