@@ -523,6 +523,7 @@ void SetupServerArgs()
     gArgs.AddArg("-v2transport", strprintf("Support v2 transport (default: %u)", DEFAULT_V2_TRANSPORT), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-listenonion", strprintf("Automatically create Tor hidden service (default: %d)", DEFAULT_LISTEN_ONION), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxconnections=<n>", strprintf("Maintain at most <n> connections to peers (default: %u)", DEFAULT_MAX_PEER_CONNECTIONS), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-blockrelayconnections=<n>", strprintf("Maintain at most <n> outbound block-relay-only connections (default: %d, 0 = disabled)", DEFAULT_MAX_OUTBOUND_BLOCK_RELAY), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxreceivebuffer=<n>", strprintf("Maximum per-connection receive buffer, <n>*1000 bytes (default: %u)", DEFAULT_MAXRECEIVEBUFFER), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxsendbuffer=<n>", strprintf("Maximum per-connection send buffer, <n>*1000 bytes (default: %u)", DEFAULT_MAXSENDBUFFER), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxtimeadjustment", strprintf("Maximum allowed median peer time offset adjustment. Local perspective of time may be influenced by peers forward or backward by this amount. (default: %u seconds)", DEFAULT_MAX_TIME_ADJUSTMENT), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
@@ -1280,6 +1281,14 @@ bool AppInitParameterInteraction()
 
     if (nMaxConnections < nUserMaxConnections)
         InitWarning(strprintf(_("Reducing -maxconnections from %d to %d, because of system limitations.").translated, nUserMaxConnections, nMaxConnections));
+
+    const int64_t nUserBlockRelayConnections = gArgs.GetArg("-blockrelayconnections", DEFAULT_MAX_OUTBOUND_BLOCK_RELAY);
+    if (nUserBlockRelayConnections < 0) {
+        return InitError("-blockrelayconnections cannot be negative");
+    }
+    if (nUserBlockRelayConnections > nUserMaxConnections) {
+        return InitError(strprintf("-blockrelayconnections (%d) cannot exceed -maxconnections (%d)", nUserBlockRelayConnections, nUserMaxConnections));
+    }
 
     // ********************************************************* Step 3: parameter-to-internal-flags
     if (gArgs.IsArgSet("-debug")) {
@@ -2574,9 +2583,20 @@ bool AppInitMain(InitInterfaces& interfaces)
     connOptions.nLocalServices = nLocalServices;
     connOptions.m_use_v2transport = use_v2transport;
     connOptions.nMaxConnections = nMaxConnections;
-    connOptions.nMaxOutbound = std::min(MAX_OUTBOUND_CONNECTIONS, connOptions.nMaxConnections);
-    connOptions.nMaxAddnode = MAX_ADDNODE_CONNECTIONS;
+    connOptions.nMaxOutboundFullRelay = std::min(MAX_OUTBOUND_CONNECTIONS, connOptions.nMaxConnections);
     connOptions.nMaxFeeler = 1;
+    const int max_block_relay_allowed = std::max(0, connOptions.nMaxConnections - connOptions.nMaxOutboundFullRelay - connOptions.nMaxFeeler);
+    int nBlockRelayConnections = static_cast<int>(gArgs.GetArg("-blockrelayconnections", DEFAULT_MAX_OUTBOUND_BLOCK_RELAY));
+    if (nBlockRelayConnections > max_block_relay_allowed) {
+        InitWarning(strprintf("Reducing -blockrelayconnections from %d to %d, because of -maxconnections (%d).", nBlockRelayConnections, max_block_relay_allowed, connOptions.nMaxConnections));
+        nBlockRelayConnections = max_block_relay_allowed;
+    }
+    connOptions.nMaxOutboundBlockRelay = nBlockRelayConnections;
+    connOptions.nMaxAddnode = MAX_ADDNODE_CONNECTIONS;
+    LogPrintf("Outbound connection slots: full-relay=%d, block-relay-only=%d, max-inbound=%d\n",
+              connOptions.nMaxOutboundFullRelay,
+              connOptions.nMaxOutboundBlockRelay,
+              std::max(0, connOptions.nMaxConnections - (connOptions.nMaxOutboundFullRelay + connOptions.nMaxOutboundBlockRelay + connOptions.nMaxFeeler)));
     connOptions.nBestHeight = chain_active_height;
     connOptions.uiInterface = &uiInterface;
     connOptions.m_banman = g_banman.get();
