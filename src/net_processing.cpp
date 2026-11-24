@@ -487,8 +487,9 @@ static void PushNodeVersion(CNode *pnode, CConnman* connman, int64_t nTime)
     CAddress addrYou = (addr.IsRoutable() && !IsProxy(addr) ? addr : CAddress(CService(), addr.nServices));
     CAddress addrMe = CAddress(CService(), nLocalNodeServices);
 
+    const bool relay_txes = pnode->IsBlockOnlyConn() ? false : ::g_relay_txes;
     connman->PushMessage(pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::VERSION, PROTOCOL_VERSION, (uint64_t)nLocalNodeServices, nTime, addrYou, addrMe,
-            nonce, strSubVersion, nNodeStartingHeight, ::g_relay_txes));
+            nonce, strSubVersion, nNodeStartingHeight, relay_txes));
 
     if (fLogIPs) {
         LogPrint(BCLog::NET, "send version message: version %d, blocks=%d, us=%s, them=%s, peer=%d\n", PROTOCOL_VERSION, nNodeStartingHeight, addrMe.ToString(), addrYou.ToString(), nodeid);
@@ -1738,7 +1739,9 @@ void RelayTransaction(const uint256& txid, const CConnman& connman)
     CInv inv(MSG_TX, txid);
     connman.ForEachNode([&inv](CNode* pnode)
     {
-        pnode->PushInventory(inv);
+        if (!pnode->IsBlockOnlyConn()) {
+            pnode->PushInventory(inv);
+        }
     });
 }
 
@@ -1761,7 +1764,7 @@ static void RelayAddress(const CAddress& addr, bool fReachable, CConnman* connma
     assert(nRelayNodes <= best.size());
 
     auto sortfunc = [&best, &hasher, nRelayNodes, &addr](CNode* pnode) {
-        if (pnode->nVersion >= CADDR_TIME_VERSION && pnode->IsAddrCompatible(addr)) {
+        if (!pnode->IsBlockOnlyConn() && pnode->nVersion >= CADDR_TIME_VERSION && pnode->IsAddrCompatible(addr)) {
             uint64_t hashKey = CSipHasher(hasher).Write(pnode->GetId()).Finalize();
             for (unsigned int i = 0; i < nRelayNodes; i++) {
                  if (hashKey > best[i].first) {
@@ -1995,6 +1998,10 @@ void static ProcessGetData(CNode* pfrom, const CChainParams& chainparams, CConnm
 
             const CInv &inv = *it;
             it++;
+
+            if (pfrom->IsBlockOnlyConn()) {
+                continue;
+            }
 
             // Send stream from relay memory
             bool push = false;
@@ -2760,7 +2767,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         // queued after our own verack, so that a peer which does not know the
         // message does not receive it in the window in which it still expects
         // the verack. Unknown messages are ignored by the older peers.
-        connman->PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::SENDADDRV2));
+        if (!pfrom->IsBlockOnlyConn()) {
+            connman->PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::SENDADDRV2));
+        }
 
         pfrom->nServices = nServices;
         pfrom->SetAddrLocal(addrMe);
@@ -2778,7 +2787,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         {
             LOCK(pfrom->cs_filter);
-            pfrom->fRelayTxes = fRelay; // set to true after we get the first filter* message
+            pfrom->fRelayTxes = pfrom->IsBlockOnlyConn() ? false : fRelay; // set to true after we get the first filter* message
         }
 
         // Change version
@@ -2799,31 +2808,33 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         if (!pfrom->fInbound)
         {
-            // Advertise our address
-            if (fListen && !::ChainstateActive().IsInitialBlockDownload())
-            {
-                CAddress addr = GetLocalAddress(&pfrom->addr, pfrom->GetLocalServices());
-                FastRandomContext insecure_rand;
-                if (addr.IsRoutable())
+            if (!pfrom->IsBlockOnlyConn()) {
+                // Advertise our address
+                if (fListen && !::ChainstateActive().IsInitialBlockDownload())
                 {
-                    LogPrint(BCLog::NET, "ProcessMessages: advertising address %s\n", addr.ToString());
-                    pfrom->PushAddress(addr, insecure_rand);
-                } else if (IsPeerAddrLocalGood(pfrom)) {
-                    addr.SetIP(addrMe);
-                    LogPrint(BCLog::NET, "ProcessMessages: advertising address %s\n", addr.ToString());
-                    pfrom->PushAddress(addr, insecure_rand);
+                    CAddress addr = GetLocalAddress(&pfrom->addr, pfrom->GetLocalServices());
+                    FastRandomContext insecure_rand;
+                    if (addr.IsRoutable())
+                    {
+                        LogPrint(BCLog::NET, "ProcessMessages: advertising address %s\n", addr.ToString());
+                        pfrom->PushAddress(addr, insecure_rand);
+                    } else if (IsPeerAddrLocalGood(pfrom)) {
+                        addr.SetIP(addrMe);
+                        LogPrint(BCLog::NET, "ProcessMessages: advertising address %s\n", addr.ToString());
+                        pfrom->PushAddress(addr, insecure_rand);
+                    }
                 }
-            }
 
-            // Get recent addresses
-            if (pfrom->fOneShot || pfrom->nVersion >= CADDR_TIME_VERSION || connman->GetAddressCount() < 1000)
-            {
-                connman->PushMessage(pfrom, CNetMsgMaker(nSendVersion).Make(NetMsgType::GETADDR));
-                pfrom->fGetAddr = true;
+                // Get recent addresses
+                if (pfrom->fOneShot || pfrom->nVersion >= CADDR_TIME_VERSION || connman->GetAddressCount() < 1000)
+                {
+                    connman->PushMessage(pfrom, CNetMsgMaker(nSendVersion).Make(NetMsgType::GETADDR));
+                    pfrom->fGetAddr = true;
 
-                // When requesting a getaddr, accept an additional MAX_ADDR_TO_SEND addresses in response
-                // (bypassing the MAX_ADDR_PROCESSING_TOKEN_BUCKET limit).
-                pfrom->nAddrTokenBucket += MAX_ADDR_TO_SEND;
+                    // When requesting a getaddr, accept an additional MAX_ADDR_TO_SEND addresses in response
+                    // (bypassing the MAX_ADDR_PROCESSING_TOKEN_BUCKET limit).
+                    pfrom->nAddrTokenBucket += MAX_ADDR_TO_SEND;
+                }
             }
             connman->MarkAddressGood(pfrom->addr);
         }
@@ -2976,6 +2987,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     }
 
     if (strCommand == NetMsgType::ADDR) {
+        if (pfrom->IsBlockOnlyConn()) {
+            LogPrint(BCLog::NET, "Ignoring \"addr\" from block-relay-only peer=%d\n", pfrom->GetId());
+            return true;
+        }
         std::vector<CAddress> vAddr;
         vRecv >> vAddr;
 
@@ -2993,6 +3008,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     }
 
     if (strCommand == NetMsgType::ADDRV2) {
+        if (pfrom->IsBlockOnlyConn()) {
+            LogPrint(BCLog::NET, "Ignoring \"addrv2\" from block-relay-only peer=%d\n", pfrom->GetId());
+            return true;
+        }
         std::vector<CAddress> vAddr;
         // The entries are decoded one by one. An invalid entry is ignored, it
         // never misbehaves and never disconnects the peer.
@@ -3057,10 +3076,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             return false;
         }
 
-        bool fBlocksOnly = !g_relay_txes;
+        bool fBlocksOnly = !g_relay_txes || pfrom->IsBlockOnlyConn();
 
         // Allow whitelisted peers to send data other than blocks in blocks only mode if whitelistrelay is true
-        if (pfrom->HasPermission(PF_RELAY))
+        if (!pfrom->IsBlockOnlyConn() && pfrom->HasPermission(PF_RELAY))
             fBlocksOnly = false;
 
         // The inventory loop does not hold cs_main anymore: the peer
@@ -3462,8 +3481,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
     if (strCommand == NetMsgType::TX) {
         // Stop processing the transaction early if
-        // We are in blocks only mode and peer is either not whitelisted or whitelistrelay is off
-        if (!g_relay_txes && !pfrom->HasPermission(PF_RELAY))
+        // We are in blocks only mode and peer is either not whitelisted or whitelistrelay is off,
+        // or if this is a block-relay-only connection.
+        if (pfrom->IsBlockOnlyConn() || (!g_relay_txes && !pfrom->HasPermission(PF_RELAY)))
         {
             LogPrint(BCLog::NET, "transaction sent in violation of protocol peer=%d\n", pfrom->GetId());
             return true;
@@ -4229,6 +4249,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     }
 
     if (strCommand == NetMsgType::MEMPOOL) {
+        if (pfrom->IsBlockOnlyConn()) {
+            LogPrint(BCLog::NET, "Ignoring \"mempool\" from block-relay-only peer=%d\n", pfrom->GetId());
+            return true;
+        }
         if (!(pfrom->GetLocalServices() & NODE_BLOOM) && !pfrom->HasPermission(PF_MEMPOOL))
         {
             if (!pfrom->HasPermission(PF_NOBAN))
@@ -4332,6 +4356,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     }
 
     if (strCommand == NetMsgType::FILTERLOAD) {
+        if (pfrom->IsBlockOnlyConn()) {
+            LogPrint(BCLog::NET, "Ignoring \"filterload\" from block-relay-only peer=%d\n", pfrom->GetId());
+            return true;
+        }
         CBloomFilter filter;
         vRecv >> filter;
 
@@ -4346,12 +4374,18 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             LOCK(pfrom->cs_filter);
             pfrom->pfilter.reset(new CBloomFilter(filter));
             pfrom->pfilter->UpdateEmptyFull();
-            pfrom->fRelayTxes = true;
+            if (!pfrom->IsBlockOnlyConn()) {
+                pfrom->fRelayTxes = true;
+            }
         }
         return true;
     }
 
     if (strCommand == NetMsgType::FILTERADD) {
+        if (pfrom->IsBlockOnlyConn()) {
+            LogPrint(BCLog::NET, "Ignoring \"filteradd\" from block-relay-only peer=%d\n", pfrom->GetId());
+            return true;
+        }
         std::vector<unsigned char> vData;
         vRecv >> vData;
 
@@ -4376,15 +4410,25 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     }
 
     if (strCommand == NetMsgType::FILTERCLEAR) {
+        if (pfrom->IsBlockOnlyConn()) {
+            LogPrint(BCLog::NET, "Ignoring \"filterclear\" from block-relay-only peer=%d\n", pfrom->GetId());
+            return true;
+        }
         LOCK(pfrom->cs_filter);
         if (pfrom->GetLocalServices() & NODE_BLOOM) {
             pfrom->pfilter.reset(new CBloomFilter());
         }
-        pfrom->fRelayTxes = true;
+        if (!pfrom->IsBlockOnlyConn()) {
+            pfrom->fRelayTxes = true;
+        }
         return true;
     }
 
     if (strCommand == NetMsgType::FEEFILTER) {
+        if (pfrom->IsBlockOnlyConn()) {
+            LogPrint(BCLog::NET, "Ignoring \"feefilter\" from block-relay-only peer=%d\n", pfrom->GetId());
+            return true;
+        }
         CAmount newFeeFilter = 0;
         vRecv >> newFeeFilter;
         if (MoneyRange(newFeeFilter)) {
@@ -4838,7 +4882,7 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
         }
 
         // Address refresh broadcast
-        if (!::ChainstateActive().IsInitialBlockDownload() && pto->nNextLocalAddrSend < nNow) {
+        if (!pto->IsBlockOnlyConn() && !::ChainstateActive().IsInitialBlockDownload() && pto->nNextLocalAddrSend < nNow) {
             AdvertiseLocal(pto);
             pto->nNextLocalAddrSend = PoissonNextSend(nNow, AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL);
         }
@@ -4846,7 +4890,7 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
         //
         // Message: addr
         //
-        if (pto->nNextAddrSend < nNow) {
+        if (!pto->IsBlockOnlyConn() && pto->nNextAddrSend < nNow) {
             pto->nNextAddrSend = PoissonNextSend(nNow, AVG_ADDRESS_BROADCAST_INTERVAL);
             // Peers that announced the support for the BIP155 address relay
             // with a "sendaddrv2" message receive the addresses in the
@@ -5141,7 +5185,7 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
             }
 
             // Respond to BIP35 mempool requests
-            if (fSendTrickle && pto->fSendMempool) {
+            if (fSendTrickle && pto->fSendMempool && !pto->IsBlockOnlyConn()) {
                 auto vtxinfo = mempool.infoAll();
                 pto->fSendMempool = false;
                 CAmount filterrate = 0;
@@ -5429,7 +5473,7 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
         // Message: feefilter
         //
         // We don't want white listed peers to filter txs to us if we have -whitelistforcerelay
-        if (pto->nVersion >= FEEFILTER_VERSION && gArgs.GetBoolArg("-feefilter", DEFAULT_FEEFILTER) &&
+        if (!pto->IsBlockOnlyConn() && pto->nVersion >= FEEFILTER_VERSION && gArgs.GetBoolArg("-feefilter", DEFAULT_FEEFILTER) &&
             !pto->HasPermission(PF_FORCERELAY)) {
             CAmount currentFilter = mempool.GetMinFee(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000).GetFeePerK();
             int64_t timeNow = GetTimeMicros();

@@ -105,6 +105,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
             "    \"version\": v,              (numeric) The peer version, such as 70001\n"
             "    \"subver\": \"/Satoshi:0.8.5/\",  (string) The string version\n"
             "    \"inbound\": true|false,     (boolean) Inbound (true) or Outbound (false)\n"
+            "    \"connection_type\": \"str\",  (string) Type of connection (inbound, outbound-full-relay, block-relay-only, manual, feeler, addr-fetch)\n"
             "    \"bip152_hb_to\": true|false,(boolean) Whether we selected peer as (compact blocks) high-bandwidth peer\n"
             "    \"bip152_hb_from\": true|false,(boolean) Whether peer selected us as (compact blocks) high-bandwidth peer\n"
             "    \"addrv2\": true|false,(boolean) Whether peer announced its support for the BIP155 address relay\n"
@@ -181,6 +182,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
         // their ver message.
         obj.pushKV("subver", stats.cleanSubVer);
         obj.pushKV("inbound", stats.fInbound);
+        obj.pushKV("connection_type", ConnectionTypeAsString(stats.m_conn_type));
         obj.pushKV("bip152_hb_to", stats.m_bip152_highbandwidth_to);
         obj.pushKV("bip152_hb_from", stats.m_bip152_highbandwidth_from);
         obj.pushKV("addrv2", stats.m_wants_addrv2);
@@ -317,7 +319,7 @@ static UniValue addnode(const JSONRPCRequest& request)
     if (strCommand == "onetry")
     {
         CAddress addr;
-        g_connman->OpenNetworkConnection(addr, false, nullptr, strNode.c_str(), false, false, true);
+        g_connman->OpenNetworkConnection(addr, false, nullptr, strNode.c_str(), ConnectionType::MANUAL);
         return NullUniValue;
     }
 
@@ -925,6 +927,61 @@ static UniValue getaddrmaninfo(const JSONRPCRequest& request)
     return result;
 }
 
+static UniValue addconnection(const JSONRPCRequest& request)
+{
+    RPCHelpMan{"addconnection",
+        "\nOpen an outbound connection to a specified node. This RPC is for testing only.\n",
+        {
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The IP address and port to attempt connecting to."},
+            {"connection_type", RPCArg::Type::STR, RPCArg::Optional::NO, "Type of connection to open (\"outbound-full-relay\", \"block-relay-only\")."},
+            {"v2transport", RPCArg::Type::BOOL, /* default */ "set by -v2transport", "Attempt to connect using BIP324 v2 transport protocol (default: node's -v2transport setting)."},
+        },
+        RPCResult{
+            "{\n"
+            "  \"address\": \"str\",            (string) Address of newly added connection.\n"
+            "  \"connection_type\": \"str\"     (string) Type of connection opened.\n"
+            "}\n"
+        },
+        RPCExamples{
+            HelpExampleCli("addconnection", "\"192.168.0.6:8555\" \"outbound-full-relay\"")
+            + HelpExampleRpc("addconnection", "\"192.168.0.6:8555\", \"block-relay-only\"")
+        },
+    }.Check(request);
+
+    if (Params().NetworkIDString() != CBaseChainParams::REGTEST) {
+        throw JSONRPCError(RPC_MISC_ERROR, "addconnection is for regression testing (-regtest mode) only.");
+    }
+
+    if (!g_connman) {
+        throw JSONRPCError(RPC_CLIENT_P2P_DISABLED, "Error: Peer-to-peer functionality missing or disabled");
+    }
+
+    const std::string address = request.params[0].get_str();
+    const std::string conn_type_in = request.params[1].get_str();
+    ConnectionType conn_type{};
+    if (conn_type_in == "outbound-full-relay") {
+        conn_type = ConnectionType::OUTBOUND_FULL_RELAY;
+    } else if (conn_type_in == "block-relay-only") {
+        conn_type = ConnectionType::BLOCK_RELAY;
+    } else {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid connection_type: must be \"outbound-full-relay\" or \"block-relay-only\"");
+    }
+
+    const bool use_v2transport = request.params[2].isNull() ? g_connman->UseV2Transport() : request.params[2].get_bool();
+    if (use_v2transport && !g_connman->UseV2Transport()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Adding v2transport connections requires -v2transport init flag to be set.");
+    }
+
+    if (!g_connman->AddConnection(address, conn_type, use_v2transport)) {
+        throw JSONRPCError(RPC_MISC_ERROR, strprintf("Error: Unable to add %s connection to %s (capacity reached or peer unavailable)", conn_type_in, address));
+    }
+
+    UniValue info(UniValue::VOBJ);
+    info.pushKV("address", address);
+    info.pushKV("connection_type", conn_type_in);
+    return info;
+}
+
 // clang-format off
 static const CRPCCommand commands[] =
 { //  category              name                      actor (function)         argNames
@@ -945,6 +1002,7 @@ static const CRPCCommand commands[] =
     { "network",            "setnetworkactive",       &setnetworkactive,       {"state"} },
     { "network",            "getnodeaddresses",       &getnodeaddresses,       {"count", "network"} },
     { "network",            "getaddrmaninfo",         &getaddrmaninfo,         {} },
+    { "hidden",             "addconnection",          &addconnection,          {"address", "connection_type", "v2transport"} },
 };
 // clang-format on
 

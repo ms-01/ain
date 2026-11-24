@@ -79,6 +79,8 @@ static const unsigned int MAX_PROTOCOL_MESSAGE_LENGTH = 16 * 4 * 1000 * 1000;
 static const unsigned int MAX_SUBVERSION_LENGTH = 256;
 /** Maximum number of automatic outgoing nodes */
 static const int MAX_OUTBOUND_CONNECTIONS = 8;
+/** Default maximum number of automatic block-relay-only outgoing nodes (opt-in, disabled by default) */
+static const int DEFAULT_MAX_OUTBOUND_BLOCK_RELAY = 0;
 /** Maximum number of addnode outgoing nodes */
 static const int MAX_ADDNODE_CONNECTIONS = 8;
 /** -listen default */
@@ -105,6 +107,70 @@ static const size_t DEFAULT_MAXRECEIVEBUFFER = 20 * 5 * 1000;
 static const size_t DEFAULT_MAXSENDBUFFER    = 16 * 1 * 1000;
 
 typedef int64_t NodeId;
+
+/**
+ * Different types of connections to a peer. This enum encapsulates the
+ * information we have available at the time of opening or accepting the
+ * connection.
+ */
+enum class ConnectionType {
+    /**
+     * Inbound connections are those initiated by a peer.
+     */
+    INBOUND,
+
+    /**
+     * Outbound full-relay connections are initiated by us and relay blocks,
+     * transactions, and addresses.
+     */
+    OUTBOUND_FULL_RELAY,
+
+    /**
+     * Manual connections are initiated by user configuration (-addnode,
+     * -connect, or addnode RPC).
+     */
+    MANUAL,
+
+    /**
+     * Feeler connections are short-lived connections made to check that a node
+     * is alive.
+     */
+    FEELER,
+
+    /**
+     * Block-relay-only outbound connections relay blocks and headers, but do
+     * not relay transactions or addresses.
+     */
+    BLOCK_RELAY,
+
+    /**
+     * Addr-fetch connections are short-lived connections made to fetch
+     * addresses (e.g. -seednode / one-shot).
+     */
+    ADDR_FETCH,
+};
+
+/** Convert ConnectionType enum to a string value */
+std::string ConnectionTypeAsString(ConnectionType conn_type);
+
+/**
+ * Pure helper selecting the next automatic outbound connection type in
+ * CConnman::ThreadOpenConnections().
+ *
+ * Priority:
+ *  1. Full-relay slot available -> OUTBOUND_FULL_RELAY
+ *  2. Block-relay-only slot available -> BLOCK_RELAY
+ *  3. Extra full-relay peer requested (stale tip) -> OUTBOUND_FULL_RELAY
+ *  4. Feeler due -> FEELER
+ *  5. Otherwise -> std::nullopt
+ */
+std::optional<ConnectionType> SelectOutboundConnectionType(
+    int nOutboundFullRelay,
+    int nMaxOutboundFullRelay,
+    int nOutboundBlockRelay,
+    int nMaxOutboundBlockRelay,
+    bool try_new_outbound,
+    bool feeler_due);
 
 struct AddedNodeInfo
 {
@@ -147,7 +213,8 @@ public:
     {
         ServiceFlags nLocalServices = NODE_NONE;
         int nMaxConnections = 0;
-        int nMaxOutbound = 0;
+        int nMaxOutboundFullRelay = 0;
+        int nMaxOutboundBlockRelay = 0;
         int nMaxAddnode = 0;
         int nMaxFeeler = 0;
         int nBestHeight = 0;
@@ -179,10 +246,11 @@ public:
     void Init(const Options& connOptions) {
         nLocalServices = connOptions.nLocalServices;
         nMaxConnections = connOptions.nMaxConnections;
-        nMaxOutbound = std::min(connOptions.nMaxOutbound, connOptions.nMaxConnections);
+        nMaxOutboundFullRelay = std::min(connOptions.nMaxOutboundFullRelay, connOptions.nMaxConnections);
+        nMaxFeeler = connOptions.nMaxFeeler;
+        nMaxOutboundBlockRelay = std::min(connOptions.nMaxOutboundBlockRelay, std::max(0, connOptions.nMaxConnections - nMaxOutboundFullRelay - nMaxFeeler));
         m_use_addrman_outgoing = connOptions.m_use_addrman_outgoing;
         nMaxAddnode = connOptions.nMaxAddnode;
-        nMaxFeeler = connOptions.nMaxFeeler;
         nBestHeight = connOptions.nBestHeight;
         clientInterface = connOptions.uiInterface;
         m_banman = connOptions.m_banman;
@@ -221,8 +289,13 @@ public:
     void Interrupt();
     bool GetNetworkActive() const { return fNetworkActive; };
     bool GetUseAddrmanOutgoing() const { return m_use_addrman_outgoing; };
+    bool UseV2Transport() const { return m_use_v2transport; };
+    int GetMaxOutboundFullRelay() const { return nMaxOutboundFullRelay; };
+    int GetMaxOutboundBlockRelay() const { return nMaxOutboundBlockRelay; };
+    int GetMaxInbound() const { return std::max(0, nMaxConnections - (nMaxOutboundFullRelay + nMaxOutboundBlockRelay + nMaxFeeler)); };
     void SetNetworkActive(bool active);
-    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, bool fOneShot = false, bool fFeeler = false, bool manual_connection = false, std::optional<bool> use_v2transport = std::nullopt);
+    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, ConnectionType conn_type = ConnectionType::OUTBOUND_FULL_RELAY, std::optional<bool> use_v2transport = std::nullopt);
+    bool AddConnection(const std::string& address, ConnectionType conn_type, bool use_v2transport);
     bool CheckIncomingNonce(uint64_t nonce);
 
     bool ForNode(NodeId id, std::function<bool(CNode* pnode)> func);
@@ -406,7 +479,7 @@ private:
     CNode* FindNode(const CService& addr);
 
     bool AttemptToEvictConnection();
-    CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, bool manual_connection, bool use_v2transport = false);
+    CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, ConnectionType conn_type, bool use_v2transport = false);
     void AddWhitelistPermissionFlags(NetPermissionFlags& flags, const CNetAddr &addr) const;
 
     void DeleteNode(CNode* pnode);
@@ -472,7 +545,8 @@ private:
     std::unique_ptr<CSemaphore> semOutbound;
     std::unique_ptr<CSemaphore> semAddnode;
     int nMaxConnections;
-    int nMaxOutbound;
+    int nMaxOutboundFullRelay;
+    int nMaxOutboundBlockRelay;
     int nMaxAddnode;
     int nMaxFeeler;
     bool m_use_addrman_outgoing;
@@ -480,7 +554,7 @@ private:
     struct ReconnectionInfo {
         CAddress addr;
         std::string addr_name;
-        bool manual_connection;
+        ConnectionType conn_type;
     };
     std::list<ReconnectionInfo> m_reconnections GUARDED_BY(cs_vNodes);
     std::unique_ptr<Transport> CreateNodeTransport(NodeId id, bool inbound, bool use_v2transport) const;
@@ -650,6 +724,7 @@ public:
     int nVersion;
     std::string cleanSubVer;
     bool fInbound;
+    ConnectionType m_conn_type{ConnectionType::INBOUND};
     // Whether we selected the peer as (compact blocks) high-bandwidth peer
     bool m_bip152_highbandwidth_to{false};
     // Whether the peer selected us as (compact blocks) high-bandwidth peer
@@ -932,6 +1007,13 @@ public:
     bool fClient{false}; // set by version message
     bool m_limited_node{false}; //after BIP159, set by version message
     const bool fInbound;
+    const ConnectionType m_conn_type;
+    bool IsFullOutboundConn() const { return m_conn_type == ConnectionType::OUTBOUND_FULL_RELAY; }
+    bool IsBlockOnlyConn() const { return m_conn_type == ConnectionType::BLOCK_RELAY; }
+    bool IsInboundConn() const { return m_conn_type == ConnectionType::INBOUND; }
+    bool IsManualConn() const { return m_conn_type == ConnectionType::MANUAL; }
+    bool IsFeelerConn() const { return m_conn_type == ConnectionType::FEELER; }
+    bool IsAddrFetchConn() const { return m_conn_type == ConnectionType::ADDR_FETCH; }
     std::atomic_bool fSuccessfullyConnected{false};
     // Setting fDisconnect to true will cause the node to be disconnected the
     // next time DisconnectNodes() runs
@@ -1038,7 +1120,7 @@ public:
 
     std::set<uint256> orphan_work_set;
 
-    CNode(NodeId id, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress &addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress &addrBindIn, uint64_t networkKeyIn, const std::string &addrNameIn = "", bool fInboundIn = false, std::unique_ptr<Transport> transport = nullptr);
+    CNode(NodeId id, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress &addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress &addrBindIn, uint64_t networkKeyIn, const std::string &addrNameIn = "", ConnectionType conn_type_in = ConnectionType::INBOUND, std::unique_ptr<Transport> transport = nullptr);
     ~CNode();
     CNode(const CNode&) = delete;
     CNode& operator=(const CNode&) = delete;

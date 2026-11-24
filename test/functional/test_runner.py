@@ -247,6 +247,7 @@ BASE_SCRIPTS = [
     "wallet_keypool.py",
     "p2p_mempool.py",
     "rpc_setban.py",
+    "p2p_block_relay_only.py",
     "p2p_blocksonly.py",
     "p2p_block_serving.py",
     "p2p_ibd_stalling.py",

@@ -211,12 +211,12 @@ BOOST_AUTO_TEST_CASE(cnode_simple_test)
     bool fInboundIn = false;
 
     // Test that fFeeler is false by default.
-    std::unique_ptr<CNode> pnode1 = std::make_unique<CNode>(id++, NODE_NETWORK, height, hSocket, addr, 0, 0, CAddress(), 0, pszDest, fInboundIn);
+    std::unique_ptr<CNode> pnode1 = std::make_unique<CNode>(id++, NODE_NETWORK, height, hSocket, addr, 0, 0, CAddress(), 0, pszDest, fInboundIn ? ConnectionType::INBOUND : ConnectionType::OUTBOUND_FULL_RELAY);
     BOOST_CHECK(pnode1->fInbound == false);
     BOOST_CHECK(pnode1->fFeeler == false);
 
     fInboundIn = true;
-    std::unique_ptr<CNode> pnode2 = std::make_unique<CNode>(id++, NODE_NETWORK, height, hSocket, addr, 1, 1, CAddress(), 0, pszDest, fInboundIn);
+    std::unique_ptr<CNode> pnode2 = std::make_unique<CNode>(id++, NODE_NETWORK, height, hSocket, addr, 1, 1, CAddress(), 0, pszDest, fInboundIn ? ConnectionType::INBOUND : ConnectionType::OUTBOUND_FULL_RELAY);
     BOOST_CHECK(pnode2->fInbound == true);
     BOOST_CHECK(pnode2->fFeeler == false);
 }
@@ -233,7 +233,7 @@ BOOST_AUTO_TEST_CASE(cnode_addr_compatibility)
     std::string pszDest;
     bool fInboundIn = false;
 
-    std::unique_ptr<CNode> pnode = std::make_unique<CNode>(0, NODE_NETWORK, height, hSocket, addr, 0, 0, CAddress(), 0, pszDest, fInboundIn);
+    std::unique_ptr<CNode> pnode = std::make_unique<CNode>(0, NODE_NETWORK, height, hSocket, addr, 0, 0, CAddress(), 0, pszDest, fInboundIn ? ConnectionType::INBOUND : ConnectionType::OUTBOUND_FULL_RELAY);
 
     CService v1_service;
     BOOST_CHECK(Lookup("250.1.1.1", v1_service, 8555, false));
@@ -278,7 +278,7 @@ BOOST_AUTO_TEST_CASE(ipv4_peer_with_ipv6_addrMe_test)
     in_addr ipv4AddrPeer;
     ipv4AddrPeer.s_addr = 0xa0b0c001;
     CAddress addr = CAddress(CService(ipv4AddrPeer, 7777), NODE_NETWORK);
-    std::unique_ptr<CNode> pnode = std::make_unique<CNode>(0, NODE_NETWORK, 0, INVALID_SOCKET, addr, 0, 0, CAddress{}, 0, std::string{}, false);
+    std::unique_ptr<CNode> pnode = std::make_unique<CNode>(0, NODE_NETWORK, 0, INVALID_SOCKET, addr, 0, 0, CAddress{}, 0, std::string{}, ConnectionType::OUTBOUND_FULL_RELAY);
     pnode->fSuccessfullyConnected.store(true);
 
     // the peer claims to be reaching us via IPv6
@@ -407,6 +407,133 @@ BOOST_AUTO_TEST_CASE(gentxid_and_wtx_inv_test)
     BOOST_CHECK(ToGenTxid(inv_tx) == GenTxid::Txid(h1));
     BOOST_CHECK(ToGenTxid(inv_wtx) == GenTxid::Wtxid(h2));
     BOOST_CHECK(ToGenTxid(inv_wit_tx) == GenTxid::Txid(h1));
+}
+
+BOOST_AUTO_TEST_CASE(connection_type_strings_and_node_predicates)
+{
+    BOOST_CHECK_EQUAL(ConnectionTypeAsString(ConnectionType::INBOUND), "inbound");
+    BOOST_CHECK_EQUAL(ConnectionTypeAsString(ConnectionType::OUTBOUND_FULL_RELAY), "outbound-full-relay");
+    BOOST_CHECK_EQUAL(ConnectionTypeAsString(ConnectionType::MANUAL), "manual");
+    BOOST_CHECK_EQUAL(ConnectionTypeAsString(ConnectionType::FEELER), "feeler");
+    BOOST_CHECK_EQUAL(ConnectionTypeAsString(ConnectionType::BLOCK_RELAY), "block-relay-only");
+    BOOST_CHECK_EQUAL(ConnectionTypeAsString(ConnectionType::ADDR_FETCH), "addr-fetch");
+
+    CAddress addr(CService(UtilBuildAddress(0x001, 0x002, 0x003, 0x004), 8555), NODE_NONE);
+
+    CNode n_inbound(0, NODE_NONE, 0, INVALID_SOCKET, addr, 0, 0, CAddress(), 0, "", ConnectionType::INBOUND);
+    BOOST_CHECK(n_inbound.IsInboundConn() && n_inbound.fInbound);
+    BOOST_CHECK(!n_inbound.IsFullOutboundConn() && !n_inbound.IsBlockOnlyConn() && !n_inbound.IsManualConn() && !n_inbound.IsFeelerConn() && !n_inbound.IsAddrFetchConn());
+
+    CNode n_full(1, NODE_NONE, 0, INVALID_SOCKET, addr, 0, 0, CAddress(), 0, "", ConnectionType::OUTBOUND_FULL_RELAY);
+    BOOST_CHECK(n_full.IsFullOutboundConn() && !n_full.fInbound && !n_full.m_manual_connection && !n_full.fFeeler && !n_full.fOneShot);
+
+    CNode n_block(2, NODE_NONE, 0, INVALID_SOCKET, addr, 0, 0, CAddress(), 0, "", ConnectionType::BLOCK_RELAY);
+    BOOST_CHECK(n_block.IsBlockOnlyConn() && !n_block.fInbound && !n_block.IsFullOutboundConn() && !n_block.m_manual_connection && !n_block.fFeeler && !n_block.fOneShot);
+    CNodeStats stats;
+    n_block.copyStats(stats);
+    BOOST_CHECK(stats.m_conn_type == ConnectionType::BLOCK_RELAY);
+
+    CNode n_manual(3, NODE_NONE, 0, INVALID_SOCKET, addr, 0, 0, CAddress(), 0, "", ConnectionType::MANUAL);
+    BOOST_CHECK(n_manual.IsManualConn() && n_manual.m_manual_connection && !n_manual.fInbound);
+
+    CNode n_feeler(4, NODE_NONE, 0, INVALID_SOCKET, addr, 0, 0, CAddress(), 0, "", ConnectionType::FEELER);
+    BOOST_CHECK(n_feeler.IsFeelerConn() && n_feeler.fFeeler && !n_feeler.fInbound);
+
+    CNode n_addr(5, NODE_NONE, 0, INVALID_SOCKET, addr, 0, 0, CAddress(), 0, "", ConnectionType::ADDR_FETCH);
+    BOOST_CHECK(n_addr.IsAddrFetchConn() && n_addr.fOneShot && !n_addr.fInbound);
+}
+
+BOOST_AUTO_TEST_CASE(select_outbound_connection_type_order)
+{
+    // 1. Full-relay has highest priority when below target
+    auto t = SelectOutboundConnectionType(/*nOutboundFullRelay=*/0, /*nMaxOutboundFullRelay=*/8, /*nOutboundBlockRelay=*/0, /*nMaxOutboundBlockRelay=*/2, /*try_new_outbound=*/true, /*feeler_due=*/true);
+    BOOST_REQUIRE(t.has_value());
+    BOOST_CHECK(*t == ConnectionType::OUTBOUND_FULL_RELAY);
+
+    // 2. Once full-relay is full, block-relay-only is selected before extra full-relay or feeler
+    t = SelectOutboundConnectionType(8, 8, 0, 2, true, true);
+    BOOST_REQUIRE(t.has_value());
+    BOOST_CHECK(*t == ConnectionType::BLOCK_RELAY);
+
+    // 3. Default-off (nMaxOutboundBlockRelay == 0) never selects BLOCK_RELAY
+    t = SelectOutboundConnectionType(8, 8, 0, 0, false, false);
+    BOOST_CHECK(!t.has_value());
+    t = SelectOutboundConnectionType(8, 8, 0, 0, true, true);
+    BOOST_REQUIRE(t.has_value());
+    BOOST_CHECK(*t == ConnectionType::OUTBOUND_FULL_RELAY);
+
+    // 4. Once both full-relay and block-relay are full, try_new_outbound selects OUTBOUND_FULL_RELAY
+    t = SelectOutboundConnectionType(8, 8, 2, 2, true, true);
+    BOOST_REQUIRE(t.has_value());
+    BOOST_CHECK(*t == ConnectionType::OUTBOUND_FULL_RELAY);
+
+    // 5. When no extra outbound is requested, feeler_due selects FEELER
+    t = SelectOutboundConnectionType(8, 8, 2, 2, false, true);
+    BOOST_REQUIRE(t.has_value());
+    BOOST_CHECK(*t == ConnectionType::FEELER);
+
+    // 6. Otherwise nothing to open
+    t = SelectOutboundConnectionType(8, 8, 2, 2, false, false);
+    BOOST_CHECK(!t.has_value());
+}
+
+BOOST_AUTO_TEST_CASE(connman_outbound_slot_clamping)
+{
+    // Default-off: nMaxOutboundBlockRelay = 0
+    {
+        CConnman connman(0x1337, 0x1337);
+        CConnman::Options opts;
+        opts.nMaxConnections = 125;
+        opts.nMaxOutboundFullRelay = 8;
+        opts.nMaxOutboundBlockRelay = 0;
+        opts.nMaxFeeler = 1;
+        connman.Init(opts);
+        BOOST_CHECK_EQUAL(connman.GetMaxOutboundFullRelay(), 8);
+        BOOST_CHECK_EQUAL(connman.GetMaxOutboundBlockRelay(), 0);
+        BOOST_CHECK_EQUAL(connman.GetMaxInbound(), 116);
+    }
+
+    // Opt-in block-relay-only: reduces inbound budget accordingly
+    {
+        CConnman connman(0x1337, 0x1337);
+        CConnman::Options opts;
+        opts.nMaxConnections = 125;
+        opts.nMaxOutboundFullRelay = 8;
+        opts.nMaxOutboundBlockRelay = 2;
+        opts.nMaxFeeler = 1;
+        connman.Init(opts);
+        BOOST_CHECK_EQUAL(connman.GetMaxOutboundFullRelay(), 8);
+        BOOST_CHECK_EQUAL(connman.GetMaxOutboundBlockRelay(), 2);
+        BOOST_CHECK_EQUAL(connman.GetMaxInbound(), 114);
+    }
+
+    // Small nMaxConnections clamps block-relay-only to remaining budget (accounting for nMaxFeeler)
+    {
+        CConnman connman(0x1337, 0x1337);
+        CConnman::Options opts;
+        opts.nMaxConnections = 9;
+        opts.nMaxOutboundFullRelay = 8;
+        opts.nMaxOutboundBlockRelay = 4;
+        opts.nMaxFeeler = 1;
+        connman.Init(opts);
+        BOOST_CHECK_EQUAL(connman.GetMaxOutboundFullRelay(), 8);
+        BOOST_CHECK_EQUAL(connman.GetMaxOutboundBlockRelay(), 0);
+        BOOST_CHECK_EQUAL(connman.GetMaxInbound(), 0);
+    }
+
+    // Tight nMaxConnections=10 leaves 1 slot for block-relay-only and 0 for inbound (never negative)
+    {
+        CConnman connman(0x1337, 0x1337);
+        CConnman::Options opts;
+        opts.nMaxConnections = 10;
+        opts.nMaxOutboundFullRelay = 8;
+        opts.nMaxOutboundBlockRelay = 4;
+        opts.nMaxFeeler = 1;
+        connman.Init(opts);
+        BOOST_CHECK_EQUAL(connman.GetMaxOutboundFullRelay(), 8);
+        BOOST_CHECK_EQUAL(connman.GetMaxOutboundBlockRelay(), 1);
+        BOOST_CHECK_EQUAL(connman.GetMaxInbound(), 0);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
