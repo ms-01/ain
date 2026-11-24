@@ -352,6 +352,28 @@ these sanitizers are mutually incompatible. Refer to your compiler manual to
 learn more about these options and which sanitizers are supported by your
 compiler.
 
+Sanitizer builds are linked as non-PIE executables. The sanitizer runtimes
+reserve a large, fixed address range for their primary allocator (for example
+ASan reserves `0x600000000000`-`0x700000000000`) with `mmap(MAP_FIXED)`. If the
+kernel loads the randomized address of a PIE image into such a reservation, the
+reservation replaces the image mapping and the process dies with `SIGSEGV`
+before `main()` is reached; the failure is intermittent because it depends on
+the randomized load address. `configure` therefore adds `-no-pie` to the link
+flags whenever PIE is enabled and a sanitizer with a fixed address space
+reservation (`address`, `fuzzer`, `memory` or `thread`) is requested, and prints
+the decision in its summary:
+
+```
+  sanitizers          = address,undefined
+  pie                 = disabled (sanitizer build)
+```
+
+The flag is added after the hardening flags, so an explicit `LDFLAGS=-pie`
+overrides it and re-introduces the startup crash. This affects every binary of
+a sanitizer build (`test_defi`, `defid`, `defi-cli`, the fuzz binary), not only
+the fuzz binary. See [fuzzing.md](fuzzing.md) for the regression check that
+detects a re-introduced crash.
+
 Additional resources:
 
  * [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html)

@@ -54,11 +54,12 @@ jobs:
         cd build-fuzz
         # CONFIG_SITE must point at the depends-built config.site, mirroring make.sh
         # (build_conf): it provides with_boost, CPPFLAGS/LDFLAGS, PROTOC and SOLC_PATH.
-        # -no-pie: the ASan runtime reserves 0x600000000000-0x700000000000 with MAP_FIXED.
-        # A PIE executable that ASLR loads into that range is clobbered by that
-        # reservation, which makes the fuzz binary die with SIGSEGV during startup.
+        # Sanitizer builds are linked non-PIE by configure itself (see configure.ac,
+        # SANITIZER_NO_PIE_LDFLAGS): the ASan runtime reserves
+        # 0x600000000000-0x700000000000 with MAP_FIXED and a PIE executable that
+        # ASLR loads into that range would be clobbered by that reservation,
+        # which makes the fuzz binary die with SIGSEGV during startup.
         CC=clang-15 CXX=clang++-15 \
-        LDFLAGS="-no-pie" \
         CONFIG_SITE="${REPO_ROOT}/build/depends/${TARGET}/share/config.site" \
           ../configure \
           --prefix="${REPO_ROOT}/build/depends/${TARGET}" \
@@ -72,6 +73,9 @@ jobs:
         # benchmark is enabled).
         make -j"$(nproc)" -C lib
         make -j"$(nproc)" -C src test/fuzz/fuzz
+
+    - name: Fuzz binary startup regression check
+      run: ./ci/fuzz/main.sh build-fuzz/src/test/fuzz/fuzz 100
 
     - name: List fuzz targets
       run: PRINT_ALL_FUZZ_TARGETS_AND_ABORT=1 ./build-fuzz/src/test/fuzz/fuzz

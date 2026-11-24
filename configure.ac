@@ -678,12 +678,32 @@ if test x$use_hardening != xno; then
   AX_CHECK_LINK_FLAG([[-Wl,--high-entropy-va]], [HARDENED_LDFLAGS="$HARDENED_LDFLAGS -Wl,--high-entropy-va"])
   AX_CHECK_LINK_FLAG([[-Wl,-z,relro]], [HARDENED_LDFLAGS="$HARDENED_LDFLAGS -Wl,-z,relro"])
   AX_CHECK_LINK_FLAG([[-Wl,-z,now]], [HARDENED_LDFLAGS="$HARDENED_LDFLAGS -Wl,-z,now"])
-  AX_CHECK_LINK_FLAG([[-fPIE -pie]], [PIE_FLAGS="-fPIE"; HARDENED_LDFLAGS="$HARDENED_LDFLAGS -pie"],, [[$CXXFLAG_WERROR]])
+  AX_CHECK_LINK_FLAG([[-fPIE -pie]], [PIE_FLAGS="-fPIE"; HARDENED_LDFLAGS="$HARDENED_LDFLAGS -pie"; use_pie=yes],, [[$CXXFLAG_WERROR]])
 
   case $host in
     *mingw*)
        AC_CHECK_LIB([ssp],      [main],, AC_MSG_ERROR(libssp missing))
     ;;
+  esac
+fi
+
+dnl Sanitizer runtimes reserve a large, fixed address range for their primary
+dnl allocator (e.g. ASan reserves 0x600000000000-0x700000000000) with
+dnl mmap(MAP_FIXED). When the kernel places the randomized load address of a
+dnl PIE image inside such a reservation, the reservation clobbers the image
+dnl mapping and the process dies with SIGSEGV before main() is reached.
+dnl Link sanitizer builds as non-PIE to avoid that collision. The flag is only
+dnl added when PIE is actually part of the link line and when a sanitizer with
+dnl a fixed address space reservation is enabled. Darwin does not support
+dnl -no-pie (and uses a different reservation mechanism), so it is skipped there.
+SANITIZER_NO_PIE_LDFLAGS=
+if test x$use_pie = xyes && test x$use_sanitizers != x; then
+  case ",$use_sanitizers," in
+    *,address,*|*,fuzzer,*|*,memory,*|*,thread,*)
+      if test x$TARGET_OS != xdarwin; then
+        AX_CHECK_LINK_FLAG([[-no-pie]], [SANITIZER_NO_PIE_LDFLAGS="-no-pie"])
+      fi
+      ;;
   esac
 fi
 
@@ -1222,6 +1242,7 @@ AC_SUBST(PIC_FLAGS)
 AC_SUBST(PIE_FLAGS)
 AC_SUBST(SANITIZER_CXXFLAGS)
 AC_SUBST(SANITIZER_LDFLAGS)
+AC_SUBST(SANITIZER_NO_PIE_LDFLAGS)
 AC_SUBST(SSE42_CXXFLAGS)
 AC_SUBST(SSE41_CXXFLAGS)
 AC_SUBST(AVX2_CXXFLAGS)
@@ -1342,6 +1363,9 @@ fi
 echo "  with bench          = $use_bench"
 echo "  use asm             = $use_asm"
 echo "  sanitizers          = $use_sanitizers"
+if test x$SANITIZER_NO_PIE_LDFLAGS != x; then
+  echo "  pie                 = disabled (sanitizer build)"
+fi
 echo "  debug enabled       = $enable_debug"
 echo "  gprof enabled       = $enable_gprof"
 echo "  werror              = $enable_werror"
@@ -1356,7 +1380,7 @@ echo "  CFLAGS              = $CFLAGS"
 echo "  CPPFLAGS            = $DEBUG_CPPFLAGS $HARDENED_CPPFLAGS $CPPFLAGS"
 echo "  CXX                 = $CXX"
 echo "  CXXFLAGS            = $DEBUG_CXXFLAGS $HARDENED_CXXFLAGS $WARN_CXXFLAGS $NOWARN_CXXFLAGS $ERROR_CXXFLAGS $GPROF_CXXFLAGS $CXXFLAGS"
-echo "  LDFLAGS             = $PTHREAD_CFLAGS $HARDENED_LDFLAGS $GPROF_LDFLAGS $LDFLAGS"
+echo "  LDFLAGS             = $PTHREAD_CFLAGS $HARDENED_LDFLAGS $GPROF_LDFLAGS $SANITIZER_NO_PIE_LDFLAGS $LDFLAGS"
 echo "  AR                  = $AR"
 echo "  ARFLAGS             = $ARFLAGS"
 echo "  NM                  = $NM"
