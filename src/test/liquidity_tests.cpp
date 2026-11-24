@@ -762,4 +762,181 @@ BOOST_AUTO_TEST_CASE(pool_rewards_segmented)
     df4Height = oldDf4Height;
 }
 
+BOOST_AUTO_TEST_CASE(legacy_pool_reward_math_df25)
+{
+    auto &consensus = const_cast<Consensus::Params &>(Params().GetConsensus());
+    const int oldDf4Height = consensus.DF4BayfrontGardensHeight;
+    const int oldDf8Height = consensus.DF8EunosHeight;
+    const int oldDf25Height = consensus.DF25Height;
+
+    // Configure DF25Height < DF4BayfrontGardensHeight so the legacy branch is exercised
+    // both below and at/above DF25Height.
+    consensus.DF25Height = 100;
+    consensus.DF4BayfrontGardensHeight = 200;
+    consensus.DF8EunosHeight = 300;
+
+    auto restore = [&]() {
+        consensus.DF4BayfrontGardensHeight = oldDf4Height;
+        consensus.DF8EunosHeight = oldDf8Height;
+        consensus.DF25Height = oldDf25Height;
+    };
+
+    try {
+        CCustomCSView mnview(*pcustomcsview);
+        DCT_ID idA, idB, idPool;
+        std::tie(idA, idB, idPool) = CreatePoolNTokens(mnview, "LRA", "LRB");
+
+        const CScript provider = CScript(idPool.v * 100 + 1);
+        constexpr uint32_t preHeight = 95;
+        constexpr uint32_t postHeight = 105;
+        constexpr CAmount totalLiq = 1000 * COIN;
+        constexpr CAmount poolReward = 123456789;
+        constexpr CAmount commA = 9876543;
+        constexpr CAmount commB = 4567891;
+
+        mnview.WriteBy<CPoolPairView::ByTotalLiquidity>(PoolHeightKey{idPool, preHeight}, totalLiq);
+        mnview.WriteBy<CPoolPairView::ByPoolReward>(PoolHeightKey{idPool, preHeight}, poolReward);
+        mnview.WriteBy<CPoolPairView::ByPoolSwap>(PoolHeightKey{idPool, preHeight},
+                                                  PoolSwapValue{true, commA, commB});
+        mnview.WriteBy<CPoolPairView::ByPoolSwap>(PoolHeightKey{idPool, postHeight},
+                                                  PoolSwapValue{true, commA, commB});
+
+        // 1. Valid states (0 <= liquidity <= totalLiquidity): bit-identical below and at/above DF25Height,
+        //    and identical between CalculatePoolRewards and CalculatePoolRewardsSegmented.
+        for (const CAmount liq : {CAmount{0}, CAmount{1}, 333 * COIN, 500 * COIN, totalLiq}) {
+            auto runCalc = [&](uint32_t h) {
+                std::map<std::pair<RewardType, uint32_t>, CAmount> totals;
+                mnview.CalculatePoolRewards(
+                    idPool,
+                    [liq]() { return liq; },
+                    h,
+                    h + 1,
+                    [&](RewardType type, CTokenAmount amount, uint32_t) {
+                        totals[{type, amount.nTokenId.v}] += amount.nValue;
+                    });
+                return totals;
+            };
+            auto runSeg = [&](uint32_t h) {
+                std::map<std::pair<RewardType, uint32_t>, CAmount> totals;
+                mnview.CalculatePoolRewardsSegmented(
+                    idPool,
+                    [liq]() { return liq; },
+                    h,
+                    h + 1,
+                    [&](const std::vector<PoolRewardEntry> &entries, uint32_t, uint32_t count) {
+                        for (const auto &entry : entries) {
+                            totals[{entry.type, entry.amount.nTokenId.v}] += entry.amount.nValue * count;
+                        }
+                    });
+                return totals;
+            };
+
+            const auto preCalc = runCalc(preHeight);
+            const auto postCalc = runCalc(postHeight);
+            const auto preSeg = runSeg(preHeight);
+            const auto postSeg = runSeg(postHeight);
+
+            BOOST_CHECK(preCalc == postCalc);
+            BOOST_CHECK(preCalc == preSeg);
+            BOOST_CHECK(postCalc == postSeg);
+        }
+
+        // 2. Overflow / uint32_t truncation repro inputs at/above DF25Height:
+        //    totalLiquidity = 1, liquidity = 99999000, poolReward = 28800000000000,
+        //    large blockCommissionA/B. Must not overflow signed int64 and must satisfy MoneyRange.
+        {
+            DCT_ID idC, idD, idCorruptPool;
+            std::tie(idC, idD, idCorruptPool) = CreatePoolNTokens(mnview, "OVFA", "OVFB");
+
+            const CScript corruptProvider = CScript(idCorruptPool.v * 100 + 2);
+            constexpr CAmount corruptTotalLiq = 1;
+            constexpr CAmount corruptLiq = 99999000;
+            constexpr CAmount hugeReward = 28800000000000LL;
+            constexpr CAmount hugeCommA = 28800000000000LL;
+            constexpr CAmount smallCommB = 1000;
+
+            mnview.WriteBy<CPoolPairView::ByTotalLiquidity>(PoolHeightKey{idCorruptPool, postHeight}, corruptTotalLiq);
+            mnview.WriteBy<CPoolPairView::ByPoolReward>(PoolHeightKey{idCorruptPool, postHeight}, hugeReward);
+            mnview.WriteBy<CPoolPairView::ByPoolSwap>(PoolHeightKey{idCorruptPool, postHeight},
+                                                      PoolSwapValue{true, hugeCommA, smallCommB});
+            BOOST_REQUIRE(mnview.SetShare(idCorruptPool, corruptProvider, postHeight).ok);
+
+            std::vector<CTokenAmount> calcRewards;
+            mnview.CalculatePoolRewards(
+                idCorruptPool,
+                []() { return corruptLiq; },
+                postHeight,
+                postHeight + 1,
+                [&](RewardType, CTokenAmount amount, uint32_t) {
+                    BOOST_CHECK(MoneyRange(amount.nValue));
+                    calcRewards.push_back(amount);
+                });
+
+            std::vector<CTokenAmount> segRewards;
+            mnview.CalculatePoolRewardsSegmented(
+                idCorruptPool,
+                []() { return corruptLiq; },
+                postHeight,
+                postHeight + 1,
+                [&](const std::vector<PoolRewardEntry> &entries, uint32_t, uint32_t) {
+                    for (const auto &entry : entries) {
+                        BOOST_CHECK(MoneyRange(entry.amount.nValue));
+                        segRewards.push_back(entry.amount);
+                    }
+                });
+
+            BOOST_REQUIRE_EQUAL(calcRewards.size(), segRewards.size());
+            for (size_t i = 0; i < calcRewards.size(); ++i) {
+                BOOST_CHECK_EQUAL(calcRewards[i].nTokenId.v, segRewards[i].nTokenId.v);
+                BOOST_CHECK_EQUAL(calcRewards[i].nValue, segRewards[i].nValue);
+            }
+            // hugeReward * corruptLiq > MAX_MONEY -> clamped to 0;
+            // smallCommB * corruptLiq = 99999000000 -> in MoneyRange.
+            BOOST_REQUIRE_EQUAL(calcRewards.size(), 2UL);
+            BOOST_CHECK_EQUAL(calcRewards[0].nValue, 0);
+            BOOST_CHECK_EQUAL(calcRewards[1].nValue, smallCommB * corruptLiq);
+
+            // Also exercise UpdatePoolRewards on the legacy path with DF25 active.
+            std::map<uint32_t, CAmount> transferred;
+            const auto [distributed, loanDistributed] = mnview.UpdatePoolRewards(
+                [&](const CScript &, DCT_ID) { return CTokenAmount{idCorruptPool, corruptLiq}; },
+                [&](const CScript &, const CScript &, CTokenAmount amount) {
+                    BOOST_CHECK(MoneyRange(amount.nValue));
+                    transferred[amount.nTokenId.v] += amount.nValue;
+                    return Res::Ok();
+                },
+                static_cast<int>(postHeight));
+            BOOST_CHECK_EQUAL(distributed, 0);
+            BOOST_CHECK_EQUAL(loanDistributed, 0);
+            BOOST_CHECK_EQUAL(transferred[idD.v], smallCommB * corruptLiq);
+            BOOST_CHECK_EQUAL(transferred[idC.v], 0);
+        }
+
+        // 3. UpdatePoolRewards on the modern path (height >= DF4BayfrontGardensHeight) with
+        //    liquidity > totalLiquidity must not trigger the legacy assert(liqWeight < PRECISION).
+        {
+            constexpr uint32_t modernHeight = 205;
+            constexpr CAmount modernLiq = 200;
+            CAmount modernDistributed = 0;
+            mnview.UpdatePoolRewards(
+                [&](const CScript &, DCT_ID pid) {
+                    return CTokenAmount{pid, modernLiq};
+                },
+                [&](const CScript &, const CScript &, CTokenAmount amount) {
+                    modernDistributed += amount.nValue;
+                    return Res::Ok();
+                },
+                static_cast<int>(modernHeight));
+            // idCorruptPool has totalLiquidity = 1, poolReward = 28800000000000 ->
+            // liquidityReward(28800000000000, 200, 1) = 5760000000000000.
+            BOOST_CHECK_EQUAL(modernDistributed, 5760000000000000LL);
+        }
+    } catch (...) {
+        restore();
+        throw;
+    }
+
+    restore();
+}
+
 BOOST_AUTO_TEST_SUITE_END()
