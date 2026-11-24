@@ -14,9 +14,13 @@
 #include <netaddress.h>
 #include <serialize.h>
 
+#include <functional>
+#include <memory>
 #include <stdint.h>
 #include <string>
 #include <vector>
+
+class Sock;
 
 extern int nConnectTimeout;
 extern bool fNameLookup;
@@ -55,6 +59,19 @@ bool Lookup(const char *pszName, std::vector<CService>& vAddr, int portDefault, 
 CService LookupNumeric(const char *pszName, int portDefault = 0);
 bool LookupSubNet(const char *pszName, CSubNet& subnet);
 SOCKET CreateSocket(const CService &addrConnect);
+/**
+ * Create a socket using the OS socket(2) call.
+ *
+ * @param[in] domain Address family (e.g. AF_INET, AF_INET6, AF_NETLINK).
+ * @param[in] type Socket type (e.g. SOCK_DGRAM, SOCK_STREAM).
+ * @param[in] protocol Protocol (e.g. IPPROTO_UDP, 0).
+ * @return A unique_ptr to the created Sock, or nullptr on failure.
+ */
+std::unique_ptr<Sock> CreateSockOS(int domain, int type, int protocol);
+/**
+ * Socket creation function, replaceable in unit tests.
+ */
+extern std::function<std::unique_ptr<Sock>(int, int, int)> CreateSock;
 bool ConnectSocketDirectly(const CService &addrConnect, const SOCKET& hSocketRet, int nTimeout, bool manual_connection);
 bool ConnectThroughProxy(const proxyType &proxy, const std::string& strDest, int port, const SOCKET& hSocketRet, int nTimeout, bool *outProxyConnectionFailed);
 /** Return readable error string for a network error code */

@@ -32,6 +32,7 @@
 #include <dfi/vaulthistory.h>
 #include <dfi/threadpool.h>
 #include <miner.h>
+#include <mapport.h>
 #include <net.h>
 #include <netgroup.h>
 #include <node/mempool_persist.h>
@@ -217,6 +218,7 @@ void Interrupt()
     InterruptRPC();
     InterruptREST();
     InterruptHealthEndpoints();
+    InterruptMapPort();
     InterruptTorControl();
     if (g_connman)
         g_connman->Interrupt();
@@ -255,6 +257,7 @@ void Shutdown(InitInterfaces& interfaces)
     StopHealthEndpoints();
     StopRPC();
     StopHTTPServer();
+    StopMapPort();
     for (const auto& client : interfaces.chain_clients) {
         client->flush();
     }
@@ -516,6 +519,7 @@ void SetupServerArgs()
     gArgs.AddArg("-externalip=<ip>", "Specify your own public address", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-forcednsseed", strprintf("Always query for peer addresses via DNS lookup (default: %u)", DEFAULT_FORCEDNSSEED), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-listen", "Accept connections from outside (default: 1 if no -proxy or -connect)", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-natpmp", strprintf("Use PCP or NAT-PMP to map the listening port (default: %u)", DEFAULT_NATPMP), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-v2transport", strprintf("Support v2 transport (default: %u)", DEFAULT_V2_TRANSPORT), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-listenonion", strprintf("Automatically create Tor hidden service (default: %d)", DEFAULT_LISTEN_ONION), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     gArgs.AddArg("-maxconnections=<n>", strprintf("Maintain at most <n> connections to peers (default: %u)", DEFAULT_MAX_PEER_CONNECTIONS), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
@@ -1044,6 +1048,9 @@ void InitParameterInteraction()
         // to protect privacy, do not listen by default if a default proxy server is specified
         if (gArgs.SoftSetBoolArg("-listen", false))
             LogPrintf("%s: parameter interaction: -proxy set -> setting -listen=0\n", __func__);
+        // to protect privacy, do not map ports by default
+        if (gArgs.SoftSetBoolArg("-natpmp", false))
+            LogPrintf("%s: parameter interaction: -proxy set -> setting -natpmp=0\n", __func__);
         // to protect privacy, do not discover addresses by default
         if (gArgs.SoftSetBoolArg("-discover", false))
             LogPrintf("%s: parameter interaction: -proxy set -> setting -discover=0\n", __func__);
@@ -1055,6 +1062,8 @@ void InitParameterInteraction()
             LogPrintf("%s: parameter interaction: -listen=0 -> setting -discover=0\n", __func__);
         if (gArgs.SoftSetBoolArg("-listenonion", false))
             LogPrintf("%s: parameter interaction: -listen=0 -> setting -listenonion=0\n", __func__);
+        if (gArgs.SoftSetBoolArg("-natpmp", false))
+            LogPrintf("%s: parameter interaction: -listen=0 -> setting -natpmp=0\n", __func__);
     }
 
     if (gArgs.IsArgSet("-externalip")) {
@@ -2550,6 +2559,7 @@ bool AppInitMain(InitInterfaces& interfaces)
         StartTorControl();
 
     Discover();
+    StartMapPort(gArgs.GetBoolArg("-natpmp", DEFAULT_NATPMP) && fListen);
 
     if (gArgs.IsArgSet("-upnp")) {
         LogPrintf("Warning: -upnp is deprecated and has no effect since v4.2.7 (UPnP support was removed; planned for removal in v4.3.0).\n");
