@@ -188,6 +188,9 @@ class EVMOpcodeTest(DefiTestFramework):
         self.gas_refund, self.gas_refund_abi = self.deploy_solidity(
             "GasRefund.sol", "GasRefund"
         )
+        self.gas_refund_dirty, self.gas_refund_dirty_abi = self.deploy_solidity(
+            "GasRefundDirty.sol", "GasRefundDirty"
+        )
 
         self.invalid_contract = self.deploy_raw(RUNTIME_INVALID_AFTER_SSTORE)
         self.invalid_opcode_contract = self.deploy_raw(RUNTIME_INVALID)
@@ -517,6 +520,98 @@ class EVMOpcodeTest(DefiTestFramework):
         # ... and the applied refund is exactly that cap.
         assert_equal(refund, total_used_gas // 5)
 
+    def test_gas_refund_restore_original(self):
+        """Restoring a non-zero slot within one transaction refunds 2800 gas.
+
+        Calling ``modifyThenRestore()`` executes ``slot = 2; slot = 1;``:
+
+          * pre-state ``slot == 1`` (``1 -> 2 -> 1``): cold reset (5000) +
+            warm dirty write (100) = 5100 gas, and EIP-3529 grants a dirty-slot
+            restore refund of 2800 gas (uncapped),
+          * pre-state ``slot == 2`` (``2 -> 2 -> 1``): cold no-op (2200) +
+            warm reset (2900) = 5100 gas, and 0 refund.
+
+        Both runs use the same calldata, code path, and total ``SSTORE`` cost
+        (5100), so all common costs cancel out and the difference is exactly
+        the 2800 gas refund.
+        """
+        self.rollback_to(self.start_height)
+
+        contract = self.w3.eth.contract(
+            address=self.gas_refund_dirty, abi=self.gas_refund_dirty_abi
+        )
+
+        # Pre-state slot == 1: 1 -> 2 -> 1 grants a 2800 gas refund.
+        receipt = self.call_contract(contract.functions.set, 1)
+        assert_equal(receipt["status"], 1)
+        assert_equal(self.storage_slot(self.gas_refund_dirty, 0), 1)
+
+        used_restore = self.call_contract(contract.functions.modifyThenRestore)[
+            "gasUsed"
+        ]
+        assert_equal(self.storage_slot(self.gas_refund_dirty, 0), 1)
+
+        # Baseline pre-state slot == 2: 2 -> 2 -> 1 grants 0 refund.
+        self.rollback_to(self.start_height)
+        receipt = self.call_contract(contract.functions.set, 2)
+        assert_equal(receipt["status"], 1)
+        assert_equal(self.storage_slot(self.gas_refund_dirty, 0), 2)
+
+        used_no_refund = self.call_contract(contract.functions.modifyThenRestore)[
+            "gasUsed"
+        ]
+        assert_equal(self.storage_slot(self.gas_refund_dirty, 0), 1)
+
+        assert_equal(used_no_refund - used_restore, 2800)
+        assert 2800 <= used_no_refund // 5
+
+    def test_gas_refund_set_then_clear(self):
+        """Setting and clearing a zero slot within one tx applies the capped refund.
+
+        Calling ``setThenClear()`` executes ``slot = 1; slot = 0;``:
+
+          * pre-state ``slot == 0`` (``0 -> 1 -> 0``): cold set (22100) +
+            warm dirty write (100) = 22200 gas, and EIP-3529 grants a raw
+            dirty-slot refund of 19900 gas (pinned by the Rust unit test),
+            which is capped at ``total_used_gas // 5`` at receipt level,
+          * baseline pre-state ``slot == 1`` (``1 -> 1 -> 0``): cold no-op
+            (2200) + warm reset (2900) = 5100 gas, and an uncapped 4800
+            clearing refund.
+
+        Reconstructing ``total_used_gas`` from the uncapped baseline allows
+        asserting the exact capped refund applied at receipt level.
+        """
+        self.rollback_to(self.start_height)
+
+        contract = self.w3.eth.contract(
+            address=self.gas_refund_dirty, abi=self.gas_refund_dirty_abi
+        )
+
+        # Pre-state slot == 0: 0 -> 1 -> 0 grants raw 19900 refund (capped).
+        assert_equal(self.storage_slot(self.gas_refund_dirty, 0), 0)
+        used_from_0 = self.call_contract(contract.functions.setThenClear)["gasUsed"]
+        assert_equal(self.storage_slot(self.gas_refund_dirty, 0), 0)
+
+        # Baseline pre-state slot == 1: 1 -> 1 -> 0 grants uncapped 4800 refund.
+        self.rollback_to(self.start_height)
+        receipt = self.call_contract(contract.functions.set, 1)
+        assert_equal(receipt["status"], 1)
+        assert_equal(self.storage_slot(self.gas_refund_dirty, 0), 1)
+
+        used_from_1 = self.call_contract(contract.functions.setThenClear)["gasUsed"]
+        assert_equal(self.storage_slot(self.gas_refund_dirty, 0), 0)
+
+        # Verify the baseline 4800 refund was uncapped before deriving total_used_gas.
+        total_used_gas_baseline = used_from_1 + 4800
+        assert 4800 <= total_used_gas_baseline // 5
+
+        # SSTORE cost delta between (0 -> 1 -> 0) and (1 -> 1 -> 0) is 22200 - 5100.
+        total_used_gas = total_used_gas_baseline + (22200 - 5100)
+        applied_refund = total_used_gas - used_from_0
+
+        assert applied_refund < 19900
+        assert_equal(applied_refund, total_used_gas // 5)
+
     def test_selfdestruct_gives_no_refund(self):
         """`SELFDESTRUCT` does not grant a refund (EIP-3529)."""
         self.rollback_to(self.start_height)
@@ -636,6 +731,8 @@ class EVMOpcodeTest(DefiTestFramework):
         self.test_revert_reason_and_state_rollback()
         self.test_gas_refund_clearing_storage_slot()
         self.test_gas_refund_cap()
+        self.test_gas_refund_restore_original()
+        self.test_gas_refund_set_then_clear()
         self.test_selfdestruct_gives_no_refund()
         self.test_eip3541_rejects_ef_prefix()
         self.test_invalid_opcode_stack_overflow_out_of_gas()
