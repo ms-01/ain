@@ -426,3 +426,14 @@ bool Sock::operator==(SOCKET s) const
 {
     return m_socket == s;
 }
+
+std::unique_ptr<Sock> CreateSockOS(int domain, int type, int protocol)
+{
+    SOCKET hSocket = socket(domain, type, protocol);
+    if (hSocket == INVALID_SOCKET) {
+        return nullptr;
+    }
+    return std::make_unique<Sock>(hSocket);
+}
+
+std::function<std::unique_ptr<Sock>(int, int, int)> CreateSock = CreateSockOS;

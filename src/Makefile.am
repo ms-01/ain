@@ -230,6 +230,9 @@ DEFI_CORE_H = \
   net_permissions.h \
   net_processing.h \
   netaddress.h \
+  common/netif.h \
+  common/pcp.h \
+  mapport.h \
   netbase.h \
   netgroup.h \
   netmessagemaker.h \
@@ -491,6 +494,7 @@ libdefi_server_a_SOURCES = \
   i2p.cpp \
   mempool_accept.cpp \
   miner.cpp \
+  mapport.cpp \
   net.cpp \
   net_processing.cpp \
   node/coin.cpp \
@@ -698,6 +702,8 @@ libdefi_common_a_SOURCES = \
   musig.cpp \
   netaddress.cpp \
   netgroup.cpp \
+  common/netif.cpp \
+  common/pcp.cpp \
   netbase.cpp \
   net_permissions.cpp \
   outputtype.cpp \

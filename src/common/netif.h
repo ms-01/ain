@@ -1,0 +1,20 @@
+// Copyright (c) 2024-present The Bitcoin Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or https://www.opensource.org/licenses/mit-license.php.
+
+#ifndef DEFI_COMMON_NETIF_H
+#define DEFI_COMMON_NETIF_H
+
+#include <netaddress.h>
+
+#include <optional>
+#include <vector>
+
+//! Query the OS for the default gateway for `network`. This only makes sense for NET_IPV4 and NET_IPV6.
+//! Returns std::nullopt if it cannot be found, or there is no support for this OS.
+std::optional<CNetAddr> QueryDefaultGateway(Network network);
+
+//! Return all local non-loopback IPv4 and IPv6 network addresses.
+std::vector<CNetAddr> GetLocalAddresses();
+
+#endif // DEFI_COMMON_NETIF_H
