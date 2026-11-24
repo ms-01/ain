@@ -258,6 +258,7 @@ BASE_SCRIPTS = [
     "p2p_invalid_block.py",
     "p2p_invalid_messages.py",
     "p2p_invalid_tx.py",
+    "p2p_opportunistic_1p1c.py",
     "p2p_orphan_per_peer_eviction.py",
     "p2p_wtxid_relay.py",
     "feature_foundation_migration.py",

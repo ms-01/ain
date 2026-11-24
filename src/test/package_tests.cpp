@@ -152,4 +152,33 @@ BOOST_AUTO_TEST_CASE(is_child_with_parents)
     BOOST_CHECK(!IsChildWithParents(Package{parent, unrelated, child}));
 }
 
+BOOST_AUTO_TEST_CASE(package_hash_test)
+{
+    const CTransactionRef parent = MakePackageTx({}, {1000});
+    const CTransactionRef child = MakePackageTx({OutPointOf(parent)}, {900});
+    const CTransactionRef other = MakePackageTx({}, {2000});
+
+    // Order-independence: GetPackageHash sorts by wtxid before hashing.
+    const uint256 hash_pc = GetPackageHash(Package{parent, child});
+    const uint256 hash_cp = GetPackageHash(Package{child, parent});
+    BOOST_CHECK_EQUAL(hash_pc, hash_cp);
+    BOOST_CHECK(!hash_pc.IsNull());
+
+    // Distinct packages produce distinct hashes.
+    const uint256 hash_po = GetPackageHash(Package{parent, other});
+    BOOST_CHECK(hash_pc != hash_po);
+    BOOST_CHECK(hash_pc != GetPackageHash(Package{parent}));
+
+    // Witness-sensitivity: same txid with different witness (wtxid) produces a different package hash.
+    CMutableTransaction child_mut(*child);
+    child_mut.vin[0].scriptWitness.stack.push_back({0x01, 0x02});
+    const CTransactionRef child_wit1 = MakeTransactionRef(child_mut);
+    child_mut.vin[0].scriptWitness.stack[0] = {0x03, 0x04};
+    const CTransactionRef child_wit2 = MakeTransactionRef(child_mut);
+
+    BOOST_CHECK_EQUAL(child_wit1->GetHash(), child_wit2->GetHash());
+    BOOST_CHECK(child_wit1->GetWitnessHash() != child_wit2->GetWitnessHash());
+    BOOST_CHECK(GetPackageHash(Package{parent, child_wit1}) != GetPackageHash(Package{parent, child_wit2}));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

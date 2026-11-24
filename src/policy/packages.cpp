@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <hash.h>
 #include <policy/packages.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
@@ -93,4 +94,28 @@ bool IsChildWithParents(const Package &package)
     // Every transaction must be a parent of the last transaction in the package.
     return std::all_of(package.cbegin(), package.cend() - 1,
                        [&input_txids](const auto &ptx) { return input_txids.count(ptx->GetHash()) > 0; });
+}
+
+uint256 GetPackageHash(const Package &transactions)
+{
+    // Create a vector of the wtxids.
+    std::vector<uint256> wtxids_copy;
+    wtxids_copy.reserve(transactions.size());
+    std::transform(transactions.cbegin(), transactions.cend(), std::back_inserter(wtxids_copy),
+                   [](const auto &tx) { return tx->GetWitnessHash(); });
+
+    // Sort in ascending order (reverse byte order, matching upstream uint256 comparison).
+    std::sort(wtxids_copy.begin(), wtxids_copy.end(), [](const uint256 &lhs, const uint256 &rhs) {
+        return std::lexicographical_compare(std::make_reverse_iterator(lhs.end()), std::make_reverse_iterator(lhs.begin()),
+                                            std::make_reverse_iterator(rhs.end()), std::make_reverse_iterator(rhs.begin()));
+    });
+
+    // Get SHA256 hash of the wtxids concatenated in this order.
+    CSHA256 hasher;
+    for (const auto &wtxid : wtxids_copy) {
+        hasher.Write(wtxid.begin(), wtxid.size());
+    }
+    uint256 result;
+    hasher.Finalize(result.begin());
+    return result;
 }

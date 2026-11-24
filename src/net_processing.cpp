@@ -21,6 +21,7 @@
 #include <netmessagemaker.h>
 #include <netbase.h>
 #include <policy/fees.h>
+#include <policy/packages.h>
 #include <policy/policy.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
@@ -39,6 +40,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <random>
 
 #if defined(NDEBUG)
@@ -210,6 +212,9 @@ namespace {
      * Memory used: 1.3 MB
      */
     std::unique_ptr<CRollingBloomFilter> recentRejects GUARDED_BY(g_cs_peer_state);
+    /** Filter of transactions rejected for fee/mempool-full policy reasons that may be
+     *  reconsidered as part of a 1-parent-1-child package, as well as rejected package hashes. */
+    std::unique_ptr<CRollingBloomFilter> recentRejectsReconsiderable GUARDED_BY(g_cs_peer_state);
     uint256 hashRecentRejectsChainTip GUARDED_BY(g_cs_peer_state);
 
     /** Rolling bloom filter of recently confirmed txids and wtxids so AlreadyHave
@@ -1158,6 +1163,7 @@ static bool MaybePunishNode(NodeId nodeid, ValidationInvalidReason reason, bool 
     case ValidationInvalidReason::TX_WITNESS_STRIPPED:
     case ValidationInvalidReason::TX_CONFLICT:
     case ValidationInvalidReason::TX_MEMPOOL_POLICY:
+    case ValidationInvalidReason::TX_RECONSIDERABLE:
         break;
     }
     if (message != "") {
@@ -1272,6 +1278,7 @@ PeerLogicValidation::PeerLogicValidation(CConnman* connmanIn, BanMan* banman, CS
     : connman(connmanIn), m_banman(banman), m_stale_tip_check_time(0) {
     // Initialize global variables that cannot be constructed at startup.
     recentRejects.reset(new CRollingBloomFilter(120000, 0.000001));
+    recentRejectsReconsiderable.reset(new CRollingBloomFilter(120000, 0.000001));
     {
         LOCK(cs_recent_confirmed);
         recentConfirmed.reset(new CRollingBloomFilter(RECENT_CONFIRMED_FILTER_SIZE, 0.000001));
@@ -1460,6 +1467,13 @@ void PeerLogicValidation::BlockChecked(const CBlock& block, const CValidationSta
 static void InsertRecentReject(const CTransaction& tx, ValidationInvalidReason reason) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_state)
 {
     assert(recentRejects);
+    assert(recentRejectsReconsiderable);
+    if (reason == ValidationInvalidReason::TX_RECONSIDERABLE) {
+        // Store only wtxid (never legacy txid) so malleated variants are not
+        // conflated and orphan parent fetches by txid can still reconsider it.
+        recentRejectsReconsiderable->insert(tx.GetWitnessHash());
+        return;
+    }
     recentRejects->insert(tx.GetWitnessHash());
     // When inputs failed policy (independent of witness), also suppress legacy
     // txid announcements and orphan parent fetches by txid.
@@ -1475,6 +1489,11 @@ static void InsertRecentReject(const CTransaction& tx, ValidationInvalidReason r
 static void InsertRecentRejectHashes(const uint256& wtxid, const uint256& txid, ValidationInvalidReason reason) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_state)
 {
     assert(recentRejects);
+    assert(recentRejectsReconsiderable);
+    if (reason == ValidationInvalidReason::TX_RECONSIDERABLE) {
+        recentRejectsReconsiderable->insert(wtxid);
+        return;
+    }
     recentRejects->insert(wtxid);
     // When inputs failed policy (independent of witness), also suppress legacy
     // txid announcements and orphan parent fetches by txid. A wtxid that
@@ -1484,7 +1503,7 @@ static void InsertRecentRejectHashes(const uint256& wtxid, const uint256& txid, 
     }
 }
 
-bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_state)
+bool static AlreadyHave(const CInv& inv, bool include_reconsiderable = true) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_state)
 {
     switch (inv.type)
     {
@@ -1493,6 +1512,7 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_stat
     case MSG_WTX:
         {
             assert(recentRejects);
+            assert(recentRejectsReconsiderable);
             {
                 // If the chain tip has changed previously rejected transactions
                 // might be now valid, e.g. due to a nLockTime'd tx becoming valid,
@@ -1504,6 +1524,7 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_stat
                 {
                     hashRecentRejectsChainTip = ::ChainActive().Tip()->GetBlockHash();
                     recentRejects->reset();
+                    recentRejectsReconsiderable->reset();
                 }
             }
 
@@ -1520,6 +1541,7 @@ bool static AlreadyHave(const CInv& inv) EXCLUSIVE_LOCKS_REQUIRED(g_cs_peer_stat
 
             if (fRecentConfirmed ||
                 recentRejects->contains(inv.hash) ||
+                (include_reconsiderable && recentRejectsReconsiderable->contains(inv.hash)) ||
                 mempool.exists(gtxid)) {
                 return true;
             }
@@ -3473,14 +3495,99 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         std::list<CTransactionRef> lRemovedTxn;
 
         bool fAlreadyHave = false;
+        bool fReconsiderable = false;
         {
             // AlreadyHave() accesses the peer state (recentRejects,
             // hashRecentRejectsChainTip) and acquires cs_main internally, so it
             // must be called with g_cs_peer_state held (lock order:
             // g_cs_peer_state -> cs_main).
             LOCK_PEER();
-            fAlreadyHave = AlreadyHave(wtx_inv);
+            fAlreadyHave = AlreadyHave(wtx_inv, /*include_reconsiderable=*/false);
+            fReconsiderable = !fAlreadyHave && recentRejectsReconsiderable->contains(tx.GetWitnessHash());
         }
+
+        // Helper: find an eligible same-peer orphan child to form a 1-parent-1-child package.
+        // Never holds g_cs_peer_state and g_cs_orphans simultaneously and never acquires cs_main.
+        auto find_1p1c_package = [&](const CTransactionRef& parent_tx, NodeId nodeid) -> std::optional<Package> {
+            std::vector<CTransactionRef> children;
+            {
+                LOCK_ORPHANS();
+                children = GetOrphanage().GetChildrenFromSamePeer(parent_tx, nodeid);
+            }
+            for (const CTransactionRef& child : children) {
+                if (mempool.exists(GenTxid::Txid(child->GetHash()))) {
+                    LOCK_ORPHANS();
+                    GetOrphanage().EraseTx(Wtxid::FromUint256(child->GetWitnessHash()));
+                    continue;
+                }
+                Package pkg{parent_tx, child};
+                const uint256 pkg_hash = GetPackageHash(pkg);
+                {
+                    LOCK_PEER();
+                    if (recentRejectsReconsiderable->contains(pkg_hash) ||
+                        recentRejects->contains(child->GetHash()) ||
+                        recentRejects->contains(child->GetWitnessHash())) {
+                        continue;
+                    }
+                }
+                return pkg;
+            }
+            return std::nullopt;
+        };
+
+        // Helper: validate and submit a 1p1c package, handling relay, orphanage cleanup, and reject caching.
+        // ProcessNewPackage() acquires cs_main internally; do not call under cs_main or LOCK_ORPHANS().
+        auto try_process_1p1c_package = [&](const Package& pkg) -> bool {
+            const PackageMempoolAcceptResult pkg_result =
+                ProcessNewPackage(mempool, pkg, /*max_tx_fees=*/{}, /*test_accept=*/false);
+            const bool pkg_accepted =
+                pkg_result.m_result_type == PackageValidationResult::PCKG_RESULT_UNSET &&
+                pkg_result.m_package_error.empty() &&
+                !pkg_result.m_tx_results.empty() &&
+                std::all_of(pkg_result.m_tx_results.begin(), pkg_result.m_tx_results.end(),
+                            [](const PackageTxResult& r) { return r.allowed; });
+
+            if (!pkg_accepted) {
+                {
+                    LOCK_PEER();
+                    recentRejectsReconsiderable->insert(GetPackageHash(pkg));
+                }
+                LogPrint(BCLog::MEMPOOLREJ, "1p1c package (%s, %s) from peer=%d was not accepted: %s\n",
+                    pkg.front()->GetHash().ToString(),
+                    pkg.back()->GetHash().ToString(),
+                    pfrom->GetId(),
+                    pkg_result.m_package_error);
+                return false;
+            }
+
+            {
+                LOCK_CHAIN();
+                LOCK_ORPHANS();
+                mempool.xcheck(&::ChainstateActive().CoinsTip(), pcustomcsview.get(), chainparams);
+                for (const CTransactionRef& pkg_tx : pkg) {
+                    RelayTransaction(pkg_tx->GetHash(), *connman);
+                    for (const auto& [child_txid, child_peer] : GetOrphanage().GetChildren(pkg_tx)) {
+                        pfrom->orphan_work_set.insert(child_txid);
+                    }
+                }
+                GetOrphanage().EraseTx(Wtxid::FromUint256(pkg.back()->GetWitnessHash()));
+                pfrom->nLastTXTime = GetTime();
+                LogPrint(BCLog::MEMPOOL, "AcceptPackage: peer=%d: accepted 1p1c package (%s, %s) (poolsz %u txn, %u kB)\n",
+                    pfrom->GetId(),
+                    pkg.front()->GetHash().ToString(),
+                    pkg.back()->GetHash().ToString(),
+                    mempool.size(), mempool.DynamicMemoryUsage() / 1000);
+                ProcessOrphanTx(connman, pfrom->orphan_work_set, lRemovedTxn, chainparams);
+            }
+            {
+                LOCK_PEER();
+                for (const CTransactionRef& pkg_tx : pkg) {
+                    g_txrequest.ForgetTxHash(pkg_tx->GetHash());
+                    g_txrequest.ForgetTxHash(pkg_tx->GetWitnessHash());
+                }
+            }
+            return true;
+        };
 
         if (fAlreadyHave) {
             {
@@ -3499,6 +3606,21 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         }
 
         bool fAccepted = false;
+        if (fReconsiderable) {
+            // Previously rejected for a reconsiderable policy reason (e.g., low fee).
+            // Do not re-run single-tx validation; opportunistically try 1p1c package
+            // acceptance with a same-peer orphan child if one is available.
+            if (const auto pkg = find_1p1c_package(ptx, pfrom->GetId())) {
+                fAccepted = try_process_1p1c_package(*pkg);
+            }
+            if (!fAccepted) {
+                LOCK_PEER();
+                g_txrequest.ForgetTxHash(tx.GetHash());
+                g_txrequest.ForgetTxHash(tx.GetWitnessHash());
+            }
+            fAlreadyHave = true;
+        }
+
         if (!fAlreadyHave) {
             LOCK_CHAIN();
             LOCK_ORPHANS();
@@ -3529,15 +3651,44 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             g_txrequest.ForgetTxHash(tx.GetWitnessHash());
         }
 
+        if (!fAccepted && !fAlreadyHave && !fMissingInputs &&
+            state.GetReason() == ValidationInvalidReason::TX_RECONSIDERABLE) {
+            // Record in recentRejectsReconsiderable first, then opportunistically try
+            // 1p1c package acceptance if a same-peer orphan child is already waiting.
+            {
+                LOCK_PEER();
+                InsertRecentReject(tx, state.GetReason());
+            }
+            if (const auto pkg = find_1p1c_package(ptx, pfrom->GetId())) {
+                if (try_process_1p1c_package(*pkg)) {
+                    fAccepted = true;
+                    state = CValidationState();
+                }
+            }
+        }
+
         if (!fAccepted && fMissingInputs)
         {
             bool fRejectedParents = false; // It may be the case that the orphans parents have all been rejected
             {
-                LOCK_PEER();
+                std::set<uint256> unique_parents;
                 for (const CTxIn& txin : tx.vin) {
-                    if (recentRejects->contains(txin.prevout.hash)) {
+                    unique_parents.insert(txin.prevout.hash);
+                }
+                size_t reconsiderable_parents = 0;
+                LOCK_PEER();
+                for (const uint256& parent_txid : unique_parents) {
+                    if (recentRejects->contains(parent_txid)) {
                         fRejectedParents = true;
                         break;
+                    }
+                    if (recentRejectsReconsiderable->contains(parent_txid) &&
+                        !mempool.exists(GenTxid::Txid(parent_txid))) {
+                        ++reconsiderable_parents;
+                        if (reconsiderable_parents > 1) {
+                            fRejectedParents = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -3550,9 +3701,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                     for (const CTxIn& txin : tx.vin) {
                         // Request missing parents by txid regardless of m_wtxid_relay
                         // (TXID_RELAY_DELAY gives in-flight MSG_WTX announcements priority).
+                        // Allow re-requesting a parent that is only in recentRejectsReconsiderable.
                         CInv _inv(MSG_TX | nFetchFlags, txin.prevout.hash);
                         pfrom->AddInventoryKnown(_inv);
-                        if (!AlreadyHave(_inv)) AddTxAnnouncement(*pfrom, ToGenTxid(_inv), current_time);
+                        if (!AlreadyHave(_inv, /*include_reconsiderable=*/false)) AddTxAnnouncement(*pfrom, ToGenTxid(_inv), current_time);
                     }
                     // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
                     g_txrequest.ForgetTxHash(tx.GetHash());
@@ -5249,7 +5401,7 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
             }
             for (const GenTxid& gtxid : requestable) {
                 CInv inv(gtxid.IsWtxid() ? MSG_WTX : (MSG_TX | GetFetchFlags(pto)), gtxid.GetHash());
-                if (!AlreadyHave(inv)) {
+                if (!AlreadyHave(inv, /*include_reconsiderable=*/false)) {
                     if (g_txrequest.CountInFlight(pto->GetId()) >= MAX_PEER_TX_IN_FLIGHT) {
                         break;
                     }

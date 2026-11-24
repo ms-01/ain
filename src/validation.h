@@ -390,6 +390,14 @@ bool AcceptToMemoryPoolWithTime(const CChainParams &chainparams,
                                 const CAmount nAbsurdFee,
                                 bool test_accept) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+struct PackageMempoolAcceptResult;
+
+/** (try to) add a package of transactions to memory pool **/
+PackageMempoolAcceptResult ProcessNewPackage(CTxMemPool &pool,
+                                             const std::vector<CTransactionRef> &package,
+                                             const std::vector<CAmount> &max_tx_fees,
+                                             bool test_accept);
+
 /** Returns the script flags which should be checked for a given block **/
 unsigned int GetBlockScriptFlags(const CBlockIndex *pindex, const Consensus::Params &chainparams);
 
