@@ -3213,6 +3213,7 @@ void FundTransaction(CWallet* const pwallet, CMutableTransaction& tx, CAmount& f
                 {"conf_target", UniValueType(UniValue::VNUM)},
                 {"estimate_mode", UniValueType(UniValue::VSTR)},
                 {"psbt_version", UniValueType(UniValue::VNUM)},
+                {"include_unsafe", UniValueType(UniValue::VBOOL)},
             },
             true, true);
 
@@ -3255,6 +3256,9 @@ void FundTransaction(CWallet* const pwallet, CMutableTransaction& tx, CAmount& f
 
         if (options.exists("replaceable")) {
             coinControl.m_signal_bip125_rbf = options["replaceable"].get_bool();
+        }
+        if (options.exists("include_unsafe")) {
+            coinControl.m_include_unsafe_inputs = options["include_unsafe"].get_bool();
         }
         if (options.exists("conf_target")) {
             if (options.exists("feeRate")) {
@@ -3329,6 +3333,7 @@ static UniValue fundrawtransaction(const JSONRPCRequest& request)
                             {"changePosition", RPCArg::Type::NUM, /* default */ "random", "The index of the change output"},
                             {"change_type", RPCArg::Type::STR, /* default */ "set by -changetype", "The output type to use. Only valid if changeAddress is not specified. Options are \"legacy\", \"p2sh-segwit\", and \"bech32\"."},
                             {"includeWatching", RPCArg::Type::BOOL, /* default */ "true for watch-only wallets, otherwise false", "Also select inputs which are watch only"},
+                            {"include_unsafe", RPCArg::Type::BOOL, /* default */ "false", "Include inputs that are not safe to spend (unconfirmed transactions from outside keys and unconfirmed replacement transactions)."},
                             {"lockUnspents", RPCArg::Type::BOOL, /* default */ "false", "Lock selected unspent outputs"},
                             {"feeRate", RPCArg::Type::AMOUNT, /* default */ "not set: makes wallet determine the fee", "Set a specific fee rate in " + CURRENCY_UNIT + "/kB"},
                             {"subtractFeeFromOutputs", RPCArg::Type::ARR, /* default */ "empty array", "A json array of integers.\n"
@@ -3479,8 +3484,9 @@ UniValue signrawtransactionwithwallet(const JSONRPCRequest& request)
     return SignTransaction(mtx, request.params[1], pwallet, coins, false, request.params[2]);
 }
 
-static UniValue bumpfee(const JSONRPCRequest& request)
+static UniValue bumpfee_helper(const std::string& method_name, const JSONRPCRequest& request)
 {
+    const bool want_psbt = method_name == "psbtbumpfee";
     std::shared_ptr<CWallet> const wallet = GetWalletForJSONRPCRequest(request);
     CWallet* const pwallet = wallet.get();
 
@@ -3488,8 +3494,31 @@ static UniValue bumpfee(const JSONRPCRequest& request)
     if (!EnsureWalletIsAvailable(pwallet, request.fHelp))
         return NullUniValue;
 
-            RPCHelpMan{"bumpfee",
-                "\nBumps the fee of an opt-in-RBF transaction T, replacing it with a new transaction B.\n"
+    std::vector<RPCArg> optionArgs{
+        {"confTarget", RPCArg::Type::NUM, /* default */ "wallet default", "Confirmation target (in blocks)"},
+        {"totalFee", RPCArg::Type::NUM, /* default */ "fallback to 'confTarget'", "Total fee (NOT feerate) to pay, in satoshis. (DEPRECATED)\n"
+         "                         In rare cases, the actual fee paid might be slightly higher than the specified\n"
+         "                         totalFee if the tx change output has to be removed because it is too close to\n"
+         "                         the dust threshold."},
+        {"replaceable", RPCArg::Type::BOOL, /* default */ "true", "Whether the new transaction should still be\n"
+         "                         marked bip-125 replaceable. If true, the sequence numbers in the transaction will\n"
+         "                         be left unchanged from the original. If false, any input sequence numbers in the\n"
+         "                         original transaction that were less than 0xfffffffe will be increased to 0xfffffffe\n"
+         "                         so the new transaction will not be explicitly bip-125 replaceable (though it may\n"
+         "                         still be replaceable in practice, for example if it has unconfirmed ancestors which\n"
+         "                         are replaceable)."},
+        {"estimate_mode", RPCArg::Type::STR, /* default */ "UNSET", "The fee estimate mode, must be one of:\n"
+         "         \"UNSET\"\n"
+         "         \"ECONOMICAL\"\n"
+         "         \"CONSERVATIVE\""},
+    };
+    if (want_psbt) {
+        optionArgs.emplace_back("psbt_version", RPCArg::Type::NUM, /* default */ "0", "The PSBT version number to use. 0 = BIP174 (PSBTv0), 2 = PSBTv2.");
+    }
+
+    RPCHelpMan{method_name,
+                std::string("\nBumps the fee of an opt-in-RBF transaction T, replacing it with a new transaction B.\n") +
+                (want_psbt ? "Returns a PSBT instead of creating and signing a new transaction.\n" : "") +
                 "An opt-in RBF transaction with the given txid must be in the wallet.\n"
                 "The command will pay the additional fee by reducing change outputs or adding inputs when necessary. It may add a new change output if one does not already exist.\n"
                 "If `totalFee` (DEPRECATED) is given, adding inputs is not supported, so there must be a single change output that is big enough or it will fail.\n"
@@ -3502,28 +3531,16 @@ static UniValue bumpfee(const JSONRPCRequest& request)
                 "returned by getnetworkinfo) to enter the node's mempool.\n",
                 {
                     {"txid", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The txid to be bumped"},
-                    {"options", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED_NAMED_ARG, "",
-                        {
-                            {"confTarget", RPCArg::Type::NUM, /* default */ "wallet default", "Confirmation target (in blocks)"},
-                            {"totalFee", RPCArg::Type::NUM, /* default */ "fallback to 'confTarget'", "Total fee (NOT feerate) to pay, in satoshis. (DEPRECATED)\n"
-            "                         In rare cases, the actual fee paid might be slightly higher than the specified\n"
-            "                         totalFee if the tx change output has to be removed because it is too close to\n"
-            "                         the dust threshold."},
-                            {"replaceable", RPCArg::Type::BOOL, /* default */ "true", "Whether the new transaction should still be\n"
-            "                         marked bip-125 replaceable. If true, the sequence numbers in the transaction will\n"
-            "                         be left unchanged from the original. If false, any input sequence numbers in the\n"
-            "                         original transaction that were less than 0xfffffffe will be increased to 0xfffffffe\n"
-            "                         so the new transaction will not be explicitly bip-125 replaceable (though it may\n"
-            "                         still be replaceable in practice, for example if it has unconfirmed ancestors which\n"
-            "                         are replaceable)."},
-                            {"estimate_mode", RPCArg::Type::STR, /* default */ "UNSET", "The fee estimate mode, must be one of:\n"
-            "         \"UNSET\"\n"
-            "         \"ECONOMICAL\"\n"
-            "         \"CONSERVATIVE\""},
-                        },
-                        "options"},
+                    {"options", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED_NAMED_ARG, "", optionArgs, "options"},
                 },
                 RPCResult{
+            want_psbt ?
+            "{\n"
+            "  \"psbt\":    \"value\",   (string)  The base64-encoded unsigned PSBT of the new transaction\n"
+            "  \"origfee\":  n,         (numeric) Fee of the replaced transaction\n"
+            "  \"fee\":      n,         (numeric) Fee of the new transaction\n"
+            "  \"errors\":  [ str... ] (json array of strings) Errors encountered during processing (may be empty)\n"
+            "}\n" :
             "{\n"
             "  \"txid\":    \"value\",   (string)  The id of the new transaction\n"
             "  \"origfee\":  n,         (numeric) Fee of the replaced transaction\n"
@@ -3532,10 +3549,19 @@ static UniValue bumpfee(const JSONRPCRequest& request)
             "}\n"
                 },
                 RPCExamples{
-            "\nBump the fee, get the new transaction\'s txid\n" +
-                    HelpExampleCli("bumpfee", "<txid>")
+            "\nBump the fee, get the new transaction\'s " + std::string(want_psbt ? "psbt" : "txid") + "\n" +
+                    HelpExampleCli(method_name, "<txid>")
                 },
-            }.Check(request);
+    }.Check(request);
+
+    if (!want_psbt && pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "bumpfee is not available with wallets that have private keys disabled. Use psbtbumpfee instead.");
+    }
+    if (!want_psbt) {
+        // Only the signing path needs an unlocked wallet. psbtbumpfee must stay
+        // usable with locked wallets, so it is not checked here.
+        EnsureWalletIsUnlocked(pwallet);
+    }
 
     RPCTypeCheck(request.params, {UniValue::VSTR, UniValue::VOBJ});
     uint256 hash(ParseHashV(request.params[0], "txid"));
@@ -3543,7 +3569,11 @@ static UniValue bumpfee(const JSONRPCRequest& request)
     // optional parameters
     CAmount totalFee = 0;
     CCoinControl coin_control;
+    // Watch-only wallets have no private keys, but their coins still have to be
+    // eligible to fund the replacement transaction.
+    coin_control.fAllowWatchOnly = pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS);
     coin_control.m_signal_bip125_rbf = true;
+    uint32_t psbt_version = 0;
     if (!request.params[1].isNull()) {
         UniValue options = request.params[1];
         RPCTypeCheckObj(options,
@@ -3552,6 +3582,7 @@ static UniValue bumpfee(const JSONRPCRequest& request)
                 {"totalFee", UniValueType(UniValue::VNUM)},
                 {"replaceable", UniValueType(UniValue::VBOOL)},
                 {"estimate_mode", UniValueType(UniValue::VSTR)},
+                {"psbt_version", UniValueType(UniValue::VNUM)},
             },
             true, true);
 
@@ -3560,6 +3591,9 @@ static UniValue bumpfee(const JSONRPCRequest& request)
         } else if (options.exists("confTarget")) { // TODO: alias this to conf_target
             coin_control.m_confirm_target = ParseConfirmTarget(options["confTarget"], pwallet->chain().estimateMaxBlocks());
         } else if (options.exists("totalFee")) {
+            if (want_psbt) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "totalFee is not supported by psbtbumpfee, use the fee estimation options instead.");
+            }
             if (!pwallet->chain().rpcEnableDeprecated("totalFee")) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "totalFee argument has been deprecated and will be removed in 0.20. Please use -deprecatedrpc=totalFee to continue using this argument until removal.");
             }
@@ -3577,6 +3611,9 @@ static UniValue bumpfee(const JSONRPCRequest& request)
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid estimate_mode parameter");
             }
         }
+        if (options.exists("psbt_version")) {
+            psbt_version = ParsePSBTVersion(options["psbt_version"]);
+        }
     }
 
     // Make sure the results are valid at least up to the most recent block
@@ -3585,7 +3622,6 @@ static UniValue bumpfee(const JSONRPCRequest& request)
 
     auto locked_chain = pwallet->chain().lock();
     LOCK2(pwallet->cs_wallet, locked_chain->mutex());
-    EnsureWalletIsUnlocked(pwallet);
 
 
     std::vector<std::string> errors;
@@ -3620,17 +3656,32 @@ static UniValue bumpfee(const JSONRPCRequest& request)
         }
     }
 
-    // sign bumped transaction
-    if (!feebumper::SignTransaction(pwallet, mtx)) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "Can't sign transaction.");
-    }
-    // commit the bumped transaction
-    uint256 txid;
-    if (feebumper::CommitTransaction(pwallet, hash, std::move(mtx), errors, txid) != feebumper::Result::OK) {
-        throw JSONRPCError(RPC_WALLET_ERROR, errors[0]);
-    }
     UniValue result(UniValue::VOBJ);
-    result.pushKV("txid", txid.GetHex());
+    if (!want_psbt) {
+        // Sign and commit the bumped transaction
+        if (!feebumper::SignTransaction(pwallet, mtx)) {
+            throw JSONRPCError(RPC_WALLET_ERROR, "Can't sign transaction.");
+        }
+        // commit the bumped transaction
+        uint256 txid;
+        if (feebumper::CommitTransaction(pwallet, hash, std::move(mtx), errors, txid) != feebumper::Result::OK) {
+            throw JSONRPCError(RPC_WALLET_ERROR, errors[0]);
+        }
+        result.pushKV("txid", txid.GetHex());
+    } else {
+        // Return an unsigned PSBT of the replacement transaction. Nothing is signed,
+        // no wallet state is changed and the transaction is not broadcast, so that an
+        // external signer can complete and broadcast it.
+        PartiallySignedTransaction psbtx(mtx, psbt_version);
+        bool complete = false;
+        const TransactionError err = FillPSBT(pwallet, psbtx, complete, /*sighash_type=*/1, /*sign=*/false, /*bip32derivs=*/true);
+        if (err != TransactionError::OK) {
+            throw JSONRPCTransactionError(err);
+        }
+        CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+        ssTx << psbtx;
+        result.pushKV("psbt", EncodeBase64(ssTx.str()));
+    }
     result.pushKV("origfee", ValueFromAmount(old_fee));
     result.pushKV("fee", ValueFromAmount(new_fee));
     UniValue result_errors(UniValue::VARR);
@@ -3640,6 +3691,16 @@ static UniValue bumpfee(const JSONRPCRequest& request)
     result.pushKV("errors", result_errors);
 
     return result;
+}
+
+static UniValue bumpfee(const JSONRPCRequest& request)
+{
+    return bumpfee_helper("bumpfee", request);
+}
+
+static UniValue psbtbumpfee(const JSONRPCRequest& request)
+{
+    return bumpfee_helper("psbtbumpfee", request);
 }
 
 UniValue rescanblockchain(const JSONRPCRequest& request)
@@ -4300,6 +4361,7 @@ UniValue walletcreatefundedpsbt(const JSONRPCRequest& request)
                             {"changePosition", RPCArg::Type::NUM, /* default */ "random", "The index of the change output"},
                             {"change_type", RPCArg::Type::STR, /* default */ "set by -changetype", "The output type to use. Only valid if changeAddress is not specified. Options are \"legacy\", \"p2sh-segwit\", and \"bech32\"."},
                             {"includeWatching", RPCArg::Type::BOOL, /* default */ "true for watch-only wallets, otherwise false", "Also select inputs which are watch only"},
+                            {"include_unsafe", RPCArg::Type::BOOL, /* default */ "false", "Include inputs that are not safe to spend (unconfirmed transactions from outside keys and unconfirmed replacement transactions)."},
                             {"lockUnspents", RPCArg::Type::BOOL, /* default */ "false", "Lock selected unspent outputs"},
                             {"feeRate", RPCArg::Type::AMOUNT, /* default */ "not set: makes wallet determine the fee", "Set a specific fee rate in " + CURRENCY_UNIT + "/kB"},
                             {"subtractFeeFromOutputs", RPCArg::Type::ARR, /* default */ "empty array", "A json array of integers.\n"
@@ -4498,6 +4560,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "addressmap",                       &addressmap,                    {"input", "type"} },
     { "wallet",             "backupwallet",                     &backupwallet,                  {"destination"} },
     { "wallet",             "bumpfee",                          &bumpfee,                       {"txid", "options"} },
+    { "wallet",             "psbtbumpfee",                      &psbtbumpfee,                   {"txid", "options"} },
     { "wallet",             "createwallet",                     &createwallet,                  {"wallet_name", "disable_private_keys", "blank", "passphrase", "avoid_reuse", "dbtype"} },
     { "wallet",             "dumpprivkey",                      &dumpprivkey,                   {"address"}  },
     { "wallet",             "dumpwallet",                       &dumpwallet,                    {"filename"} },

@@ -847,8 +847,8 @@ std::unique_ptr<DescriptorImpl> ParseScript(Span<const char>& sp, ParseScriptCon
             script_size += pk->GetSize() + 1;
             providers.emplace_back(std::move(pk));
         }
-        if (providers.size() < 1 || providers.size() > 16) {
-            error = strprintf("Cannot have %u keys in multisig; must have between 1 and 16 keys, inclusive", providers.size());
+        if (providers.size() < 1 || providers.size() > MAX_PUBKEYS_PER_MULTISIG) {
+            error = strprintf("Cannot have %u keys in multisig; must have between 1 and %d keys, inclusive", providers.size(), MAX_PUBKEYS_PER_MULTISIG);
             return nullptr;
         } else if (thres < 1) {
             error = strprintf("Multisig threshold cannot be %d, must be at least 1", thres);

@@ -76,6 +76,7 @@ class BumpFeeTest(DefiTestFramework):
         self.log.info("Running tests")
         dest_address = peer_node.getnewaddress()
         test_simple_bumpfee_succeeds(self, rbf_node, peer_node, dest_address)
+        test_psbtbumpfee_succeeds(self, rbf_node, peer_node, dest_address)
         test_segwit_bumpfee_succeeds(rbf_node, dest_address)
         test_nonrbf_bumpfee_fails(peer_node, dest_address)
         test_notmine_bumpfee_fails(rbf_node, peer_node, dest_address)
@@ -444,6 +445,39 @@ def test_change_script_match(rbf_node, dest_address):
     assert_equal(change_addresses, get_change_address(bumped_total_tx["txid"]))
     bumped_rate_tx = rbf_node.bumpfee(bumped_total_tx["txid"])
     assert_equal(change_addresses, get_change_address(bumped_rate_tx["txid"]))
+
+
+def test_psbtbumpfee_succeeds(self, rbf_node, peer_node, dest_address):
+    """psbtbumpfee returns an unsigned PSBT and does not touch the wallet or the mempool."""
+    self.log.info("Test that psbtbumpfee returns an unsigned PSBT")
+    rbfid = spend_one_input(rbf_node, dest_address)
+    rbftx = rbf_node.gettransaction(rbfid)
+    self.sync_mempools((rbf_node, peer_node))
+    assert rbfid in rbf_node.getrawmempool()
+
+    bumped_psbt = rbf_node.psbtbumpfee(rbfid)
+    assert_equal(bumped_psbt["errors"], [])
+    assert "psbt" in bumped_psbt
+    assert "txid" not in bumped_psbt
+    assert bumped_psbt["fee"] > -rbftx["fee"]
+    assert_equal(bumped_psbt["origfee"], -rbftx["fee"])
+
+    # The returned PSBT is a valid, unsigned PSBT of the replacement transaction.
+    decoded = rbf_node.decodepsbt(bumped_psbt["psbt"])
+    assert_equal(len(decoded["tx"]["vin"]), 1)
+    assert "partial_signatures" not in decoded["inputs"][0]
+    assert not rbf_node.finalizepsbt(bumped_psbt["psbt"])["complete"]
+
+    # The original transaction was neither signed, replaced nor removed from the mempool.
+    self.sync_mempools((rbf_node, peer_node))
+    assert rbfid in rbf_node.getrawmempool()
+    assert rbfid in peer_node.getrawmempool()
+    assert "replaced_by_txid" not in rbf_node.gettransaction(rbfid)
+
+    # A PSBTv2 can be requested as well.
+    bumped_psbt_v2 = rbf_node.psbtbumpfee(rbfid, {"psbt_version": 2})
+    assert_equal(bumped_psbt_v2["errors"], [])
+    assert "psbt" in bumped_psbt_v2
 
 
 def spend_one_input(node, dest_address, change_size=Decimal("0.00049000")):

@@ -23,5 +23,6 @@ void CCoinControl::SetNull()
     m_min_depth = DEFAULT_MIN_DEPTH;
     m_max_depth = DEFAULT_MAX_DEPTH;
     matchDestination = CNoDestination();
+    m_include_unsafe_inputs = false;
 }
 

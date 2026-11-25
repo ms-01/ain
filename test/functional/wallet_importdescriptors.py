@@ -102,6 +102,54 @@ class ImportDescriptorsTest(DefiTestFramework):
         self.setup_clean_chain = True
         self.extra_args = [["-addresstype=legacy"], ["-addresstype=legacy"]]
 
+    def check_multisig_descriptor_limits(self, node):
+        """The multi() descriptor supports up to 20 keys, the P2SH wrapper is
+        limited by the 520 byte redeem script size."""
+        self.log.info("Check the number of keys of a multi() descriptor")
+        pubkeys = []
+        for _ in range(21):
+            key = ECKey()
+            key.generate()
+            pubkeys.append(key.get_pubkey().get_bytes().hex())
+
+        def multi_desc(count, wrapper="wsh"):
+            body = "multi(2,{})".format(",".join(pubkeys[:count]))
+            if wrapper:
+                body = "{}({})".format(wrapper, body)
+            return descsum_create(body)
+
+        # A witness script with 20 keys is accepted.
+        info = node.getdescriptorinfo(multi_desc(20))
+        assert info["descriptor"]
+        assert info["issolvable"]
+
+        # More than 20 keys are rejected.
+        assert_raises_rpc_error(
+            -5,
+            "Cannot have 21 keys in multisig; must have between 1 and 20 keys, inclusive",
+            node.getdescriptorinfo,
+            multi_desc(21),
+        )
+
+        # A bare multisig descriptor supports at most 3 keys.
+        assert_raises_rpc_error(
+            -5,
+            "Cannot have 4 pubkeys in bare multisig; only at most 3 pubkeys",
+            node.getdescriptorinfo,
+            descsum_create("multi(2,{})".format(",".join(pubkeys[:4]))),
+        )
+
+        # The P2SH wrapper is limited by the 520 byte redeem script size, which
+        # allows at most 15 compressed keys.
+        assert_raises_rpc_error(
+            -5,
+            "P2SH script is too large",
+            node.getdescriptorinfo,
+            multi_desc(16, "sh"),
+        )
+        info = node.getdescriptorinfo(multi_desc(15, "sh"))
+        assert info["descriptor"]
+
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
 
@@ -113,6 +161,8 @@ class ImportDescriptorsTest(DefiTestFramework):
         node = self.nodes[0]
         self.log.info("Mining blocks...")
         node.generate(101)
+
+        self.check_multisig_descriptor_limits(node)
 
         # A wallet without descriptor records behaves exactly as before.
         self.log.info("A legacy wallet has no descriptors")
