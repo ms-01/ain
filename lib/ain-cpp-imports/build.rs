@@ -17,7 +17,7 @@ fn main() -> Result<()> {
 
     let mut cxx = cxx_build::bridge(ffi_rs_src_path);
     cxx.include(cpp_src_path)
-        .flag("-std=c++17")
+        .flag("-std=c++20")
         .flag("-Wno-unused-parameter")
         .cpp_link_stdlib(if cfg!(target_os = "macos") {
             "c++"
