@@ -138,7 +138,12 @@ nav:
           - node-manual/configuration/index.md
           - Networking and Privacy: node-manual/configuration/networking-privacy.md
           - Performance and IBD: node-manual/configuration/performance-ibd.md
-      - Operations: node-manual/operations/index.md
+      - Operations:
+          - node-manual/operations/index.md
+          - Masternodes: node-manual/operations/masternodes.md
+          - RPC and REST Interfaces: node-manual/operations/rpc-rest-interfaces.md
+          - ZMQ Notifications: node-manual/operations/zmq-notifications.md
+          - Backups and Signers: node-manual/operations/backups-signers.md
       - RPC & CLI Reference: node-manual/rpc-cli/index.md
       - Troubleshooting: node-manual/troubleshooting/index.md
   - Developer & Architecture Manual:
