@@ -4,8 +4,10 @@
 // file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <amount.h>
+#include <chainparams.h>
 #include <consensus/validation.h>
 #include <core_io.h>
+#include <external_signer.h>
 #include <init.h>
 #include <interfaces/chain.h>
 #include <key_io.h>
@@ -19,7 +21,9 @@
 #include <rpc/server.h>
 #include <rpc/util.h>
 #include <script/descriptor.h>
+#include <script/keyorigin.h>
 #include <script/sign.h>
+#include <script/signingprovider.h>
 #include <spv/spv_wrapper.h>
 #include <util/bip32.h>
 #include <util/fees.h>
@@ -29,6 +33,7 @@
 #include <util/validation.h>
 #include <wallet/coincontrol.h>
 #include <wallet/feebumper.h>
+#include <wallet/ismine.h>
 #include <wallet/psbtwallet.h>
 #include <wallet/rpcwallet.h>
 #include <wallet/wallet.h>
@@ -4538,6 +4543,179 @@ UniValue addressmap(const JSONRPCRequest &request) {
     return ret;
 }
 
+namespace {
+/**
+ * A signing provider view on a wallet that only exposes genuine key origins.
+ *
+ * CWallet::GetKeyOrigin() fabricates a fingerprint for every key, even for the
+ * keys without origin information. This adapter returns false in that case so
+ * that a fabricated origin can never reach an external device.
+ */
+class WalletSigningProvider : public SigningProvider
+{
+public:
+    explicit WalletSigningProvider(const CWallet& wallet) : m_wallet(wallet) {}
+
+    bool GetPubKey(const CKeyID& address, CPubKey& pubkey) const override { return m_wallet.GetPubKey(address, pubkey); }
+    bool GetKey(const CKeyID& address, CKey& key) const override { return m_wallet.GetKey(address, key); }
+    bool GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info) const override { return m_wallet.GetKeyOriginIfPresent(keyid, info); }
+
+private:
+    const CWallet& m_wallet;
+};
+
+/**
+ * Returns the public key of the given destination if the wallet knows it.
+ */
+bool GetDestinationPubKey(const CWallet& wallet, const CTxDestination& dest, CPubKey& pubkey)
+{
+    const CScript script = GetScriptForDestination(dest);
+    std::vector<std::vector<unsigned char>> data;
+    const txnouttype type = Solver(script, data);
+    if (type == TX_PUBKEY) {
+        pubkey = CPubKey(data[0].begin(), data[0].end());
+        return pubkey.IsValid();
+    }
+    if ((type == TX_PUBKEYHASH || type == TX_WITNESS_V0_KEYHASH) && data[0].size() == 20) {
+        return wallet.GetPubKey(CKeyID(uint160(data[0])), pubkey);
+    }
+    return false;
+}
+
+/**
+ * Returns the fingerprints of the given signers as a comma separated list.
+ */
+std::string SignerFingerprintList(const std::vector<ExternalSigner>& signers)
+{
+    std::string result;
+    for (const ExternalSigner& signer : signers) {
+        if (!result.empty()) result += ", ";
+        result += signer.m_fingerprint;
+    }
+    return result;
+}
+} // namespace
+
+UniValue walletdisplayaddress(const JSONRPCRequest& request)
+{
+            RPCHelpMan{"walletdisplayaddress",
+                "\nDisplay an address of this wallet on an external signer for verification.\n"
+                "The address has to be owned by the wallet and the external signer has to be\n"
+                "configured with the -signer option of the node.\n",
+                {
+                    {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address to display on the external signer."},
+                },
+                RPCResult{
+            "{\n"
+            "  \"address\" : \"address\"   (string) The address as confirmed by the signer\n"
+            "}\n"
+                },
+                RPCExamples{
+                    HelpExampleCli("walletdisplayaddress", "\"bcrt1qm90ugl4d48jv8n6e5t9ln6t9zlpm5th68x4f8g\"")
+            + HelpExampleRpc("walletdisplayaddress", "\"bcrt1qm90ugl4d48jv8n6e5t9ln6t9zlpm5th68x4f8g\"")
+                },
+            }.Check(request);
+
+    // The build check and the -signer check are performed in a deterministic
+    // order, see doc/external-signer.md.
+    std::string error;
+    const std::string command = GetSignerCommand(error);
+    if (command.empty()) {
+        throw JSONRPCError(RPC_MISC_ERROR, error);
+    }
+
+    std::shared_ptr<CWallet> const wallet = GetWalletForJSONRPCRequest(request);
+    CWallet* const pwallet = wallet.get();
+
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
+        return NullUniValue;
+    }
+
+    const std::string address = request.params[0].get_str();
+    const CTxDestination dest = DecodeDestination(address);
+    if (!IsValidDestination(dest)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
+    }
+
+    LOCK(pwallet->cs_wallet);
+
+    if (!IsMineCached(*pwallet, dest)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, strprintf("Address %s is not owned by this wallet", address));
+    }
+
+    // Resolve the address to a descriptor. The descriptor of a single key with
+    // the origin information of the wallet is handed to the device.
+    const CScript script = GetScriptForDestination(dest);
+    const WalletSigningProvider provider{*pwallet};
+    const std::unique_ptr<Descriptor> descriptor = InferDescriptor(script, provider);
+    if (!descriptor || !descriptor->IsSolvable()) {
+        throw JSONRPCError(RPC_WALLET_ERROR, strprintf("Cannot resolve address %s to a descriptor (no public key / origin information in this wallet)", address));
+    }
+    const std::string descriptor_string = descriptor->ToString();
+
+    // The fingerprint of the device is taken from the origin information of the
+    // key. Without a genuine origin the device cannot be selected by its
+    // fingerprint, exactly one connected signer is required then.
+    std::string fingerprint;
+    CPubKey pubkey;
+    KeyOriginInfo origin;
+    if (GetDestinationPubKey(*pwallet, dest, pubkey) && pwallet->GetKeyOriginIfPresent(pubkey.GetID(), origin)) {
+        fingerprint = HexStr(std::begin(origin.fingerprint), std::end(origin.fingerprint));
+    }
+
+    // Enumerate the connected signers and select the one of the device.
+    std::vector<ExternalSigner> signers;
+    try {
+        ExternalSigner::Enumerate(command, signers, SignerChainName(Params().NetworkIDString()));
+    } catch (const std::exception& e) {
+        throw JSONRPCError(RPC_MISC_ERROR, e.what());
+    }
+    if (signers.empty()) {
+        throw JSONRPCError(RPC_MISC_ERROR, "No external signer connected");
+    }
+
+    const ExternalSigner* signer = nullptr;
+    if (!fingerprint.empty()) {
+        for (const ExternalSigner& candidate : signers) {
+            if (candidate.m_fingerprint == fingerprint) {
+                signer = &candidate;
+                break;
+            }
+        }
+        if (signer == nullptr) {
+            throw JSONRPCError(RPC_MISC_ERROR, strprintf("No external signer with fingerprint %s connected (connected: %s)", fingerprint, SignerFingerprintList(signers)));
+        }
+    } else {
+        if (signers.size() > 1) {
+            throw JSONRPCError(RPC_MISC_ERROR, strprintf("Multiple external signers connected (%s); connect only one device", SignerFingerprintList(signers)));
+        }
+        signer = &signers[0];
+    }
+
+    // Display the address on the device and validate the answer.
+    UniValue signer_result;
+    try {
+        signer_result = signer->DisplayAddress(descriptor_string);
+    } catch (const std::exception& e) {
+        throw JSONRPCError(RPC_MISC_ERROR, e.what());
+    }
+    const UniValue& signer_error = signer_result.find_value("error");
+    if (signer_error.isStr()) {
+        throw JSONRPCError(RPC_MISC_ERROR, strprintf("Signer returned error: %s", signer_error.getValStr()));
+    }
+    const UniValue& signer_address = signer_result.find_value("address");
+    if (!signer_address.isStr()) {
+        throw JSONRPCError(RPC_MISC_ERROR, "Signer did not echo address");
+    }
+    if (signer_address.getValStr() != EncodeDestination(dest)) {
+        throw JSONRPCError(RPC_MISC_ERROR, strprintf("Signer echoed unexpected address %s", signer_address.getValStr()));
+    }
+
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("address", address);
+    return ret;
+}
+
 UniValue abortrescan(const JSONRPCRequest& request); // in rpcdump.cpp
 UniValue dumpprivkey(const JSONRPCRequest& request); // in rpcdump.cpp
 UniValue importprivkey(const JSONRPCRequest& request);
@@ -4610,6 +4788,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "migratewallet",                    &migratewallet,                 {"wallet_name", "target_name", "backup"} },
     { "wallet",             "unloadwallet",                     &unloadwallet,                  {"wallet_name"} },
     { "wallet",             "walletcreatefundedpsbt",           &walletcreatefundedpsbt,        {"inputs","outputs","locktime","options","bip32derivs"} },
+    { "wallet",             "walletdisplayaddress",             &walletdisplayaddress,          {"address"} },
     { "wallet",             "walletlock",                       &walletlock,                    {} },
     { "wallet",             "walletpassphrase",                 &walletpassphrase,              {"passphrase","timeout"} },
     { "wallet",             "walletpassphrasechange",           &walletpassphrasechange,        {"oldpassphrase","newpassphrase"} },

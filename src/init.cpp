@@ -495,6 +495,7 @@ void SetupServerArgs()
 #if HAVE_SYSTEM
     gArgs.AddArg("-shutdownnotify=<cmd>", "Execute command immediately before beginning shutdown. The need for shutdown may be urgent, so be careful not to delay it long (if the command doesn't require interaction with the server, consider having it fork into the background).", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #endif
+    gArgs.AddArg("-signer=<cmd>", "Command to execute for the external signer. The command is split on whitespace and is executed without a shell.", ArgsManager::ALLOW_ANY, OptionsCategory::WALLET);
 #ifndef WIN32
     gArgs.AddArg("-sysperms", "Create new files with system default permissions, instead of umask 077 (only effective with disabled wallet functionality)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #else

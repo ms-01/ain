@@ -19,6 +19,8 @@ void RegisterNetRPCCommands(CRPCTable &tableRPC);
 void RegisterStatsRPCCommands(CRPCTable &tableRPC);
 /** Register miscellaneous RPC commands */
 void RegisterMiscRPCCommands(CRPCTable &tableRPC);
+/** Register external signer RPC commands */
+void RegisterSignerRPCCommands(CRPCTable &tableRPC);
 /** Register mining RPC commands */
 void RegisterMiningRPCCommands(CRPCTable &tableRPC);
 /** Register raw transaction RPC commands */
@@ -55,6 +57,7 @@ static inline void RegisterAllCoreRPCCommands(CRPCTable &t)
     RegisterNetRPCCommands(t);
     RegisterStatsRPCCommands(t);
     RegisterMiscRPCCommands(t);
+    RegisterSignerRPCCommands(t);
     RegisterMiningRPCCommands(t);
     RegisterRawTransactionRPCCommands(t);
     RegisterMasternodesRPCCommands(t);

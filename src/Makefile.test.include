@@ -103,6 +103,7 @@ DEFI_TESTS =\
   test/denialofservice_tests.cpp \
   test/descriptor_tests.cpp \
   test/dip1fork_tests.cpp \
+  test/external_signer_tests.cpp \
   test/index_prunelock_tests.cpp \
   test/flatfile_tests.cpp \
   test/fs_tests.cpp \

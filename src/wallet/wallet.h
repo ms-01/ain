@@ -1417,6 +1417,17 @@ public:
 
     /** Implement lookup of key origin information through wallet key metadata. */
     bool GetKeyOrigin(const CKeyID& keyid, KeyOriginInfo& info) const override;
+
+    /**
+     * Lookup of the key origin information through the wallet key metadata.
+     *
+     * In contrast to GetKeyOrigin() this returns false when the wallet does not
+     * hold a genuine origin for the key: GetKeyOrigin() fabricates a
+     * fingerprint for every key and the expansion of a descriptor without an
+     * origin information stores a fabricated origin (the fingerprint of the
+     * key itself) in the wallet.
+     */
+    bool GetKeyOriginIfPresent(const CKeyID& keyid, KeyOriginInfo& info) const;
 };
 
 /**
