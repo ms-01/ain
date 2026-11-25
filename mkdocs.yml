@@ -188,7 +188,13 @@ nav:
           - developer-manual/consensus/index.md
           - "Hardfork Timeline": developer-manual/consensus/hardforks.md
           - "Upgrade Gating": developer-manual/consensus/upgrade-gating.md
-      - Subsystems: developer-manual/subsystems/index.md
+      - Subsystems:
+          - developer-manual/subsystems/index.md
+          - Mempool: developer-manual/subsystems/mempool.md
+          - "P2P and IBD": developer-manual/subsystems/p2p-and-ibd.md
+          - "PoS and Masternodes": developer-manual/subsystems/pos-validation.md
+          - "State Storage": developer-manual/subsystems/state-storage.md
+          - "RPC and gRPC": developer-manual/subsystems/rpc-and-grpc.md
       - Building & Testing: developer-manual/building-testing/index.md
       - Architecture Decision Records:
           - developer-manual/adr/index.md
