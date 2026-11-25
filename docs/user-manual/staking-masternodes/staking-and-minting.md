@@ -126,4 +126,4 @@ The implementations live in `src/dfi/rpc_masternodes.cpp` and
 * [Masternode basics](masternode-basics.md) — roles, collateral, lifecycle.
 * [Timelocks and rewards](timelocks-and-rewards.md) — the staking weight and
   the reward split.
-* [Governance](../governance/index.md) — voting with the masternode.
+* [Governance](../governance/voting-and-quorum.md) — voting with the masternode.

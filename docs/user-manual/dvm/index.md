@@ -75,6 +75,6 @@ you see when a transaction is rejected.
 
 * [EVM](../evm/index.md) — the second layer of the chain and the cross-layer
   transfers.
-* [Governance](../governance/index.md) — how protocol parameters are changed.
+* [Governance](../governance/on-chain-governance.md) — how protocol parameters are changed.
 * [Node Software Manual](../../node-manual/rpc-cli/index.md) — the RPCs that
   create, sign and inspect these transactions.

@@ -264,5 +264,5 @@ dropped from the pool for that block.
 | The custom transactions of this section | [DVM](../dvm/index.md) |
 | How the LP token is defined and how tokens are minted | [Tokens and DAT](../dvm/tokens-and-dat.md) |
 | Swap execution, price limits and the DEX fee | [Swapping and fees](swapping-and-fees.md) |
-| The governance variables that set the pool rewards | [Governance](../governance/index.md) |
+| The governance variables that set the pool rewards | [Governance](../governance/on-chain-governance.md) |
 | The pool implementation | [Developer & Architecture Manual](../../developer-manual/index.md) |

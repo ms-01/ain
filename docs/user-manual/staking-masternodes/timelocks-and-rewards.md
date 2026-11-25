@@ -162,5 +162,5 @@ The reward is a coinbase output and can only be spent after
 * [Masternode basics](masternode-basics.md) — roles, collateral and the
   lifecycle states.
 * [Staking and minting](staking-and-minting.md) — the block production loop.
-* [Governance](../governance/index.md) — the other job of a masternode:
+* [Governance](../governance/voting-and-quorum.md) — the other job of a masternode:
   voting on proposals.

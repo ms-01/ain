@@ -159,5 +159,5 @@ The module is steered by governance variables and attributes:
   depends on.
 * [DEX & Liquidity](../dex-liquidity/index.md) — where the interest and the
   auction proceeds are swapped into DFI and burned.
-* [On-chain governance](../governance/index.md) — how the parameters above
+* [On-chain governance](../governance/on-chain-governance.md) — how the parameters above
   are changed.

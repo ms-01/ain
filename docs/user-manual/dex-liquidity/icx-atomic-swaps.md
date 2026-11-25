@@ -179,6 +179,6 @@ ICX can be switched off by governance:
 | --- | --- |
 | The DEX as an alternative to ICX | [Swapping and fees](swapping-and-fees.md) |
 | The DfTx payload format of the ICX transactions | [DVM](../dvm/index.md) |
-| Setting the taker fee and switching ICX on or off | [Governance](../governance/index.md) |
+| Setting the taker fee and switching ICX on or off | [Governance](../governance/on-chain-governance.md) |
 | The order book RPCs | [RPC & CLI Reference](../../node-manual/rpc-cli/index.md) |
 | The implementation | [Developer & Architecture Manual](../../developer-manual/index.md) |

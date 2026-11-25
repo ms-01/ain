@@ -229,6 +229,6 @@ which is charged per BTC swapped in an atomic swap — see
 | --- | --- |
 | The swap transactions as DfTx | [DVM](../dvm/index.md) |
 | The pools the trades happen in | [AMM and pools](amm-and-pools.md) |
-| Governance attributes and proposals | [Governance](../governance/index.md) |
+| Governance attributes and proposals | [Governance](../governance/on-chain-governance.md) |
 | The RPC reference for the pool commands | [RPC & CLI Reference](../../node-manual/rpc-cli/index.md) |
 | The implementation | [Developer & Architecture Manual](../../developer-manual/index.md) |

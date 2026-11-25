@@ -178,5 +178,5 @@ locked token"* (`COracleView::GetFixedIntervalPrice()` in
   used in the collateralisation ratio.
 * [Loans and dTokens](loans-and-dtokens.md) — how the prices are used in
   the interest and in the payback.
-* [On-chain governance](../governance/index.md) — how oracles and the
+* [On-chain governance](../governance/on-chain-governance.md) — how oracles and the
   oracle parameters are appointed and changed.

@@ -76,7 +76,7 @@ DFI is the settlement and collateral currency of the protocol:
 | Token creation collateral | 1 DFI | `consensus.token.collateralAmount` |
 | Vault collateral | user defined, typically DFI and dUSD | [Loans & dTokens](../loans-dtokens/index.md) |
 | Liquidity provision | user defined | [DEX & Liquidity](../dex-liquidity/index.md) |
-| Governance proposals | fee in DFI, see the governance section | [Governance](../governance/index.md) |
+| Governance proposals | fee in DFI, see the governance section | [Governance](../governance/cfps-and-dfips.md) |
 
 The stablecoin dUSD and the dTokens are *credit-based*: they are minted against
 vault collateral and are not backed one-to-one by DFI. DFI is the asset that

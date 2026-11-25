@@ -122,7 +122,11 @@ nav:
           - Loans and dTokens: user-manual/loans-dtokens/loans-and-dtokens.md
           - Oracles and Prices: user-manual/loans-dtokens/oracles-and-prices.md
           - Liquidation Auctions: user-manual/loans-dtokens/liquidation-auctions.md
-      - Governance: user-manual/governance/index.md
+      - Governance:
+          - user-manual/governance/index.md
+          - On-chain Governance: user-manual/governance/on-chain-governance.md
+          - CFPs and DFIPs: user-manual/governance/cfps-and-dfips.md
+          - Voting and Quorum: user-manual/governance/voting-and-quorum.md
   - Node Software Manual:
       - node-manual/index.md
       - Installation: node-manual/installation/index.md

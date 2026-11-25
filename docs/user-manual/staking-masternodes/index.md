@@ -83,7 +83,7 @@ stateDiagram-v2
 | --- | --- |
 | Roles, collateral, lifecycle, rewards | this section |
 | The `C` / `R` / `m` custom transactions used here | [DVM](../dvm/index.md) |
-| Voting with a masternode | [Governance](../governance/index.md) |
+| Voting with a masternode | [Governance](../governance/voting-and-quorum.md) |
 | Running the node, keys, monitoring, upgrades | [Node Software Manual](../../node-manual/index.md) |
 | Implementation details of the PoS kernel | [Developer & Architecture Manual](../../developer-manual/index.md) |
 
@@ -93,5 +93,5 @@ stateDiagram-v2
   the block model.
 * [Custom transactions](../dvm/custom-transactions.md) — the transaction types
   used to create, update and resign a masternode.
-* [Governance](../governance/index.md) — how masternodes vote on on-chain
+* [Governance](../governance/voting-and-quorum.md) — how masternodes vote on on-chain
   proposals.

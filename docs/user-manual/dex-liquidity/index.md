@@ -107,7 +107,7 @@ stateDiagram-v2
 | Pool mechanics, liquidity, LP rewards | this section |
 | The `DfTx` payload format of the DEX transactions | [DVM](../dvm/index.md) |
 | Vaults, loans and dTokens — the other side of the DEX | [Loans & dTokens](../loans-dtokens/index.md) |
-| Who sets the DEX fee and the pool parameters | [Governance](../governance/index.md) |
+| Who sets the DEX fee and the pool parameters | [Governance](../governance/on-chain-governance.md) |
 | Running a node that serves the DEX | [Node Software Manual](../../node-manual/index.md) |
 | Implementation internals | [Developer & Architecture Manual](../../developer-manual/index.md) |
 
