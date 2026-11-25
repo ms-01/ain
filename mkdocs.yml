@@ -116,7 +116,12 @@ nav:
           - AMM and Pools: user-manual/dex-liquidity/amm-and-pools.md
           - Swapping and Fees: user-manual/dex-liquidity/swapping-and-fees.md
           - ICX Atomic Swaps: user-manual/dex-liquidity/icx-atomic-swaps.md
-      - Loans & dTokens: user-manual/loans-dtokens/index.md
+      - Loans & dTokens:
+          - user-manual/loans-dtokens/index.md
+          - Vaults and Collateral: user-manual/loans-dtokens/vaults-and-collateral.md
+          - Loans and dTokens: user-manual/loans-dtokens/loans-and-dtokens.md
+          - Oracles and Prices: user-manual/loans-dtokens/oracles-and-prices.md
+          - Liquidation Auctions: user-manual/loans-dtokens/liquidation-auctions.md
       - Governance: user-manual/governance/index.md
   - Node Software Manual:
       - node-manual/index.md
