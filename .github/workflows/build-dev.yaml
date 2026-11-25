@@ -28,12 +28,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         target: [x86_64-pc-linux-gnu, x86_64-w64-mingw32, x86_64-apple-darwin]
         include:
         - container: defi/ain-builder:latest
         - target: x86_64-w64-mingw32
-          container: defi/ain-win-builder:latest
+          container: ubuntu:24.04
     container:
       image: ${{ matrix.container }}
     env:
@@ -41,7 +42,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - run: git config --global --add safe.directory '*'
+    - name: Configure git
+      run: |
+        if ! command -v git >/dev/null 2>&1; then
+          apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git
+        fi
+        git config --global --add safe.directory '*'
 
     - name: Populate environment
       run: ./make.sh ci-export-vars
