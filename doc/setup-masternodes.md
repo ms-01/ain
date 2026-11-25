@@ -1,5 +1,11 @@
 # How to run a DeFiChain masternode
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Operations → Masternodes](../docs/node-manual/operations/masternodes.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 ## Introduction
 
 Setting up a masternode on DefiChain allows you to participate in the consensus protocol and receive staking awards. One thing to note is that in order to set up a masternode, you must have a minimum of 20,000 DFI.

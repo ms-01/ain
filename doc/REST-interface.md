@@ -1,6 +1,12 @@
 Unauthenticated REST Interface
 ==============================
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Operations → RPC and REST interfaces](../docs/node-manual/operations/rpc-rest-interfaces.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 The REST API can be enabled with the `-rest` option.
 
 The interface runs on the same port as the JSON-RPC interface, by default port 8554 for mainnet, port 18554 for testnet,

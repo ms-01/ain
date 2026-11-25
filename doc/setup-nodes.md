@@ -1,5 +1,11 @@
 # Setup nodes
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Installation → Binaries](../docs/node-manual/installation/binaries.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 ### Prerequisites
 - 8GB memory
 - 50GB storage

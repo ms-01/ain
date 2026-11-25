@@ -173,6 +173,11 @@ python3 contrib/devtools/gen-rpc-docs.py --check
 The check mode is meant for continuous integration: it fails the build when a
 change adds, removes or rewords an RPC without updating the documentation.
 
+When the generator adds a new category, add the new page to the navigation in
+`mkdocs.yml` as well. The canonical-layout check
+(`test/lint/check-docs-structure.py`) reports pages that are not wired into
+the navigation, so an unwired page fails the documentation build.
+
 If a node is already running, the script can use it instead of starting one
 of its own:
 

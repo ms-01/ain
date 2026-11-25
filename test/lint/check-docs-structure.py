@@ -22,6 +22,7 @@ regression tests of the checker itself).
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -64,6 +65,16 @@ REQUIRED_FILES = ("README.md", "index.md")
 
 # MADR headings every ADR has to provide.
 REQUIRED_ADR_HEADINGS = ("Status", "Context", "Decision", "Consequences")
+
+# Files that are part of the documentation tree but not of the published site
+# (see `exclude_docs` in `mkdocs.yml`).
+EXCLUDED_FROM_SITE = ("README.md", "requirements.txt")
+
+# Directories below `docs/` that hold assets instead of pages.
+ASSET_DIRS = ("assets",)
+
+# A Markdown file referenced by the navigation of `mkdocs.yml`.
+NAV_ENTRY = re.compile(r"([A-Za-z0-9][A-Za-z0-9_./-]*\.md)(?![A-Za-z0-9_./-])")
 
 
 class Report:
@@ -153,6 +164,60 @@ def check_adrs(docs_dir: Path, report: Report) -> None:
             )
 
 
+def parse_nav_entries(mkdocs_file: Path) -> list[str]:
+    """Return the Markdown files that the navigation of `mkdocs.yml` references.
+
+    The navigation is read as plain text: every entry of the `nav:` block ends
+    with the path of the page it points to. The parser does not need a YAML
+    implementation, which keeps this script free of third-party dependencies.
+    """
+    lines = mkdocs_file.read_text(encoding="utf-8").splitlines()
+    entries: list[str] = []
+    in_nav = False
+    for line in lines:
+        if not in_nav:
+            if line.startswith("nav:"):
+                in_nav = True
+            continue
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            # A new top-level key ends the navigation block.
+            break
+        entries.extend(NAV_ENTRY.findall(line))
+    return entries
+
+
+def check_navigation(docs_dir: Path, mkdocs_file: Path, report: Report) -> None:
+    """Check that the navigation covers every page and points to existing pages."""
+    if not mkdocs_file.is_file():
+        report.error(f"missing navigation configuration: {mkdocs_file}")
+        return
+
+    entries = parse_nav_entries(mkdocs_file)
+    if not entries:
+        report.error(f"navigation of {mkdocs_file} does not reference any page")
+        return
+
+    referenced = set(entries)
+    for entry in sorted(referenced):
+        if not (docs_dir / entry).is_file():
+            report.error(f"navigation points to a missing page: {entry}")
+
+    duplicates = sorted({entry for entry in entries if entries.count(entry) > 1})
+    for entry in duplicates:
+        report.error(f"navigation references the same page twice: {entry}")
+
+    pages = {
+        str(path.relative_to(docs_dir))
+        for path in docs_dir.rglob("*.md")
+        if not path.relative_to(docs_dir).parts[0] in ASSET_DIRS
+        and str(path.relative_to(docs_dir)) not in EXCLUDED_FROM_SITE
+    }
+    for page in sorted(pages - referenced):
+        report.error(f"page is not wired into the navigation: {page}")
+
+
 def rel(path: Path, root: Path) -> str:
     """Return `path` relative to `root` (or the absolute path if outside)."""
     try:
@@ -168,12 +233,18 @@ def main() -> int:
         default="docs",
         help="documentation root to check (default: docs)",
     )
+    parser.add_argument(
+        "--mkdocs",
+        default="mkdocs.yml",
+        help="navigation configuration to check (default: mkdocs.yml)",
+    )
     args = parser.parse_args()
 
     docs_dir = Path(args.docs_dir).resolve()
     if not docs_dir.is_dir():
         print(f"error: documentation directory not found: {docs_dir}", file=sys.stderr)
         return 1
+    mkdocs_file = Path(args.mkdocs).resolve()
 
     report = Report()
     check_required_files(docs_dir, report)
@@ -181,6 +252,7 @@ def main() -> int:
     check_assets(docs_dir, report)
     check_manuals(docs_dir, report)
     check_adrs(docs_dir, report)
+    check_navigation(docs_dir, mkdocs_file, report)
 
     for warning in report.warnings:
         print(f"warning: {warning}", file=sys.stderr)

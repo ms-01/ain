@@ -150,6 +150,42 @@ When a legacy page is consolidated into `docs/`, move the content, keep the Git
 history (a rename, not a copy-and-delete) and remove the legacy file in the
 same change so that exactly one authoritative version remains.
 
+A page that is already consolidated but still has to be shipped by the build
+system stays in `doc/` with a pointer notice at its top. The notice names the
+canonical page below `docs/`, so a reader of the legacy file is sent to the
+authoritative version. The pointer notices are in place for
+
+| Legacy page | Canonical page |
+| --- | --- |
+| `doc/setup-nodes.md` | `node-manual/installation/binaries.md` |
+| `doc/setup-nodes-docker.md` | `node-manual/installation/docker.md` |
+| `doc/files.md` | `node-manual/installation/data-directory.md` |
+| `doc/defi-conf.md` | `node-manual/configuration/index.md` |
+| `doc/init.md` | `node-manual/operations/index.md` |
+| `doc/tor.md` | `node-manual/configuration/networking-privacy.md` |
+| `doc/i2p.md` | `node-manual/configuration/networking-privacy.md` |
+| `doc/dnsseed-policy.md` | `node-manual/configuration/networking-privacy.md` |
+| `doc/reduce-memory.md` | `node-manual/configuration/performance-ibd.md` |
+| `doc/reduce-traffic.md` | `node-manual/configuration/performance-ibd.md` |
+| `doc/setup-masternodes.md` | `node-manual/operations/masternodes.md` |
+| `doc/JSON-RPC-interface.md` | `node-manual/operations/rpc-rest-interfaces.md` |
+| `doc/REST-interface.md` | `node-manual/operations/rpc-rest-interfaces.md` |
+| `doc/zmq.md` | `node-manual/operations/zmq-notifications.md` |
+| `doc/external-signer.md` | `node-manual/operations/backups-signers.md` |
+
+`doc/README.md` carries the same table for readers who enter the directory
+through its index.
+
+## Navigation
+
+The navigation of the site lives in `mkdocs.yml` at the repository root. Every
+page below `docs/` has to be listed there; the canonical-layout check
+(`test/lint/check-docs-structure.py`) reports pages that are missing from the
+navigation and navigation entries that point to pages that do not exist. The
+generated pages below `node-manual/rpc-cli/categories/` are part of the
+navigation as well, so a new RPC category is visible in the site as soon as
+the generator has produced it.
+
 ## Change checklist
 
 Before opening a pull request that touches `docs/`:
@@ -158,4 +194,6 @@ Before opening a pull request that touches `docs/`:
 2. Links are relative and resolve; `mkdocs build --strict` succeeds.
 3. The canonical layout is respected: no new top-level directory under `docs/`.
 4. ADR files contain all four MADR sections.
-5. Legacy content that was consolidated has been removed from `doc/`.
+5. Legacy content that was consolidated has been removed from `doc/`, or
+   carries a pointer notice to its canonical page below `docs/`.
+6. Every new page is wired into the navigation of `mkdocs.yml`.

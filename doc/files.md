@@ -1,3 +1,10 @@
+
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Installation → Data directory](../docs/node-manual/installation/data-directory.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 Filename            | Description
 --------------------|----------------------------------------------------------------------------------------------------------------------------
 banlist.json       | stores the IPs/Subnets of banned nodes (human-readable JSON)

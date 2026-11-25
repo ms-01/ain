@@ -1,5 +1,11 @@
 # TOR SUPPORT IN BITCOIN
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Configuration → Networking and privacy](../docs/node-manual/configuration/networking-privacy.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 It is possible to run Bitcoin Core as a Tor hidden service, and connect to such services.
 
 The following directions assume you have a Tor proxy running on port 9050. Many distributions default to having a SOCKS proxy listening on port 9050, but others may not. In particular, the Tor Browser Bundle defaults to listening on port 9150. See [Tor Project FAQ:TBBSocksPort](https://www.torproject.org/docs/faq.html.en#TBBSocksPort) for how to properly

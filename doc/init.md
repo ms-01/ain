@@ -1,6 +1,12 @@
 Sample init scripts and service configuration for defid
 ==========================================================
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Operations](../docs/node-manual/operations/index.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 Sample scripts and configuration files for systemd, Upstart and OpenRC
 can be found in the contrib/init folder.
 

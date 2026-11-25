@@ -144,7 +144,34 @@ nav:
           - RPC and REST Interfaces: node-manual/operations/rpc-rest-interfaces.md
           - ZMQ Notifications: node-manual/operations/zmq-notifications.md
           - Backups and Signers: node-manual/operations/backups-signers.md
-      - RPC & CLI Reference: node-manual/rpc-cli/index.md
+      - RPC & CLI Reference:
+          - node-manual/rpc-cli/index.md
+          - EVM JSON-RPC: node-manual/rpc-cli/evm-json-rpc.md
+          - Command Categories:
+              - node-manual/rpc-cli/categories/index.md
+              - Accounts: node-manual/rpc-cli/categories/accounts.md
+              - Blockchain: node-manual/rpc-cli/categories/blockchain.md
+              - Control: node-manual/rpc-cli/categories/control.md
+              - EVM: node-manual/rpc-cli/categories/evm.md
+              - Generating: node-manual/rpc-cli/categories/generating.md
+              - ICX Order Book: node-manual/rpc-cli/categories/icxorderbook.md
+              - Loan: node-manual/rpc-cli/categories/loan.md
+              - Masternodes: node-manual/rpc-cli/categories/masternodes.md
+              - Mempool: node-manual/rpc-cli/categories/mempool.md
+              - Mining: node-manual/rpc-cli/categories/mining.md
+              - Network: node-manual/rpc-cli/categories/network.md
+              - Oracles: node-manual/rpc-cli/categories/oracles.md
+              - Pool Pair: node-manual/rpc-cli/categories/poolpair.md
+              - Proposals: node-manual/rpc-cli/categories/proposals.md
+              - Raw Transactions: node-manual/rpc-cli/categories/rawtransactions.md
+              - Signer: node-manual/rpc-cli/categories/signer.md
+              - SPV: node-manual/rpc-cli/categories/spv.md
+              - Stats: node-manual/rpc-cli/categories/stats.md
+              - Tokens: node-manual/rpc-cli/categories/tokens.md
+              - Util: node-manual/rpc-cli/categories/util.md
+              - Vault: node-manual/rpc-cli/categories/vault.md
+              - Wallet: node-manual/rpc-cli/categories/wallet.md
+              - ZMQ: node-manual/rpc-cli/categories/zmq.md
       - Troubleshooting:
           - node-manual/troubleshooting/index.md
           - Sync and Reindex: node-manual/troubleshooting/sync-and-reindex.md

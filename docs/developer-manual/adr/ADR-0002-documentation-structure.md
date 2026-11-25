@@ -112,6 +112,22 @@ consolidated into `docs/`:
 * Once a legacy file has been migrated, the legacy copy is deleted in the same
   change so that there is exactly one authoritative version.
 
+### 5.1 Amendment: pointer notices during the migration
+
+While a legacy file still has to be shipped by the build system, it may stay
+in `doc/` after its content was migrated. Such a file carries a pointer notice
+at its top that names the canonical page below `docs/`. The notice is the
+per-migration redirect that the Consequences section asks for; it replaces the
+deletion until the file can be removed from the release tarball without
+breaking `DIST_DOCS` or the Doxygen configuration.
+
+The pointer notices cover the pages of the `node-manual/` that were
+consolidated from the legacy tree: installation, configuration, operations,
+the RPC and REST interfaces, ZMQ and the external signer. A legacy file
+without a notice is either not migrated yet or is not covered by the canonical
+suite. The mapping is listed in the contributor guide `docs/README.md` and in
+the index of the legacy directory, `doc/README.md`.
+
 ### 6. Static site generation
 
 The documentation is rendered with [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/),

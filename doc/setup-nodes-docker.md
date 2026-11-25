@@ -1,5 +1,11 @@
 # defi/defichain
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Installation → Docker](../docs/node-manual/installation/docker.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 ## Quick reference 
 
 - **Maintained by**: [DeFi Blockchain Developers](https://github.com/defich/ain)
