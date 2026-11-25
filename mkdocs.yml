@@ -106,7 +106,11 @@ nav:
           - Accounts and Gas: user-manual/evm/accounts-and-gas.md
           - TransferDomain: user-manual/evm/transfer-domain.md
           - DST20 Bridging: user-manual/evm/dst20-bridging.md
-      - Staking & Masternodes: user-manual/staking-masternodes/index.md
+      - Staking & Masternodes:
+          - user-manual/staking-masternodes/index.md
+          - Masternode Basics: user-manual/staking-masternodes/masternode-basics.md
+          - Timelocks and Rewards: user-manual/staking-masternodes/timelocks-and-rewards.md
+          - Staking and Minting: user-manual/staking-masternodes/staking-and-minting.md
       - DEX & Liquidity: user-manual/dex-liquidity/index.md
       - Loans & dTokens: user-manual/loans-dtokens/index.md
       - Governance: user-manual/governance/index.md
