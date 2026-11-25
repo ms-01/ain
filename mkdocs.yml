@@ -100,7 +100,12 @@ nav:
           - Custom Transactions: user-manual/dvm/custom-transactions.md
           - Tokens and DAT: user-manual/dvm/tokens-and-dat.md
           - Account Transfers: user-manual/dvm/account-transfers.md
-      - EVM: user-manual/evm/index.md
+      - EVM:
+          - user-manual/evm/index.md
+          - MetaChain Overview: user-manual/evm/metachain-overview.md
+          - Accounts and Gas: user-manual/evm/accounts-and-gas.md
+          - TransferDomain: user-manual/evm/transfer-domain.md
+          - DST20 Bridging: user-manual/evm/dst20-bridging.md
       - Staking & Masternodes: user-manual/staking-masternodes/index.md
       - DEX & Liquidity: user-manual/dex-liquidity/index.md
       - Loans & dTokens: user-manual/loans-dtokens/index.md
