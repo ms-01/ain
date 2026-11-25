@@ -2,6 +2,22 @@ Contents
 ========
 This directory contains tools for developers working on this repository.
 
+gen-rpc-docs.py
+===============
+
+A script that generates the RPC/CLI reference documentation below
+`docs/node-manual/rpc-cli/categories/` from a running node. It starts a
+temporary regtest node, reads the help text of every command from it and
+renders deterministic Markdown pages.
+
+```
+python3 contrib/devtools/gen-rpc-docs.py          # regenerate the pages
+python3 contrib/devtools/gen-rpc-docs.py --check  # fail when the pages drift
+```
+
+The script uses `build/src/defid` and `build/src/defi-cli`, so the node has to
+be built first. It always stops the node it started.
+
 clang-format-diff.py
 ===================
 

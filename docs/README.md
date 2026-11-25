@@ -119,6 +119,28 @@ mkdocs serve          # live preview on http://127.0.0.1:8000/
 mkdocs build --strict # strict build; broken links fail the build
 ```
 
+## Generated reference pages
+
+The RPC and CLI reference below `node-manual/rpc-cli/categories/` is generated
+from the binary itself. `contrib/devtools/gen-rpc-docs.py` starts a temporary
+regtest node, reads the help text of every command from it and renders the
+Markdown pages:
+
+```bash
+# Build the node first; the script uses build/src/defid and build/src/defi-cli.
+./make.sh build
+
+# Regenerate the pages.
+python3 contrib/devtools/gen-rpc-docs.py
+
+# Verify that the committed pages still match the binary (exit code 1 on drift).
+python3 contrib/devtools/gen-rpc-docs.py --check
+```
+
+Never edit a generated page by hand; the next run of the generator overwrites
+it. The details are described in
+[RPC & CLI Reference](node-manual/rpc-cli/index.md).
+
 ## Legacy `doc/` directory
 
 The legacy `doc/` directory still exists and is still referenced by the build
