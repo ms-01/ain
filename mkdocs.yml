@@ -184,7 +184,10 @@ nav:
           - "Architecture Overview": developer-manual/architecture/overview.md
           - "C++ ↔ Rust Bridge": developer-manual/architecture/cxx-bridge.md
       - Codebase Map: developer-manual/codebase-map/index.md
-      - Consensus: developer-manual/consensus/index.md
+      - Consensus:
+          - developer-manual/consensus/index.md
+          - "Hardfork Timeline": developer-manual/consensus/hardforks.md
+          - "Upgrade Gating": developer-manual/consensus/upgrade-gating.md
       - Subsystems: developer-manual/subsystems/index.md
       - Building & Testing: developer-manual/building-testing/index.md
       - Architecture Decision Records:
