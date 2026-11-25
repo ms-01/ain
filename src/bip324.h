@@ -57,7 +57,7 @@ public:
     const EllSwiftPubKey& GetOurPubKey() const noexcept { return m_our_pubkey; }
 
     /** Initialize when the other side's public key is received. Can only be called once. */
-    void Initialize(const EllSwiftPubKey& their_pubkey, bool initiator, bool self_decrypt = false) noexcept;
+    void Initialize(const EllSwiftPubKey& their_pubkey, bool initiator, std::span<const unsigned char> message_start, bool self_decrypt = false) noexcept;
 
     /** Determine whether this cipher is fully initialized. */
     explicit operator bool() const noexcept { return m_send_l_cipher.has_value(); }
