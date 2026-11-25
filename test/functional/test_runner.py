@@ -295,6 +295,8 @@ BASE_SCRIPTS = [
     "mining_basic.py",
     "wallet_bumpfee.py",
     "wallet_bumpfee_totalfee_deprecation.py",
+    "wallet_psbtbumpfee.py",
+    "wallet_include_unsafe.py",
     "rpc_named_arguments.py",
     "wallet_listsinceblock.py",
     "p2p_leak.py",

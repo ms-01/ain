@@ -35,6 +35,7 @@ class RpcCreateMultiSigTest(DefiTestFramework):
         node0, node1, node2 = self.nodes
 
         self.check_addmultisigaddress_errors()
+        self.check_multisig_key_limits()
 
         self.log.info("Generating blocks ...")
         node0.generate(149)
@@ -84,6 +85,10 @@ class RpcCreateMultiSigTest(DefiTestFramework):
                 node0.addmultisigaddress(2, keys, "", "p2sh-segwit")["address"],
             )
 
+        # The 20 key segwit multisig is created and spent at the end of the test,
+        # because it moves funds out of the wallet of the first node.
+        self.check_multisig_20_keys_script()
+
     def check_addmultisigaddress_errors(self):
         self.log.info(
             "Check that addmultisigaddress fails when the private keys are missing"
@@ -104,6 +109,58 @@ class RpcCreateMultiSigTest(DefiTestFramework):
             "no full public key for address",
             lambda: self.nodes[0].addmultisigaddress(nrequired=1, keys=addresses),
         )
+
+    def check_multisig_key_limits(self):
+        """Segwit multisig supports up to 20 keys, legacy P2SH is limited by the
+        520 byte redeem script size."""
+        self.log.info("Check the number of keys of a multisig address")
+        node0, node1, node2 = self.nodes
+        keys = [node1.getnewaddress() for _ in range(21)]
+        pubkeys = [node1.getaddressinfo(a)["pubkey"] for a in keys]
+
+        # Segwit multisig accepts up to 20 keys.
+        for output_type in ["bech32", "p2sh-segwit"]:
+            msig = node0.createmultisig(2, pubkeys[:20], output_type)
+            assert msig["address"]
+            madd = node1.addmultisigaddress(2, pubkeys[:20], None, output_type)
+            assert_equal(madd["address"], msig["address"])
+
+        # More than 20 keys are rejected.
+        for output_type in ["bech32", "p2sh-segwit", "legacy"]:
+            assert_raises_rpc_error(
+                -8,
+                "Number of keys involved in the multisignature address creation > 20",
+                node0.createmultisig,
+                2,
+                pubkeys,
+                output_type,
+            )
+
+        # The legacy redeem script is limited to 520 bytes, which allows at most
+        # 15 compressed keys.
+        msig = node0.createmultisig(2, pubkeys[:15], "legacy")
+        assert msig["address"]
+        assert_raises_rpc_error(
+            -8,
+            "redeemScript exceeds size limit",
+            node0.createmultisig,
+            2,
+            pubkeys[:16],
+            "legacy",
+        )
+
+    def check_multisig_20_keys_script(self):
+        """The redeem script of a 20 key segwit multisig is a multisig script."""
+        self.log.info("Check the redeem script of a 20 key segwit multisig")
+        node0, node1, node2 = self.nodes
+        keys = [node1.getnewaddress() for _ in range(20)]
+        pubkeys = [node1.getaddressinfo(a)["pubkey"] for a in keys]
+
+        for output_type in ["bech32", "p2sh-segwit"]:
+            msig = node2.createmultisig(2, pubkeys, output_type)
+            decoded = node0.decodescript(msig["redeemScript"])
+            assert_equal(decoded["type"], "multisig")
+            assert_equal(decoded["reqSigs"], 2)
 
     def checkbalances(self):
         node0, node1, node2 = self.nodes

@@ -49,6 +49,9 @@ public:
     std::set<DCT_ID> m_tokenFilter;
     //! Possible non-wallet inputs (that are not in the wallet nor mempool yet - result of prev pending tx)
     std::map<COutPoint, CTxOut> m_linkedCoins;
+    //! Whether to allow spending unsafe coins (e.g. unconfirmed outputs received from
+    //! other wallets or unconfirmed replacement transactions)
+    bool m_include_unsafe_inputs = false;
 
     CCoinControl()
     {
