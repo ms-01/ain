@@ -815,6 +815,12 @@ class DefiTestFramework(metaclass=DefiTestMetaClass):
         """Checks whether the wallet module was compiled."""
         return self.config["components"].getboolean("ENABLE_WALLET")
 
+    def is_external_signer_compiled(self):
+        """Checks whether the external signer support was compiled."""
+        return self.config["components"].getboolean(
+            "ENABLE_EXTERNAL_SIGNER", fallback=False
+        )
+
     def is_zmq_compiled(self):
         """Checks whether the zmq module was compiled."""
         return self.config["components"].getboolean("ENABLE_ZMQ")

@@ -111,6 +111,12 @@ AC_ARG_ENABLE([wallet],
   [enable_wallet=$enableval],
   [enable_wallet=yes])
 
+AC_ARG_ENABLE([external-signer],
+  [AS_HELP_STRING([--disable-external-signer],
+  [disable external signer support (enabled by default)])],
+  [use_external_signer=$enableval],
+  [use_external_signer=yes])
+
 AC_ARG_ENABLE(tests,
     AS_HELP_STRING([--disable-tests],[do not compile tests (default is to compile)]),
     [use_tests=$enableval],
@@ -1160,6 +1166,17 @@ if test x$enable_wallet != xno; then
 else
   AC_MSG_RESULT(no)
 fi
+
+dnl enable external signer
+AC_MSG_CHECKING([if external signer support should be enabled])
+if test x$use_external_signer != xno; then
+  AC_MSG_RESULT(yes)
+  AC_DEFINE_UNQUOTED([ENABLE_EXTERNAL_SIGNER],[1],[Define to 1 to enable external signer support])
+else
+  AC_MSG_RESULT(no)
+fi
+
+AM_CONDITIONAL([ENABLE_EXTERNAL_SIGNER], [test x$use_external_signer != xno])
 
 AM_CONDITIONAL([ENABLE_ZMQ], [test "x$use_zmq" = "xyes"])
 

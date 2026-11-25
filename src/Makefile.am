@@ -517,6 +517,7 @@ libdefi_server_a_SOURCES = \
   pos_kernel.cpp \
   rest.cpp \
   rpc/blockchain.cpp \
+  rpc/external_signer.cpp \
   rpc/mempool.cpp \
   rpc/mining.cpp \
   rpc/misc.cpp \
@@ -707,6 +708,10 @@ libdefi_common_a_SOURCES = \
   netaddress.cpp \
   netgroup.cpp \
   common/netif.cpp \
+  common/run_command.h \
+  external_signer.cpp \
+  external_signer.h \
+  util/subprocess.h \
   common/pcp.cpp \
   netbase.cpp \
   net_permissions.cpp \
@@ -726,6 +731,10 @@ libdefi_common_a_SOURCES = \
   versionbitsinfo.cpp \
   warnings.cpp \
   $(DEFI_CORE_H)
+
+if ENABLE_EXTERNAL_SIGNER
+libdefi_common_a_SOURCES += common/run_command.cpp
+endif
 
 # util: shared between all executables.
 # This library *must* be included to make sure that the glibc

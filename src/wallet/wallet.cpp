@@ -5177,6 +5177,34 @@ bool CWallet::GetKeyOrigin(const CKeyID& keyID, KeyOriginInfo& info) const
     return true;
 }
 
+bool CWallet::GetKeyOriginIfPresent(const CKeyID& keyID, KeyOriginInfo& info) const
+{
+    CKeyMetadata meta;
+    {
+        LOCK(cs_wallet);
+        auto it = mapKeyMetadata.find(keyID);
+        if (it != mapKeyMetadata.end()) {
+            meta = it->second;
+        }
+    }
+    if (!meta.has_key_origin) {
+        // No origin information is stored for this key.
+        return false;
+    }
+    // The expansion of a descriptor without an origin information stores a
+    // fabricated origin: an empty path and the fingerprint of the key itself.
+    // Such an origin is not a genuine origin, it must never reach an external
+    // device.
+    const bool fabricated = meta.key_origin.path.empty() &&
+                            std::equal(meta.key_origin.fingerprint, meta.key_origin.fingerprint + 4, keyID.begin());
+    if (fabricated) {
+        return false;
+    }
+    std::copy(meta.key_origin.fingerprint, meta.key_origin.fingerprint + 4, info.fingerprint);
+    info.path = meta.key_origin.path;
+    return true;
+}
+
 bool CWallet::AddKeyOriginWithDB(WalletBatch& batch, const CPubKey& pubkey, const KeyOriginInfo& info)
 {
     LOCK(cs_wallet);

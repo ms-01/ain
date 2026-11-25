@@ -470,6 +470,63 @@ static int64_t AddTx(CWallet& wallet, uint32_t lockTime, int64_t mockTime, int64
     return wallet.GetWalletTx(wtx.GetHash())->nTimeSmart;
 }
 
+// The key origin of a key without origin information must not be reported as a
+// genuine origin, GetKeyOrigin() fabricates a fingerprint in that case.
+BOOST_AUTO_TEST_CASE(KeyOriginIfPresent)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    const CKeyID& keyid = key.GetPubKey().GetID();
+
+    KeyOriginInfo info;
+    // Without origin information the wallet does not hold a genuine origin.
+    BOOST_CHECK(!m_wallet.GetKeyOriginIfPresent(keyid, info));
+
+    // A fabricated origin (the fingerprint of the key itself with an empty
+    // path) is not a genuine origin.
+    {
+        LOCK(m_wallet.cs_wallet);
+        CKeyMetadata meta;
+        meta.has_key_origin = true;
+        std::copy(keyid.begin(), keyid.begin() + 4, meta.key_origin.fingerprint);
+        m_wallet.mapKeyMetadata[keyid] = meta;
+    }
+    BOOST_CHECK(!m_wallet.GetKeyOriginIfPresent(keyid, info));
+
+    // A genuine origin without a path is not a fabricated origin.
+    {
+        LOCK(m_wallet.cs_wallet);
+        CKeyMetadata meta;
+        meta.has_key_origin = true;
+        meta.key_origin.fingerprint[0] = 0x01;
+        meta.key_origin.fingerprint[1] = 0x02;
+        meta.key_origin.fingerprint[2] = 0x03;
+        meta.key_origin.fingerprint[3] = 0x04;
+        m_wallet.mapKeyMetadata[keyid] = meta;
+    }
+    BOOST_CHECK(m_wallet.GetKeyOriginIfPresent(keyid, info));
+    BOOST_CHECK_EQUAL(info.fingerprint[0], 0x01);
+
+    // A key with origin information, as it is stored by importdescriptors.
+    {
+        LOCK(m_wallet.cs_wallet);
+        CKeyMetadata meta;
+        meta.has_key_origin = true;
+        meta.key_origin.fingerprint[0] = 0x01;
+        meta.key_origin.fingerprint[1] = 0x02;
+        meta.key_origin.fingerprint[2] = 0x03;
+        meta.key_origin.fingerprint[3] = 0x04;
+        meta.key_origin.path = {0x80000000, 0x80000001, 0};
+        m_wallet.mapKeyMetadata[keyid] = meta;
+    }
+
+    BOOST_CHECK(m_wallet.GetKeyOriginIfPresent(keyid, info));
+    BOOST_CHECK_EQUAL(info.fingerprint[0], 0x01);
+    BOOST_CHECK_EQUAL(info.fingerprint[3], 0x04);
+    BOOST_CHECK_EQUAL(info.path.size(), 3U);
+    BOOST_CHECK_EQUAL(info.path[0], 0x80000000U);
+}
+
 // Simple test to verify assignment of CWalletTx::nSmartTime value. Could be
 // expanded to cover more corner cases of smart time logic.
 BOOST_AUTO_TEST_CASE(ComputeTimeSmart)
