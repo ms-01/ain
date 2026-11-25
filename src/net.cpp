@@ -1011,7 +1011,7 @@ bool V2Transport::ProcessReceivedKeyBytes() noexcept
     if (m_recv_buffer.size() == EllSwiftPubKey::size()) {
         EllSwiftPubKey ellswift(MakeByteSpan(m_recv_buffer));
         LOCK(m_send_mutex);
-        m_cipher.Initialize(ellswift, m_initiating);
+        m_cipher.Initialize(ellswift, m_initiating, Params().MessageStartPostAMK());
 
         SetReceiveState(RecvState::GARB_GARBTERM);
         m_recv_buffer.clear();

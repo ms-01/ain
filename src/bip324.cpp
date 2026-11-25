@@ -4,7 +4,6 @@
 
 #include <bip324.h>
 
-#include <chainparams.h>
 #include <crypto/chacha20.h>
 #include <crypto/chacha20poly1305.h>
 #include <crypto/hkdf_sha256_32.h>
@@ -31,11 +30,10 @@ BIP324Cipher::BIP324Cipher(const CKey& key, std::span<const std::byte> ent32) no
 BIP324Cipher::BIP324Cipher(const CKey& key, const EllSwiftPubKey& pubkey) noexcept :
     m_key(key), m_our_pubkey(pubkey) {}
 
-void BIP324Cipher::Initialize(const EllSwiftPubKey& their_pubkey, bool initiator, bool self_decrypt) noexcept
+void BIP324Cipher::Initialize(const EllSwiftPubKey& their_pubkey, bool initiator, std::span<const unsigned char> message_start, bool self_decrypt) noexcept
 {
     // Determine salt (fixed string + DFI post-AMK network magic bytes)
-    const auto& message_header = Params().MessageStartPostAMK();
-    std::string salt = std::string{"bitcoin_v2_shared_secret"} + std::string(std::begin(message_header), std::end(message_header));
+    std::string salt = std::string{"bitcoin_v2_shared_secret"} + std::string(message_start.begin(), message_start.end());
 
     // Perform ECDH to derive shared secret.
     ECDHSecret ecdh_secret = m_key.ComputeBIP324ECDHSecret(their_pubkey, m_our_pubkey, initiator);
