@@ -705,7 +705,7 @@ pkg_install_deps() {
         pkg-config bsdmainutils python3 python3-pip python3-venv libssl-dev libevent-dev \
         libboost-chrono-dev libboost-test-dev libboost-thread-dev \
         libminiupnpc-dev libzmq3-dev libqrencode-dev wget ccache \
-        libdb-dev libdb++-dev libdb5.3 libdb5.3-dev libdb5.3++ libdb5.3++-dev \
+        libdb-dev libdb++-dev libdb5.3-dev libdb5.3++-dev \
         libsqlite3-dev \
         curl cmake zip unzip libc6-dev gcc-multilib locales locales-all python3-dev
 
@@ -775,8 +775,18 @@ pkg_install_gh_cli() {
 
 pkg_install_llvm() {
     _fold_start "pkg-install-llvm"
-    # shellcheck disable=SC2086
-    wget -O - "https://apt.llvm.org/llvm.sh" | bash -s ${CLANG_DEFAULT_VERSION}
+    if apt-cache show "clang-${CLANG_DEFAULT_VERSION}" >/dev/null 2>&1; then
+        apt-get install -y "clang-${CLANG_DEFAULT_VERSION}" "lld-${CLANG_DEFAULT_VERSION}"
+    else
+        # shellcheck disable=SC2086
+        wget -O - "https://apt.llvm.org/llvm.sh" | bash -s ${CLANG_DEFAULT_VERSION}
+    fi
+    if [[ -x "/usr/bin/clang-${CLANG_DEFAULT_VERSION}" && -x "/usr/bin/clang++-${CLANG_DEFAULT_VERSION}" ]]; then
+        update-alternatives --install /usr/bin/clang clang "/usr/bin/clang-${CLANG_DEFAULT_VERSION}" 100
+        update-alternatives --install /usr/bin/clang++ clang++ "/usr/bin/clang++-${CLANG_DEFAULT_VERSION}" 100
+        update-alternatives --set clang "/usr/bin/clang-${CLANG_DEFAULT_VERSION}"
+        update-alternatives --set clang++ "/usr/bin/clang++-${CLANG_DEFAULT_VERSION}"
+    fi
     _fold_end
 }
 
