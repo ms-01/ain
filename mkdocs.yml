@@ -145,7 +145,11 @@ nav:
           - ZMQ Notifications: node-manual/operations/zmq-notifications.md
           - Backups and Signers: node-manual/operations/backups-signers.md
       - RPC & CLI Reference: node-manual/rpc-cli/index.md
-      - Troubleshooting: node-manual/troubleshooting/index.md
+      - Troubleshooting:
+          - node-manual/troubleshooting/index.md
+          - Sync and Reindex: node-manual/troubleshooting/sync-and-reindex.md
+          - Masternode Stalls: node-manual/troubleshooting/masternode-stalls.md
+          - Local Testing and Isolation: node-manual/troubleshooting/local-testing-isolation.md
   - Developer & Architecture Manual:
       - developer-manual/index.md
       - Architecture: developer-manual/architecture/index.md
