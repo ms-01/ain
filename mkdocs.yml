@@ -179,7 +179,10 @@ nav:
           - Local Testing and Isolation: node-manual/troubleshooting/local-testing-isolation.md
   - Developer & Architecture Manual:
       - developer-manual/index.md
-      - Architecture: developer-manual/architecture/index.md
+      - Architecture:
+          - developer-manual/architecture/index.md
+          - "Architecture Overview": developer-manual/architecture/overview.md
+          - "C++ ↔ Rust Bridge": developer-manual/architecture/cxx-bridge.md
       - Codebase Map: developer-manual/codebase-map/index.md
       - Consensus: developer-manual/consensus/index.md
       - Subsystems: developer-manual/subsystems/index.md
