@@ -89,8 +89,17 @@ nav:
   - Home: index.md
   - User & Protocol Manual:
       - user-manual/index.md
-      - Getting Started: user-manual/getting-started/index.md
-      - DVM: user-manual/dvm/index.md
+      - Getting Started:
+          - user-manual/getting-started/index.md
+          - Core Concepts: user-manual/getting-started/core-concepts.md
+          - UTXO and Accounts: user-manual/getting-started/utxo-and-accounts.md
+          - Wallets and Addresses: user-manual/getting-started/wallets-and-addresses.md
+          - DFI Tokenomics: user-manual/getting-started/dfi-tokenomics.md
+      - DVM:
+          - user-manual/dvm/index.md
+          - Custom Transactions: user-manual/dvm/custom-transactions.md
+          - Tokens and DAT: user-manual/dvm/tokens-and-dat.md
+          - Account Transfers: user-manual/dvm/account-transfers.md
       - EVM: user-manual/evm/index.md
       - Staking & Masternodes: user-manual/staking-masternodes/index.md
       - DEX & Liquidity: user-manual/dex-liquidity/index.md
