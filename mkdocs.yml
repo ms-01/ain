@@ -111,7 +111,11 @@ nav:
           - Masternode Basics: user-manual/staking-masternodes/masternode-basics.md
           - Timelocks and Rewards: user-manual/staking-masternodes/timelocks-and-rewards.md
           - Staking and Minting: user-manual/staking-masternodes/staking-and-minting.md
-      - DEX & Liquidity: user-manual/dex-liquidity/index.md
+      - DEX & Liquidity:
+          - user-manual/dex-liquidity/index.md
+          - AMM and Pools: user-manual/dex-liquidity/amm-and-pools.md
+          - Swapping and Fees: user-manual/dex-liquidity/swapping-and-fees.md
+          - ICX Atomic Swaps: user-manual/dex-liquidity/icx-atomic-swaps.md
       - Loans & dTokens: user-manual/loans-dtokens/index.md
       - Governance: user-manual/governance/index.md
   - Node Software Manual:
