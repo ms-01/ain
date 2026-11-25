@@ -3151,7 +3151,7 @@ bool CWallet::SignTransaction(CMutableTransaction& tx)
     return true;
 }
 
-bool CWallet::FundTransaction(CMutableTransaction& tx, CAmount& nFeeRet, int& nChangePosInOut, std::string& strFailReason, bool lockUnspents, const std::set<int>& setSubtractFeeFromOutputs, CCoinControl& coinControl, const CoinSelectionOptions &coinSelectOpts)
+bool CWallet::FundTransaction(CMutableTransaction& tx, CAmount& nFeeRet, int& nChangePosInOut, std::string& strFailReason, bool lockUnspents, const std::set<int>& setSubtractFeeFromOutputs, CCoinControl& coinControl, const CoinSelectionOptions &coinSelectOpts, bool allowOtherInputs)
 {
     std::vector<CRecipient> vecSend;
 
@@ -3162,7 +3162,11 @@ bool CWallet::FundTransaction(CMutableTransaction& tx, CAmount& nFeeRet, int& nC
         vecSend.push_back(recipient);
     }
 
-    coinControl.fAllowOtherInputs = true;
+    // Whether additional (not explicitly selected) inputs may be added is
+    // controlled by the caller. The legacy RPCs keep the previous behaviour of
+    // always allowing additional inputs, the modern `send` RPC can restrict
+    // the funding to the explicitly provided inputs.
+    coinControl.fAllowOtherInputs = allowOtherInputs;
 
     for (const CTxIn& txin : tx.vin) {
         coinControl.Select(txin.prevout);
