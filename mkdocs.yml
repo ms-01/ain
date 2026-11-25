@@ -129,8 +129,15 @@ nav:
           - Voting and Quorum: user-manual/governance/voting-and-quorum.md
   - Node Software Manual:
       - node-manual/index.md
-      - Installation: node-manual/installation/index.md
-      - Configuration: node-manual/configuration/index.md
+      - Installation:
+          - node-manual/installation/index.md
+          - Binaries: node-manual/installation/binaries.md
+          - Docker: node-manual/installation/docker.md
+          - Data Directory: node-manual/installation/data-directory.md
+      - Configuration:
+          - node-manual/configuration/index.md
+          - Networking and Privacy: node-manual/configuration/networking-privacy.md
+          - Performance and IBD: node-manual/configuration/performance-ibd.md
       - Operations: node-manual/operations/index.md
       - RPC & CLI Reference: node-manual/rpc-cli/index.md
       - Troubleshooting: node-manual/troubleshooting/index.md
