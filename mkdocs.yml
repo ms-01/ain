@@ -1,0 +1,119 @@
+# MkDocs configuration for the canonical DeFiChain documentation suite.
+#
+# The site is built from the `docs/` directory and rendered with
+# Material for MkDocs. The layout, the Diataxis authoring rules and the
+# ownership boundaries are defined by ADR-0002
+# (`docs/developer-manual/adr/ADR-0002-documentation-structure.md`).
+#
+# Build locally with:
+#   pip install -r docs/requirements.txt
+#   mkdocs serve
+#   mkdocs build --strict
+
+site_name: DeFiChain Documentation
+site_description: >-
+  Canonical documentation suite of the DeFiChain node: user and protocol
+  manual, node software manual, developer and architecture manual.
+site_author: DeFiChain contributors
+
+repo_url: https://github.com/DeFiCh/ain
+repo_name: DeFiCh/ain
+
+docs_dir: docs
+site_dir: site
+
+# Contributor-facing files that must not end up in the published bundle.
+exclude_docs: |
+  README.md
+  requirements.txt
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - User & Protocol Manual:
+      - user-manual/index.md
+      - Getting Started: user-manual/getting-started/index.md
+      - DVM: user-manual/dvm/index.md
+      - EVM: user-manual/evm/index.md
+      - Staking & Masternodes: user-manual/staking-masternodes/index.md
+      - DEX & Liquidity: user-manual/dex-liquidity/index.md
+      - Loans & dTokens: user-manual/loans-dtokens/index.md
+      - Governance: user-manual/governance/index.md
+  - Node Software Manual:
+      - node-manual/index.md
+      - Installation: node-manual/installation/index.md
+      - Configuration: node-manual/configuration/index.md
+      - Operations: node-manual/operations/index.md
+      - RPC & CLI Reference: node-manual/rpc-cli/index.md
+      - Troubleshooting: node-manual/troubleshooting/index.md
+  - Developer & Architecture Manual:
+      - developer-manual/index.md
+      - Architecture: developer-manual/architecture/index.md
+      - Codebase Map: developer-manual/codebase-map/index.md
+      - Consensus: developer-manual/consensus/index.md
+      - Subsystems: developer-manual/subsystems/index.md
+      - Building & Testing: developer-manual/building-testing/index.md
+      - Architecture Decision Records:
+          - developer-manual/adr/index.md
+          - "ADR-0001: PoS Chainwork Soundness and Anchored Header-Tip Selection": developer-manual/adr/ADR-0001-pos-chainwork-header-tip-selection.md
+          - "ADR-0002: Canonical Documentation Structure": developer-manual/adr/ADR-0002-documentation-structure.md
+
+not_in_nav: |
+  assets/
