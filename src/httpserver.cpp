@@ -435,6 +435,13 @@ public:
         m_send_buffer.insert(0, data);
     }
 
+    /** Whether a response has been queued for sending to the client. */
+    bool HasResponsePending() const
+    {
+        std::lock_guard<std::mutex> lock(m_send_mutex);
+        return m_response_pending;
+    }
+
     /** Whether the complete response was handed over to the socket. */
     bool ResponseCompleted() const
     {
@@ -997,10 +1004,14 @@ void HTTPServer::ThreadSocketHandler()
             }
         }
 
-        // Enforce the idle timeout
+        // Enforce the idle timeout. Clients with an in-flight RPC whose response
+        // has not been queued yet are not idle; refresh their activity timestamp
+        // so they receive a full write timeout window once the response is ready.
         const auto now = std::chrono::steady_clock::now();
         for (const auto& client : m_connected) {
-            if (now - client->m_last_activity > m_rpcservertimeout) {
+            if (client->m_req_busy && !client->HasResponsePending()) {
+                client->m_last_activity = now;
+            } else if (now - client->m_last_activity > m_rpcservertimeout) {
                 client->m_disconnect = true;
             }
         }
