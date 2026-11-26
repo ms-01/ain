@@ -227,6 +227,7 @@ BASE_SCRIPTS = [
     "interface_http.py",
     "interface_http_cors.py",
     "interface_http_cors_wildcard.py",
+    "interface_http_timeout.py",
     "interface_rpc.py",
     "rpc_psbt.py",
     "rpc_signer.py",
