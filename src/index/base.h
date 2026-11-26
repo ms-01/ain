@@ -53,13 +53,6 @@ private:
      */
     std::string m_prune_lock_name;
 
-    /**
-     * Set the best block of the index and, if the index allows pruning,
-     * publish the matching prune lock so that the block (and undo) data which
-     * is still needed by the index is not pruned away.
-     */
-    void SetBestBlockIndex(const CBlockIndex* block);
-
     std::thread m_thread_sync;
     CThreadInterrupt m_interrupt;
 
@@ -69,6 +62,14 @@ private:
     /// flag is set and the BlockConnected ValidationInterface callback takes
     /// over and the sync thread exits.
     void ThreadSync();
+
+protected:
+    /**
+     * Set the best block of the index and, if the index allows pruning,
+     * publish the matching prune lock so that the block (and undo) data which
+     * is still needed by this index is not pruned away.
+     */
+    void SetBestBlockIndex(const CBlockIndex* block);
 
     /// Write the current index state (eg. chain block locator and subclass-specific items) to disk.
     ///
@@ -80,7 +81,6 @@ private:
     /// getting corrupted.
     bool Commit();
 
-protected:
     void BlockConnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex,
                         const std::vector<CTransactionRef>& txn_conflicted) override;
 
@@ -106,6 +106,14 @@ protected:
     virtual const char* GetName() const = 0;
 
 public:
+    /// Whether the index has caught up with the chain and is therefore
+    /// processing the validation interface notifications.
+    bool IsSynced() const { return m_synced.load(); }
+
+    /// The block the index is currently in sync with, or nullptr if the index
+    /// has not been synced yet.
+    const CBlockIndex* GetBestBlockIndex() const { return m_best_block_index.load(); }
+
     /**
      * Whether the index can be used while the node runs in prune mode.
      *

@@ -144,7 +144,10 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
 
         self.log.info("Find the transaction spending an output in a confirmed block")
         node.generatetoaddress(1, address)
-        blockhash = node.getbestblockhash()
+        # The spending transaction is not necessarily confirmed in the chain tip
+        # (the node may mine more than one block per generatetoaddress call), so
+        # the expected block is derived from the chain instead of the tip.
+        blockhash = node.gettransaction(txid)["blockhash"]
         result = node.gettxspendingprevout([utxo_prevout], {"return_spending_tx": True})
         assert_equal(
             result,
@@ -174,7 +177,7 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
             raw_reorg_tx["vin"][0]["txid"], raw_reorg_tx["vin"][0]["vout"]
         )
         node.generatetoaddress(1, address)
-        reorg_blockhash = node.getbestblockhash()
+        reorg_blockhash = node.gettransaction(txid_reorg)["blockhash"]
 
         # txid_reorg is confirmed and indexed as spending our output
         result = node.gettxspendingprevout(
@@ -210,7 +213,7 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
 
         # mine the transaction again, the index has to report the new block
         node.generatetoaddress(1, address)
-        reorg_blockhash = node.getbestblockhash()
+        reorg_blockhash = node.gettransaction(txid_reorg)["blockhash"]
         result = node.gettxspendingprevout(
             [reorg_prevout], {"return_spending_tx": True}
         )
@@ -236,7 +239,7 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
             raw_cancel_tx["vin"][0]["txid"], raw_cancel_tx["vin"][0]["vout"]
         )
         node.generatetoaddress(1, address)
-        cancel_blockhash = node.getbestblockhash()
+        cancel_blockhash = node.gettransaction(txid_cancel)["blockhash"]
 
         # the spending transaction is confirmed and indexed
         result = node.gettxspendingprevout(
@@ -284,6 +287,50 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
                 spent_out(cancel_prevout["txid"], cancel_prevout["vout"], txid_cancel),
             ],
         )
+
+        self.log.info(
+            "Check that the index does not report blocks that left the active chain"
+        )
+        # Restart the node without a wallet and without a persisted mempool, so
+        # that the mempool cannot shadow the index. The spending transaction of
+        # the invalidated block is not part of the active chain anymore, so the
+        # index must not report it and especially not the hash of the
+        # disconnected block.
+        self.restart_node(
+            0,
+            extra_args=[
+                "-txospenderindex=1",
+                "-disablewallet",
+                "-persistmempool=0",
+            ],
+        )
+        node = self.nodes[0]
+
+        result = node.gettxspendingprevout(
+            [cancel_prevout], {"return_spending_tx": True}
+        )
+        assert_equal(
+            result, [unspent_out(cancel_prevout["txid"], cancel_prevout["vout"])]
+        )
+
+        # The spending transaction that was mined again is still part of the
+        # active chain and the index reports the block it was confirmed in.
+        result = node.gettxspendingprevout(
+            [reorg_prevout], {"return_spending_tx": True}
+        )
+        assert_equal(
+            result,
+            [
+                spent_out_in_block(
+                    reorg_prevout["txid"],
+                    reorg_prevout["vout"],
+                    txid_reorg,
+                    reorg_blockhash,
+                    raw_reorg_tx["hex"],
+                )
+            ],
+        )
+        assert node.getblock(reorg_blockhash)["confirmations"] > 0
 
         self.log.info("Check the behaviour without the txospenderindex")
         self.restart_node(0, extra_args=[])

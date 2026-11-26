@@ -44,11 +44,21 @@ private:
     void EraseSpenderInfos(const std::vector<std::pair<COutPoint, CDiskTxPos>>& items);
     bool ReadTransaction(const CDiskTxPos& pos, TxoSpender& spender) const;
     bool EraseBlockEntries(const CBlockIndex* pindex);
+    bool EraseBlockEntries(const CBlock& block, const CBlockIndex* pindex);
 
 protected:
     bool WriteBlock(const CBlock& block, const CBlockIndex* pindex) override;
 
     bool Rewind(const CBlockIndex* current_tip, const CBlockIndex* new_tip) override;
+
+    /**
+     * Handle a block that left the active chain.
+     *
+     * The entries of the disconnected block are removed from the index and the
+     * index best block is moved back to its parent, so that the index never
+     * reports a block that is not part of the active chain.
+     */
+    void BlockDisconnected(const std::shared_ptr<const CBlock>& block) override;
 
     BaseIndex::DB& GetDB() const override;
 
