@@ -1,6 +1,47 @@
 Bitcoin Core
 =============
 
+> **Legacy directory.** The canonical documentation of this repository is the
+> suite below [`docs/`](../docs/README.md), which follows
+> [ADR-0002](../docs/developer-manual/adr/ADR-0002-documentation-structure.md).
+> The pages listed in [Migrated pages](#migrated-pages) have been rewritten
+> there. The files of this directory stay in place because the build system
+> ships them (`Makefile.am` → `DIST_DOCS`) and because existing links still
+> point at them.
+
+Migrated pages
+---------------------
+
+| Legacy page | Canonical page |
+| --- | --- |
+| [setup-nodes.md](setup-nodes.md) | [Node Software Manual → Installation → Binaries](../docs/node-manual/installation/binaries.md) |
+| [setup-nodes-docker.md](setup-nodes-docker.md) | [Node Software Manual → Installation → Docker](../docs/node-manual/installation/docker.md) |
+| [files.md](files.md) | [Node Software Manual → Installation → Data directory](../docs/node-manual/installation/data-directory.md) |
+| [defi-conf.md](defi-conf.md) | [Node Software Manual → Configuration](../docs/node-manual/configuration/index.md) |
+| [init.md](init.md) | [Node Software Manual → Operations](../docs/node-manual/operations/index.md) |
+| [tor.md](tor.md) | [Node Software Manual → Configuration → Networking and privacy](../docs/node-manual/configuration/networking-privacy.md) |
+| [i2p.md](i2p.md) | [Node Software Manual → Configuration → Networking and privacy](../docs/node-manual/configuration/networking-privacy.md) |
+| [dnsseed-policy.md](dnsseed-policy.md) | [Node Software Manual → Configuration → Networking and privacy](../docs/node-manual/configuration/networking-privacy.md) |
+| [reduce-memory.md](reduce-memory.md) | [Node Software Manual → Configuration → Performance and IBD](../docs/node-manual/configuration/performance-ibd.md) |
+| [reduce-traffic.md](reduce-traffic.md) | [Node Software Manual → Configuration → Performance and IBD](../docs/node-manual/configuration/performance-ibd.md) |
+| [setup-masternodes.md](setup-masternodes.md) | [Node Software Manual → Operations → Masternodes](../docs/node-manual/operations/masternodes.md) |
+| [JSON-RPC-interface.md](JSON-RPC-interface.md) | [Node Software Manual → Operations → RPC and REST interfaces](../docs/node-manual/operations/rpc-rest-interfaces.md) |
+| [REST-interface.md](REST-interface.md) | [Node Software Manual → Operations → RPC and REST interfaces](../docs/node-manual/operations/rpc-rest-interfaces.md) |
+| [zmq.md](zmq.md) | [Node Software Manual → Operations → ZMQ notifications](../docs/node-manual/operations/zmq-notifications.md) |
+| [external-signer.md](external-signer.md) | [Node Software Manual → Operations → Backups and external signers](../docs/node-manual/operations/backups-signers.md) |
+| [build-unix.md](build-unix.md) | [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md) |
+| [build-osx.md](build-osx.md) | [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md) |
+| [build-windows.md](build-windows.md) | [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md) |
+| [build-quick.md](build-quick.md) | [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md) |
+| [dependencies.md](dependencies.md) | [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md) |
+| [developer-notes.md](developer-notes.md) | [Developer & Architecture Manual → Building & Testing → Coding and linting](../docs/developer-manual/building-testing/coding-and-linting.md) |
+| [fuzzing.md](fuzzing.md) | [Developer & Architecture Manual → Building & Testing → Testing and fuzzing](../docs/developer-manual/building-testing/testing-and-fuzzing.md) |
+| [hardforks.md](hardforks.md) | [Developer & Architecture Manual → Consensus → Hardfork timeline](../docs/developer-manual/consensus/hardforks.md) |
+
+The JSON-RPC and `defi-cli` command reference is generated from the node
+itself and lives below
+[Node Software Manual → RPC & CLI Reference](../docs/node-manual/rpc-cli/index.md).
+
 Setup
 ---------------------
 Bitcoin Core is the original Bitcoin client and it builds the backbone of the network. It downloads and, by default, stores the entire history of Bitcoin transactions, which requires a few hundred gigabytes of disk space. Depending on the speed of your computer and network connection, the synchronization process can take anywhere from a few hours to a day or more.

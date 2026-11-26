@@ -154,3 +154,6 @@ contrib/devtools/split-debug.sh
 
 /lib/ain-contracts/**/cache
 /lib/ain-contracts/**/output
+
+# Generated MkDocs site (mkdocs build)
+/site/

@@ -1,5 +1,11 @@
 # JSON-RPC Interface
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Operations → RPC and REST interfaces](../docs/node-manual/operations/rpc-rest-interfaces.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 The headless daemon `bitcoind` has the JSON-RPC API enabled by default, the GUI
 `bitcoin-qt` has it disabled by default. This can be changed with the `-server`
 option. In the GUI it is possible to execute RPC methods in the Debug Console

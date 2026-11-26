@@ -1,5 +1,12 @@
 # Hard Forks
 
+> **This page has moved.** The canonical version is
+> [Developer & Architecture Manual → Consensus → Hardfork timeline](../docs/developer-manual/consensus/hardforks.md).
+> It contains the complete timeline from `DF1AMKHeight` to `DF25Height`
+> with the activation height of every network. This file stays in this
+> directory because the build system ships it (`Makefile.am` → `DIST_DOCS`);
+> the release summaries below are kept for reference.
+
 This document lists all the hard forks in DeFiChain history and their changes.
 
 ## Ang Mo Kio (v1.2.0)

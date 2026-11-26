@@ -1,5 +1,11 @@
 # Quick build notes
 
+> **This page has moved.** The canonical version is
+> [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md).
+> It describes the current build workflow of the node. This file stays in this
+> directory because the build system ships it (`Makefile.am` → `DIST_DOCS`);
+> the notes below are kept for reference.
+
 DeFiChain is built with the same process as Bitcoin, but provides certain convenience steps to
 build it easily with the `./make.sh` file in the root directory.
 

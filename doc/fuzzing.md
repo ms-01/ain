@@ -1,6 +1,12 @@
 Fuzz-testing Bitcoin Core
 ==========================
 
+> **This page has moved.** The canonical version is
+> [Developer & Architecture Manual → Building & Testing → Testing and fuzzing](../docs/developer-manual/building-testing/testing-and-fuzzing.md).
+> It describes the current test suites and the fuzz targets of the node. This
+> file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); the notes below are kept for reference.
+
 A special test harness in `src/test/fuzz/` is provided for each fuzz target to
 provide an easy entry point for fuzzers and the like. In this document we'll
 describe how to use it with AFL and libFuzzer.

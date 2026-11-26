@@ -1,5 +1,11 @@
 # Support for signing transactions outside of DeFi Blockchain
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Operations → Backups and external signers](../docs/node-manual/operations/backups-signers.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 The DeFi Blockchain node can be launched with `-signer=<cmd>` where `<cmd>` is an external tool which can
 perform signing device operations, for example a hardware wallet.
 

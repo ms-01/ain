@@ -1,5 +1,11 @@
 # Reduce Memory
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Configuration → Performance and IBD](../docs/node-manual/configuration/performance-ibd.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 There are a few parameters that can be dialed down to reduce the memory usage of `bitcoind`. This can be useful on embedded systems or small VPSes.
 
 ## In-memory caches

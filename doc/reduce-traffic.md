@@ -1,6 +1,12 @@
 Reduce Traffic
 ==============
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Configuration → Performance and IBD](../docs/node-manual/configuration/performance-ibd.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 Some node operators need to deal with bandwidth caps imposed by their ISPs.
 
 By default, Bitcoin Core allows up to 125 connections to different peers, 8 of

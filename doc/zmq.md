@@ -1,5 +1,11 @@
 # Block and Transaction Broadcasting with ZeroMQ
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Operations → ZMQ notifications](../docs/node-manual/operations/zmq-notifications.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 [ZeroMQ](http://zeromq.org/) is a lightweight wrapper around TCP
 connections, inter-process communication, and shared-memory,
 providing various message-oriented semantics such as publish/subscribe,

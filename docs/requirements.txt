@@ -1,0 +1,11 @@
+# Pinned dependencies for building the DeFiChain documentation site.
+#
+# Install with:
+#   python3 -m venv .venv-docs
+#   . .venv-docs/bin/activate
+#   pip install -r docs/requirements.txt
+#
+# This file is excluded from the rendered site (see `exclude_docs` in
+# `mkdocs.yml`).
+mkdocs==1.6.1
+mkdocs-material==9.8.2

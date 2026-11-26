@@ -1,5 +1,11 @@
 # I2P SUPPORT IN DEFICHAIN
 
+> **This page has moved.** The canonical version is
+> [Node Software Manual → Configuration → Networking and privacy](../docs/node-manual/configuration/networking-privacy.md).
+> The file stays in this directory because the build system ships it
+> (`Makefile.am` → `DIST_DOCS`); it is removed once the migration is
+> complete.
+
 DeFiChain can connect to peers over I2P through a [SAM v3.1](https://i2p.net/en/docs/api/samv3)
 bridge ("SAM proxy"). The bridge translates the I2P tunnels into a TCP stream
 that the node speaks the normal P2P protocol over.
