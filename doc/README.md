@@ -29,6 +29,14 @@ Migrated pages
 | [REST-interface.md](REST-interface.md) | [Node Software Manual → Operations → RPC and REST interfaces](../docs/node-manual/operations/rpc-rest-interfaces.md) |
 | [zmq.md](zmq.md) | [Node Software Manual → Operations → ZMQ notifications](../docs/node-manual/operations/zmq-notifications.md) |
 | [external-signer.md](external-signer.md) | [Node Software Manual → Operations → Backups and external signers](../docs/node-manual/operations/backups-signers.md) |
+| [build-unix.md](build-unix.md) | [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md) |
+| [build-osx.md](build-osx.md) | [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md) |
+| [build-windows.md](build-windows.md) | [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md) |
+| [build-quick.md](build-quick.md) | [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md) |
+| [dependencies.md](dependencies.md) | [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md) |
+| [developer-notes.md](developer-notes.md) | [Developer & Architecture Manual → Building & Testing → Coding and linting](../docs/developer-manual/building-testing/coding-and-linting.md) |
+| [fuzzing.md](fuzzing.md) | [Developer & Architecture Manual → Building & Testing → Testing and fuzzing](../docs/developer-manual/building-testing/testing-and-fuzzing.md) |
+| [hardforks.md](hardforks.md) | [Developer & Architecture Manual → Consensus → Hardfork timeline](../docs/developer-manual/consensus/hardforks.md) |
 
 The JSON-RPC and `defi-cli` command reference is generated from the node
 itself and lives below

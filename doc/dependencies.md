@@ -1,6 +1,12 @@
 Dependencies
 ============
 
+> **This page has moved.** The canonical version is
+> [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md).
+> It lists the dependencies of the node and the dependency system. This file
+> stays in this directory because the build system ships it (`Makefile.am` →
+> `DIST_DOCS`); the table below is kept for reference.
+
 These are the dependencies currently used by Bitcoin Core. You can find instructions for installing them in the `build-*.md` file for your platform.
 
 | Dependency | Version used | Minimum required | CVEs | Shared | [Bundled Qt library](https://doc.qt.io/qt-5/configure-options.html#third-party-libraries) |

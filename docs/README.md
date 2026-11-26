@@ -103,7 +103,9 @@ ADRs live in `developer-manual/adr/` and follow the MADR format. Every ADR must
 contain the sections `## Status`, `## Context`, `## Decision` and
 `## Consequences`. Number them sequentially (`ADR-0003-…`), keep them immutable
 once accepted, and record a decision that replaces an earlier one in a new ADR
-that references the old one. See
+that references the old one. The workflow, the template and the status
+lifecycle are described in
+[Architecture Decision Records](developer-manual/adr/index.md); see
 [ADR-0002](developer-manual/adr/ADR-0002-documentation-structure.md) for the
 rules that govern the documentation structure itself.
 
@@ -172,6 +174,14 @@ authoritative version. The pointer notices are in place for
 | `doc/REST-interface.md` | `node-manual/operations/rpc-rest-interfaces.md` |
 | `doc/zmq.md` | `node-manual/operations/zmq-notifications.md` |
 | `doc/external-signer.md` | `node-manual/operations/backups-signers.md` |
+| `doc/build-unix.md` | `developer-manual/building-testing/building.md` |
+| `doc/build-osx.md` | `developer-manual/building-testing/building.md` |
+| `doc/build-windows.md` | `developer-manual/building-testing/building.md` |
+| `doc/build-quick.md` | `developer-manual/building-testing/building.md` |
+| `doc/dependencies.md` | `developer-manual/building-testing/building.md` |
+| `doc/developer-notes.md` | `developer-manual/building-testing/coding-and-linting.md` |
+| `doc/fuzzing.md` | `developer-manual/building-testing/testing-and-fuzzing.md` |
+| `doc/hardforks.md` | `developer-manual/consensus/hardforks.md` |
 
 `doc/README.md` carries the same table for readers who enter the directory
 through its index.

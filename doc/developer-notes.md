@@ -1,6 +1,12 @@
 Developer Notes
 ===============
 
+> **This page has moved.** The canonical version is
+> [Developer & Architecture Manual → Building & Testing → Coding and linting](../docs/developer-manual/building-testing/coding-and-linting.md).
+> It describes the current coding conventions, formatting and linting
+> workflow. This file stays in this directory because the build system ships
+> it (`Makefile.am` → `DIST_DOCS`); the notes below are kept for reference.
+
 <!-- markdown-toc start -->
 **Table of Contents**
 

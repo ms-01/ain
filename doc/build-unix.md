@@ -1,6 +1,12 @@
 UNIX BUILD NOTES
 ====================
 
+> **This page has moved.** The canonical version is
+> [Developer & Architecture Manual → Building & Testing → Building the node](../docs/developer-manual/building-testing/building.md).
+> It describes the current build workflow of the node. This file stays in this
+> directory because the build system ships it (`Makefile.am` → `DIST_DOCS`);
+> the notes below are kept for reference.
+
 > NOTE: This section is a work in progress for DeFi Blockchain, and may not be applicable at it's current state.
 
 Some notes on how to build DeFi Core in Unix.
