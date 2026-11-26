@@ -50,6 +50,28 @@ pub struct AinExecutor<'backend> {
     pub backend: &'backend mut EVMBackend,
 }
 
+/// Resolves the effective DVM block height used by height-gated EVM rules.
+///
+/// The normal execution path always provides a [`BlockContext`] carrying the
+/// DVM height of the block that is being processed. The RPC tracer replays
+/// blocks without such a context and falls back to the backend vicinity, which
+/// is derived from the traced block header (`"DFI: <height>"` extra data) and
+/// therefore refers to the very same block.
+pub(crate) fn resolve_dvm_block(
+    ctx_dvm_block: Option<u64>,
+    vicinity_dvm_block: Option<u64>,
+) -> Option<u64> {
+    ctx_dvm_block.or(vicinity_dvm_block)
+}
+
+/// Returns whether the DF25-gated rules are active at the given DVM height.
+///
+/// The activation height is passed in explicitly to keep this helper free of
+/// any C++ FFI dependency and thus unit-testable in isolation.
+pub(crate) fn is_df25_active(dvm_block: Option<u64>, df25_height: u64) -> bool {
+    dvm_block.is_some_and(|height| height >= df25_height)
+}
+
 // State update methods
 impl<'backend> AinExecutor<'backend> {
     pub fn new(backend: &'backend mut EVMBackend) -> Self {
@@ -178,10 +200,11 @@ impl<'backend> AinExecutor<'backend> {
         }
 
         let metadata = StackSubstateMetadata::new(ctx.gas_limit, &Self::CONFIG);
-        let dvm_block = block_ctx
-            .map(|ctx| ctx.dvm_block)
-            .or(self.backend.vicinity.dvm_block);
-        let df25_active = dvm_block.is_some_and(|h| h >= ain_cpp_imports::get_df25_height());
+        let dvm_block = resolve_dvm_block(
+            block_ctx.map(|ctx| ctx.dvm_block),
+            self.backend.vicinity.dvm_block,
+        );
+        let df25_active = is_df25_active(dvm_block, ain_cpp_imports::get_df25_height());
         let state = MemoryStackState::new(metadata, self.backend);
         let precompiles = if let Some(block_ctx) = block_ctx {
             MetachainPrecompiles::new(block_ctx.mnview_ptr).with_df25_active(df25_active)
@@ -268,6 +291,12 @@ impl<'backend> AinExecutor<'backend> {
         base_fee: U256,
         ctx: Option<&BlockContext>,
     ) -> Result<ApplyTxResult> {
+        // Resolve the DVM block height once for all height-gated rules below.
+        // The normal execution path provides the height via the block context,
+        // while the RPC tracer replays blocks without one and falls back to the
+        // backend vicinity, which holds the height of the replayed block.
+        let dvm_block =
+            resolve_dvm_block(ctx.map(|c| c.dvm_block), self.backend.vicinity.dvm_block);
         match tx {
             ExecuteTx::SignedTx(signed_tx) => {
                 // Validate nonce
@@ -411,8 +440,7 @@ impl<'backend> AinExecutor<'backend> {
                     signed_tx.sender, contract_address, amount, direction
                 );
 
-                let df25_active =
-                    ctx.map_or(0, |c| c.dvm_block) >= ain_cpp_imports::get_df25_height();
+                let df25_active = is_df25_active(dvm_block, ain_cpp_imports::get_df25_height());
 
                 if direction == TransferDirection::EvmIn {
                     let DST20BridgeInfo { address, storage } =
@@ -476,7 +504,7 @@ impl<'backend> AinExecutor<'backend> {
                     storage,
                 } = dst20_deploy_info(
                     self.backend,
-                    ctx.map_or(0, |c| c.dvm_block),
+                    dvm_block.unwrap_or(0),
                     address,
                     &name,
                     &symbol,
@@ -507,7 +535,7 @@ impl<'backend> AinExecutor<'backend> {
                     symbol
                 );
 
-                let storage = dst20_name_info(ctx.map_or(0, |c| c.dvm_block), &name, &symbol);
+                let storage = dst20_name_info(dvm_block.unwrap_or(0), &name, &symbol);
 
                 self.update_storage(address, storage)?;
                 let (tx, receipt) = rename_contract_tx(token_id, &base_fee)?;
@@ -541,4 +569,76 @@ pub struct TxResponse {
     pub data: Vec<u8>,
     pub logs: Vec<Log>,
     pub used_gas: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use ain_contracts::{
+        get_dst20_contract, get_dst20_contract_for_height, is_valid_dst20_codehash,
+    };
+    use ethereum_types::H256;
+
+    use super::{is_df25_active, resolve_dvm_block};
+
+    const DF25_HEIGHT: u64 = 100;
+
+    #[test]
+    fn resolve_dvm_block_prefers_the_block_context() {
+        assert_eq!(resolve_dvm_block(Some(120), Some(110)), Some(120));
+    }
+
+    #[test]
+    fn resolve_dvm_block_falls_back_to_the_vicinity() {
+        // The RPC tracer replays blocks without a block context and relies on
+        // the backend vicinity, which holds the height of the replayed block.
+        assert_eq!(resolve_dvm_block(None, Some(110)), Some(110));
+    }
+
+    #[test]
+    fn resolve_dvm_block_without_any_height() {
+        assert_eq!(resolve_dvm_block(None, None), None);
+    }
+
+    #[test]
+    fn df25_is_inactive_below_the_activation_height() {
+        assert!(!is_df25_active(Some(DF25_HEIGHT - 1), DF25_HEIGHT));
+    }
+
+    #[test]
+    fn df25_is_active_at_and_above_the_activation_height() {
+        assert!(is_df25_active(Some(DF25_HEIGHT), DF25_HEIGHT));
+        assert!(is_df25_active(Some(DF25_HEIGHT + 1), DF25_HEIGHT));
+    }
+
+    #[test]
+    fn df25_is_inactive_without_any_height() {
+        assert!(!is_df25_active(None, DF25_HEIGHT));
+    }
+
+    #[test]
+    fn dst20_codehash_gate_follows_the_resolved_height() {
+        let legacy_hash = get_dst20_contract().codehash;
+        let df25_hash = get_dst20_contract_for_height(true).codehash;
+        let foreign_hash = H256::from_low_u64_be(0xdeadbeef);
+
+        // A foreign code hash is never accepted, no matter which height is resolved.
+        assert!(!is_valid_dst20_codehash(foreign_hash, false));
+        assert!(!is_valid_dst20_codehash(foreign_hash, true));
+
+        // The legacy facade stays valid at any height.
+        assert!(is_valid_dst20_codehash(legacy_hash, false));
+        assert!(is_valid_dst20_codehash(legacy_hash, true));
+
+        if df25_hash != legacy_hash {
+            // Below DF25Height the DF25 facade is not accepted yet ...
+            let below = resolve_dvm_block(None, Some(DF25_HEIGHT - 1));
+            assert!(!is_df25_active(below, DF25_HEIGHT));
+            assert!(!is_valid_dst20_codehash(df25_hash, false));
+
+            // ... at/above DF25Height it is.
+            let above = resolve_dvm_block(None, Some(DF25_HEIGHT));
+            assert!(is_df25_active(above, DF25_HEIGHT));
+            assert!(is_valid_dst20_codehash(df25_hash, true));
+        }
+    }
 }
