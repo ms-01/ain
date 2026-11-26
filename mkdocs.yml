@@ -195,7 +195,11 @@ nav:
           - "PoS and Masternodes": developer-manual/subsystems/pos-validation.md
           - "State Storage": developer-manual/subsystems/state-storage.md
           - "RPC and gRPC": developer-manual/subsystems/rpc-and-grpc.md
-      - Building & Testing: developer-manual/building-testing/index.md
+      - Building & Testing:
+          - developer-manual/building-testing/index.md
+          - "Building the Node": developer-manual/building-testing/building.md
+          - "Testing and Fuzzing": developer-manual/building-testing/testing-and-fuzzing.md
+          - "Coding and Linting": developer-manual/building-testing/coding-and-linting.md
       - Architecture Decision Records:
           - developer-manual/adr/index.md
           - "ADR-0001: PoS Chainwork Soundness and Anchored Header-Tip Selection": developer-manual/adr/ADR-0001-pos-chainwork-header-tip-selection.md
