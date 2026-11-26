@@ -178,4 +178,102 @@ BOOST_FIXTURE_TEST_CASE(txospenderindex_disconnect, TestChain100Setup)
     txospenderindex.Stop();
 }
 
+BOOST_FIXTURE_TEST_CASE(txospenderindex_offline_reorg, TestChain100Setup)
+{
+    const uint256 masternodeID = testMasternodeKeys.begin()->first;
+    const CScript& coinbase_script = m_coinbase_txns[0]->vout[0].scriptPubKey;
+
+    // Mine one more block, so that the first coinbase output is mature and can
+    // be spent.
+    CreateAndProcessBlock({}, coinbase_script, masternodeID);
+
+    // Create a transaction that spends the first coinbase output.
+    CMutableTransaction spend;
+    spend.nVersion = m_coinbase_txns[0]->nVersion;
+    spend.vin.resize(1);
+    spend.vin[0].prevout = COutPoint(m_coinbase_txns[0]->GetHash(), 0);
+    spend.vout.resize(1);
+    spend.vout[0] = CTxOut(m_coinbase_txns[0]->vout[0].nValue, coinbase_script);
+
+    // Sign the input (the coinbase script is a pay-to-public-key script).
+    std::vector<unsigned char> vchSig;
+    const uint256 hash = SignatureHash(coinbase_script, spend, 0, SIGHASH_ALL, 0, SigVersion::BASE);
+    BOOST_REQUIRE(coinbaseKey.Sign(hash, vchSig));
+    vchSig.push_back((unsigned char)SIGHASH_ALL);
+    spend.vin[0].scriptSig << vchSig;
+
+    // Include the spending transaction in a block.
+    const CBlock block = CreateAndProcessBlock({spend}, coinbase_script, masternodeID);
+    const uint256 tip_hash = block.GetHash();
+    BOOST_REQUIRE_EQUAL(block.vtx.size(), 2UL);
+
+    const COutPoint spent_outpoint{m_coinbase_txns[0]->GetHash(), 0};
+
+    // Start a disk-backed index, sync it to tip_hash, and stop it before the
+    // reorg so that no BlockDisconnected callback is delivered.
+    {
+        TxoSpenderIndex txospenderindex(1 << 20, /*f_memory=*/false, /*f_wipe=*/true);
+        BOOST_CHECK(!txospenderindex.BlockUntilSyncedToCurrentChain());
+        txospenderindex.Start();
+
+        constexpr int64_t timeout_ms = 10 * 1000;
+        int64_t time_start = GetTimeMillis();
+        while (!txospenderindex.BlockUntilSyncedToCurrentChain()) {
+            BOOST_REQUIRE(time_start + timeout_ms > GetTimeMillis());
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        const std::optional<TxoSpender> spender{txospenderindex.FindSpender(spent_outpoint)};
+        BOOST_REQUIRE(spender);
+        BOOST_CHECK_EQUAL(spender->block_hash, tip_hash);
+
+        txospenderindex.Stop();
+    }
+
+    // Invalidate the block while the index is offline.
+    CBlockIndex* pindex;
+    {
+        LOCK(cs_main);
+        pindex = LookupBlockIndex(tip_hash);
+    }
+    BOOST_REQUIRE(pindex);
+    CValidationState state;
+    BOOST_REQUIRE(InvalidateBlock(state, Params(), pindex));
+    SyncWithValidationInterfaceQueue();
+
+    // Restart the index against the persisted database. Init() must erase the
+    // orphaned entries and FindSpender() must not report the orphaned block.
+    TxoSpenderIndex txospenderindex(1 << 20, /*f_memory=*/false, /*f_wipe=*/false);
+    txospenderindex.Start();
+
+    constexpr int64_t timeout_ms = 10 * 1000;
+    int64_t time_start = GetTimeMillis();
+    while (!txospenderindex.BlockUntilSyncedToCurrentChain()) {
+        BOOST_REQUIRE(time_start + timeout_ms > GetTimeMillis());
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    BOOST_CHECK(!txospenderindex.FindSpender(spent_outpoint).has_value());
+    BOOST_REQUIRE(txospenderindex.GetBestBlockIndex());
+    BOOST_REQUIRE(pindex->pprev);
+    BOOST_CHECK_EQUAL(txospenderindex.GetBestBlockIndex()->GetBlockHash(), pindex->pprev->GetBlockHash());
+
+    // Mine the spending transaction again in a new active block. The index must
+    // report the new block hash rather than the orphaned one.
+    const CKey& owner_key{testMasternodeKeys.begin()->second.ownerKey};
+    const CScript new_coinbase_script{CScript() << ToByteVector(owner_key.GetPubKey()) << OP_CHECKSIG};
+    const CBlock new_block = CreateAndProcessBlock({spend}, new_coinbase_script, masternodeID);
+    BOOST_REQUIRE(new_block.GetHash() != tip_hash);
+    SyncWithValidationInterfaceQueue();
+
+    const std::optional<TxoSpender> new_spender{txospenderindex.FindSpender(spent_outpoint)};
+    BOOST_REQUIRE(new_spender);
+    BOOST_CHECK_EQUAL(new_spender->tx->GetHash(), spend.GetHash());
+    BOOST_CHECK_EQUAL(new_spender->block_hash, new_block.GetHash());
+    BOOST_REQUIRE(txospenderindex.GetBestBlockIndex());
+    BOOST_CHECK_EQUAL(txospenderindex.GetBestBlockIndex()->GetBlockHash(), new_block.GetHash());
+
+    txospenderindex.Stop();
+}
+
 BOOST_AUTO_TEST_SUITE_END()

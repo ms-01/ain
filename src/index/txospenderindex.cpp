@@ -105,6 +105,40 @@ TxoSpenderIndex::TxoSpenderIndex(size_t n_cache_size, bool f_memory, bool f_wipe
 
 TxoSpenderIndex::~TxoSpenderIndex() {}
 
+bool TxoSpenderIndex::Init()
+{
+    // If the chain reorganised while the index was not running, BaseIndex::Init()
+    // moves the best block back to the fork point without erasing entries of the
+    // orphaned blocks. Clean them up before BaseIndex::Init() updates the best block.
+    CBlockLocator locator;
+    std::vector<const CBlockIndex*> orphaned_blocks;
+    if (GetDB().ReadBestBlock(locator) && !locator.IsNull() && !locator.vHave.empty()) {
+        LOCK(cs_main);
+        const CBlockIndex* pindex = LookupBlockIndex(locator.vHave.front());
+        while (pindex != nullptr && !::ChainActive().Contains(pindex)) {
+            orphaned_blocks.push_back(pindex);
+            pindex = pindex->pprev;
+        }
+    }
+
+    for (const CBlockIndex* pindex : orphaned_blocks) {
+        if (!EraseBlockEntries(pindex)) {
+            LogPrintf("Warning: %s failed to erase orphaned block %s during init\n",
+                      GetName(), pindex->GetBlockHash().ToString());
+        }
+    }
+
+    if (!BaseIndex::Init()) {
+        return false;
+    }
+
+    if (!orphaned_blocks.empty()) {
+        Commit();
+    }
+
+    return true;
+}
+
 void TxoSpenderIndex::WriteSpenderInfos(const std::vector<std::pair<COutPoint, CDiskTxPos>>& items)
 {
     CDBBatch batch(*m_db);
@@ -251,7 +285,16 @@ std::optional<TxoSpender> TxoSpenderIndex::FindSpender(const COutPoint& txo, std
         }
         for (const auto& input : spender.tx->vin) {
             if (input.prevout == txo) {
-                return spender;
+                bool in_active_chain{false};
+                {
+                    LOCK(cs_main);
+                    const CBlockIndex* pindex = LookupBlockIndex(spender.block_hash);
+                    in_active_chain = pindex != nullptr && ::ChainActive().Contains(pindex);
+                }
+                if (in_active_chain) {
+                    return spender;
+                }
+                break;
             }
         }
     }

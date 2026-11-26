@@ -332,6 +332,59 @@ class GetTxSpendingPrevoutTest(DefiTestFramework):
         )
         assert node.getblock(reorg_blockhash)["confirmations"] > 0
 
+        self.log.info(
+            "Check that the index does not report blocks orphaned while the node was offline"
+        )
+        self.restart_node(0, extra_args=["-txospenderindex=1"])
+        node = self.nodes[0]
+        txid_offline = node.sendtoaddress(node.getnewaddress(), 1)
+        raw_offline_tx = node.getrawtransaction(txid_offline, True)
+        offline_prevout = prevout(
+            raw_offline_tx["vin"][0]["txid"], raw_offline_tx["vin"][0]["vout"]
+        )
+        node.generatetoaddress(1, address)
+        offline_blockhash = node.gettransaction(txid_offline)["blockhash"]
+
+        result = node.gettxspendingprevout(
+            [offline_prevout], {"return_spending_tx": True}
+        )
+        assert_equal(
+            result,
+            [
+                spent_out_in_block(
+                    offline_prevout["txid"],
+                    offline_prevout["vout"],
+                    txid_offline,
+                    offline_blockhash,
+                    raw_offline_tx["hex"],
+                )
+            ],
+        )
+
+        # Restart without -txospenderindex and invalidate the block so the index
+        # never receives a BlockDisconnected notification.
+        self.restart_node(0, extra_args=[])
+        node = self.nodes[0]
+        node.invalidateblock(offline_blockhash)
+
+        # Restart with -txospenderindex (and without wallet/mempool) and verify
+        # that the orphaned block is not reported.
+        self.restart_node(
+            0,
+            extra_args=[
+                "-txospenderindex=1",
+                "-disablewallet",
+                "-persistmempool=0",
+            ],
+        )
+        node = self.nodes[0]
+        result = node.gettxspendingprevout(
+            [offline_prevout], {"return_spending_tx": True}
+        )
+        assert_equal(
+            result, [unspent_out(offline_prevout["txid"], offline_prevout["vout"])]
+        )
+
         self.log.info("Check the behaviour without the txospenderindex")
         self.restart_node(0, extra_args=[])
 
