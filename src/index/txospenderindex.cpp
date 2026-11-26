@@ -145,8 +145,53 @@ bool TxoSpenderIndex::EraseBlockEntries(const CBlockIndex* pindex)
         return error("%s: failed to read block %s from disk", __func__, pindex->GetBlockHash().ToString());
     }
 
+    return EraseBlockEntries(block, pindex);
+}
+
+bool TxoSpenderIndex::EraseBlockEntries(const CBlock& block, const CBlockIndex* pindex)
+{
     EraseSpenderInfos(BuildSpenderPositions(block, pindex->GetBlockPos()));
     return true;
+}
+
+void TxoSpenderIndex::BlockDisconnected(const std::shared_ptr<const CBlock>& block)
+{
+    if (!IsSynced()) {
+        return;
+    }
+
+    const CBlockIndex* pindex;
+    {
+        // The callback is executed by the validation interface scheduler
+        // thread, so cs_main has to be taken for the block index lookup.
+        LOCK(cs_main);
+        pindex = LookupBlockIndex(block->GetHash());
+    }
+    if (pindex == nullptr) {
+        return;
+    }
+
+    // Erase the entries of the disconnected block. The in-memory block is used
+    // on purpose: the erase must not depend on the block still being readable
+    // from disk.
+    EraseBlockEntries(*block, pindex);
+
+    // Move the index best block back to the parent of the disconnected block,
+    // but only if the index is in sync with exactly that block. If the index is
+    // behind the chain, the sync thread stays in charge of the index state.
+    if (GetBestBlockIndex() != pindex) {
+        return;
+    }
+    const CBlockIndex* parent{pindex->pprev};
+    if (parent == nullptr) {
+        return;
+    }
+    SetBestBlockIndex(parent);
+    if (!Commit()) {
+        // If the commit fails, the persisted locator is stale. Restore the
+        // previous best block, the sync thread will then rewind the index.
+        SetBestBlockIndex(pindex);
+    }
 }
 
 bool TxoSpenderIndex::Rewind(const CBlockIndex* current_tip, const CBlockIndex* new_tip)
