@@ -82,6 +82,7 @@ DEFI_TESTS =\
   test/anchor_peers_tests.cpp \
   test/assumevalid_tests.cpp \
   test/applytx_tests.cpp \
+  test/dfi_customtx_undo_tests.cpp \
   test/banman_tests.cpp \
   test/base32_tests.cpp \
   test/base58_tests.cpp \
