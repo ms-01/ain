@@ -90,3 +90,42 @@ pub async fn list_dex_prices(ctx: &Arc<AppContext>, symbol: String) -> Result<De
         dex_prices,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{hashes::Hash, Txid};
+    use defichain_rpc::json::token::TokenInfo;
+
+    use super::is_untradable_token;
+
+    fn make_token(symbol: &str, is_dat: bool, is_lps: bool, tradeable: bool) -> TokenInfo {
+        TokenInfo {
+            symbol: symbol.to_string(),
+            symbol_key: symbol.to_string(),
+            name: symbol.to_string(),
+            decimal: 8,
+            limit: 0,
+            mintable: true,
+            tradeable,
+            is_dat,
+            is_lps,
+            finalized: false,
+            is_loan_token: false,
+            minted: 0.0,
+            creation_tx: Txid::all_zeros().to_string(),
+            creation_height: 0,
+            destruction_tx: Txid::all_zeros().to_string(),
+            destruction_height: 0,
+            collateral_address: None,
+        }
+    }
+
+    #[test]
+    fn test_is_untradable_token() {
+        assert!(!is_untradable_token(&make_token("DFI", true, false, true)));
+        assert!(is_untradable_token(&make_token("BTC-DFI", true, true, true)));
+        assert!(is_untradable_token(&make_token("CUSTOM", false, false, true)));
+        assert!(is_untradable_token(&make_token("BURN", true, false, true)));
+        assert!(is_untradable_token(&make_token("BTC", true, false, false)));
+    }
+}

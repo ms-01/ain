@@ -42,3 +42,32 @@ pub fn get_block_reward_distribution(subsidy: Decimal) -> BlockRewardDistributio
 fn calculate_reward(amount: Decimal, percent: Decimal) -> Decimal {
     (amount * percent) / dec!(10000) / Decimal::from(COIN)
 }
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal_macros::dec;
+
+    use super::{get_block_reward_distribution, BLOCK_REWARD_DISTRIBUTION_PERCENTAGE};
+
+    #[test]
+    fn test_block_reward_distribution_sums_to_full_subsidy() {
+        let total_pct = BLOCK_REWARD_DISTRIBUTION_PERCENTAGE.masternode
+            + BLOCK_REWARD_DISTRIBUTION_PERCENTAGE.community
+            + BLOCK_REWARD_DISTRIBUTION_PERCENTAGE.anchor
+            + BLOCK_REWARD_DISTRIBUTION_PERCENTAGE.liquidity
+            + BLOCK_REWARD_DISTRIBUTION_PERCENTAGE.loan
+            + BLOCK_REWARD_DISTRIBUTION_PERCENTAGE.options
+            + BLOCK_REWARD_DISTRIBUTION_PERCENTAGE.unallocated;
+        assert_eq!(total_pct, dec!(10000));
+
+        // 100 DFI in satoshis
+        let dist = get_block_reward_distribution(dec!(10_000_000_000));
+        assert_eq!(dist.masternode, dec!(33.33));
+        assert_eq!(dist.community, dec!(4.91));
+        assert_eq!(dist.anchor, dec!(0.02));
+        assert_eq!(dist.liquidity, dec!(25.45));
+        assert_eq!(dist.loan, dec!(24.68));
+        assert_eq!(dist.options, dec!(9.88));
+        assert_eq!(dist.unallocated, dec!(1.73));
+    }
+}

@@ -335,3 +335,118 @@ impl Error {
         (code, reason)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{http::StatusCode, response::IntoResponse};
+
+    use super::{ApiError, Error, IndexAction, NotFoundKind};
+
+    #[test]
+    fn test_index_action_display() {
+        assert_eq!(IndexAction::Index.to_string(), "index");
+        assert_eq!(IndexAction::Invalidate.to_string(), "invalidate");
+    }
+
+    #[test]
+    fn test_not_found_kind_display() {
+        assert_eq!(NotFoundKind::Auction.to_string(), "auction");
+        assert_eq!(NotFoundKind::CollateralToken.to_string(), "collateral token");
+        assert_eq!(NotFoundKind::LoanToken.to_string(), "loan token");
+        assert_eq!(NotFoundKind::Masternode.to_string(), "masternode");
+        assert_eq!(NotFoundKind::Oracle.to_string(), "oracle");
+        assert_eq!(NotFoundKind::PoolPair.to_string(), "poolpair");
+        assert_eq!(NotFoundKind::Proposal.to_string(), "proposal");
+        assert_eq!(NotFoundKind::RawTx.to_string(), "rawtx");
+        assert_eq!(NotFoundKind::Scheme.to_string(), "scheme");
+        assert_eq!(
+            NotFoundKind::Token {
+                id: "0".to_string()
+            }
+            .to_string(),
+            "token 0"
+        );
+        assert_eq!(NotFoundKind::Vault.to_string(), "vault");
+    }
+
+    #[test]
+    fn test_error_from_conversions() {
+        let e: Error = "custom error".into();
+        assert_eq!(e.to_string(), "custom error");
+
+        let boxed: Box<dyn std::error::Error> = Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "boxed io error",
+        ));
+        let e2: Error = boxed.into();
+        assert_eq!(e2.to_string(), "boxed io error");
+    }
+
+    #[test]
+    fn test_error_into_code_and_message() {
+        let (code, msg) = Error::NotFound {
+            kind: NotFoundKind::Vault,
+        }
+        .into_code_and_message();
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        assert_eq!(msg, "Unable to find vault");
+
+        let (code, msg) = Error::NotFoundMessage {
+            msg: "missing".to_string(),
+        }
+        .into_code_and_message();
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        assert_eq!(msg, "missing");
+
+        let (code, msg) = Error::Forbidden {
+            method: "stop".to_string(),
+        }
+        .into_code_and_message();
+        assert_eq!(code, StatusCode::FORBIDDEN);
+        assert_eq!(msg, "Rpc stop method is not whitelisted");
+
+        let (code, msg) = Error::BadRequest {
+            msg: "bad param".to_string(),
+        }
+        .into_code_and_message();
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert_eq!(msg, "bad param");
+
+        let (code, msg) = Error::Other {
+            msg: "boom".to_string(),
+        }
+        .into_code_and_message();
+        assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(msg, "boom");
+
+        let (code, _) = Error::DecimalConversionError.into_code_and_message();
+        assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_api_error_into_response() {
+        let not_found = ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not found".to_string(),
+            "/v0/mainnet/blocks/0".to_string(),
+        );
+        assert_eq!(not_found.into_response().status(), StatusCode::NOT_FOUND);
+
+        let bad_req = ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad".to_string(),
+            "/v0/mainnet/blocks".to_string(),
+        );
+        assert_eq!(bad_req.into_response().status(), StatusCode::BAD_REQUEST);
+
+        let internal = ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "err".to_string(),
+            "/v0/mainnet/stats".to_string(),
+        );
+        assert_eq!(
+            internal.into_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+}

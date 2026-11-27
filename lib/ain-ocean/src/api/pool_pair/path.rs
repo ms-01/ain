@@ -540,3 +540,90 @@ pub async fn sync_token_graph_if_empty(ctx: &Arc<AppContext>) -> Result<()> {
     };
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal_macros::dec;
+
+    use super::{
+        compute_return_less_dex_fees_in_destination_token, EstimatedDexFeesInPct, PriceRatio,
+        StackSet, SwapPathPoolPair,
+    };
+    use crate::TokenIdentifier;
+
+    fn token(id: &str, sym: &str) -> TokenIdentifier {
+        TokenIdentifier {
+            id: id.to_string(),
+            name: sym.to_string(),
+            symbol: sym.to_string(),
+            display_symbol: sym.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_stack_set_operations() {
+        let mut s = StackSet::of(1, false);
+        assert!(s.has(&1));
+        s.push(2);
+        assert!(s.has(&2));
+        assert_eq!(s.path(3), vec![1, 2, 3]);
+        s.pop();
+        assert!(!s.has(&2));
+
+        let cycle = StackSet::of(1, true);
+        assert!(!cycle.has(&1));
+        assert_eq!(cycle.path(2), vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn test_compute_return_less_dex_fees() {
+        let pool = SwapPathPoolPair {
+            pool_pair_id: "1".to_string(),
+            symbol: "BTC-DFI".to_string(),
+            token_a: token("1", "BTC"),
+            token_b: token("0", "DFI"),
+            price_ratio: PriceRatio {
+                ab: "0.5".to_string(),
+                ba: "2.0".to_string(),
+            },
+            commission_fee_in_pct: "0.002".to_string(),
+            estimated_dex_fees_in_pct: Some(EstimatedDexFeesInPct {
+                ab: "0.01".to_string(),
+                ba: "0.02".to_string(),
+            }),
+        };
+
+        // A -> B (token 1 -> token 0)
+        let res_ab = compute_return_less_dex_fees_in_destination_token(
+            &vec![pool],
+            &"1".to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(res_ab.estimated_return, dec!(2.0));
+        // 1 * (1 - 0.002) = 0.998; less 2% = 0.97804; * 2.0 = 1.95608; less 1% = 1.9365192
+        assert_eq!(res_ab.estimated_return_less_dex_fees, dec!(1.9365192));
+
+        // B -> A without dex fees
+        let pool_no_fee = SwapPathPoolPair {
+            pool_pair_id: "1".to_string(),
+            symbol: "BTC-DFI".to_string(),
+            token_a: token("1", "BTC"),
+            token_b: token("0", "DFI"),
+            price_ratio: PriceRatio {
+                ab: "0.5".to_string(),
+                ba: "2.0".to_string(),
+            },
+            commission_fee_in_pct: "0.002".to_string(),
+            estimated_dex_fees_in_pct: None,
+        };
+        let res_ba = compute_return_less_dex_fees_in_destination_token(
+            &vec![pool_no_fee],
+            &"0".to_string(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(res_ba.estimated_return, dec!(0.5));
+        assert_eq!(res_ba.estimated_return_less_dex_fees, dec!(0.499));
+    }
+}

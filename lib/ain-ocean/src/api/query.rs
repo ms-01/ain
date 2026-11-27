@@ -73,3 +73,57 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{extract::FromRequestParts, http::Request};
+
+    use super::{default_pagination_size, PaginationQuery, Query};
+
+    #[test]
+    fn test_pagination_query_defaults_and_serde() {
+        assert_eq!(default_pagination_size(), 30);
+        let def = PaginationQuery::default();
+        assert_eq!(def.size, 30);
+        assert_eq!(def.next, None);
+
+        let q: PaginationQuery = serde_urlencoded::from_str("size=10&next=abc").unwrap();
+        assert_eq!(q.size, 10);
+        assert_eq!(q.next, Some("abc".to_string()));
+
+        let q_undef: PaginationQuery =
+            serde_urlencoded::from_str("size=5&next=undefined").unwrap();
+        assert_eq!(q_undef.size, 5);
+        assert_eq!(q_undef.next, None);
+    }
+
+    #[tokio::test]
+    async fn test_query_extractor() {
+        let req = Request::builder().uri("/blocks").body(()).unwrap();
+        let (mut parts, _) = req.into_parts();
+        let Query(q) = Query::<PaginationQuery>::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        assert_eq!(q.size, 30);
+        assert_eq!(q.next, None);
+
+        let req = Request::builder()
+            .uri("/blocks?size=15&next=100")
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+        let Query(q) = Query::<PaginationQuery>::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        assert_eq!(q.size, 15);
+        assert_eq!(q.next, Some("100".to_string()));
+
+        let req = Request::builder()
+            .uri("/blocks?size=notanumber")
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+        let res = Query::<PaginationQuery>::from_request_parts(&mut parts, &()).await;
+        assert!(res.is_err());
+    }
+}
