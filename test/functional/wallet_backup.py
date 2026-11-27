@@ -34,6 +34,7 @@ from decimal import Decimal
 import os
 from random import randint
 import shutil
+import time
 
 from test_framework.test_framework import DefiTestFramework
 from test_framework.test_node import TestNode
@@ -61,6 +62,12 @@ class WalletBackupTest(DefiTestFramework):
         connect_nodes(self.nodes[1], 3)
         connect_nodes(self.nodes[2], 3)
         connect_nodes(self.nodes[2], 0)
+        # Start mocktime in the past so that initial block generation
+        # (103 blocks) stays behind wall-clock time; unfreezing via
+        # set_node_times(self.nodes, 0) in do_one_round() then moves
+        # clocks monotonically forward instead of backwards.
+        TestNode.Mocktime = int(time.time()) - 600
+        set_node_times(self.nodes, TestNode.Mocktime)
 
     def one_send(self, from_node, to_address):
         if randint(1, 2) == 1:
@@ -80,11 +87,10 @@ class WalletBackupTest(DefiTestFramework):
         self.one_send(2, a1)
 
         # Have the miner (node3) mine a block.
-        # Must sync mempools before mining.
-        print("bef mempool", TestNode.Mocktime)
+        # Must sync mempools before mining. Unfreeze mocktime so P2P
+        # tx-relay timers (nNextInvSend / mapAskFor) advance normally.
         set_node_times(self.nodes, 0)
         self.sync_mempools()
-        print(TestNode.Mocktime)
         self.nodes[3].generate(1)
         self.sync_blocks()
 
