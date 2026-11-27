@@ -121,6 +121,7 @@ BASE_SCRIPTS = [
     "wallet_importdescriptors.py",
     "wallet_signer.py",
     "mempool_limit.py",
+    "mempool_rules_eviction.py",
     "rpc_txoutproof.py",
     "wallet_listreceivedby.py",
     "wallet_abandonconflict.py",
