@@ -29,6 +29,7 @@
 #include <inttypes.h>
 #include <mutex>
 
+#include <compat.h>
 #include <spv/support/BRAddress.h>
 #include <spv/support/BRInt.h>
 #include <spv/bitcoin/BRTransaction.h>
@@ -245,6 +246,10 @@ inline static int BRPeerEq(const void *peer, const void *otherPeer)
             (UInt128Eq(((const BRPeer *)peer)->address, ((const BRPeer *)otherPeer)->address) &&
              ((const BRPeer *)peer)->port == ((const BRPeer *)otherPeer)->port));
 }
+
+// waits for a non-blocking socket to become writable (or error) within timeout seconds;
+// returns >0 when ready, 0 on timeout, or <0 on error
+int BRPeerWaitSocketWritable(SOCKET sock, double timeout);
 
 // frees memory allocated for peer
 void BRPeerFree(BRPeer *peer);

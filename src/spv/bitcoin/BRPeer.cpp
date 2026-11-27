@@ -29,9 +29,14 @@
 #include <float.h>
 #include <inttypes.h>
 #include <string.h>
+#include <chrono>
+#include <limits>
 #include <thread>
 #include <compat.h>
 #include <sys/time.h>
+#ifndef WIN32
+#include <poll.h>
+#endif
 
 #include <spv/support/BRAddress.h>
 #include <spv/support/BRArray.h>
@@ -847,12 +852,52 @@ static double _peerGetMempoolTime (BRPeerContext *ctx) {
     return value;
 }
 
+int BRPeerWaitSocketWritable(SOCKET sock, double timeout)
+{
+#ifdef WIN32
+    struct timeval tv;
+    double clamped = timeout > 0.0 ? timeout : 0.0;
+    tv.tv_sec = static_cast<long>(clamped);
+    tv.tv_usec = static_cast<long>((clamped - static_cast<double>(tv.tv_sec)) * 1000000.0);
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(sock, &fds);
+    return select(static_cast<int>(sock) + 1, NULL, &fds, NULL, &tv);
+#else
+    int remaining_ms = 0;
+    if (timeout > 0.0) {
+        double ms = timeout * 1000.0;
+        const double max_ms = static_cast<double>(std::numeric_limits<int>::max());
+        remaining_ms = ms >= max_ms ? std::numeric_limits<int>::max() : static_cast<int>(ms);
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(remaining_ms);
+    for (;;) {
+        struct pollfd pfd;
+        pfd.fd = sock;
+        pfd.events = POLLOUT;
+        pfd.revents = 0;
+
+        int ret = poll(&pfd, 1, remaining_ms);
+        if (ret < 0 && errno == EINTR) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) return 0;
+            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+            remaining_ms = left > std::numeric_limits<int>::max()
+                               ? std::numeric_limits<int>::max()
+                               : static_cast<int>(left);
+            continue;
+        }
+        return ret;
+    }
+#endif
+}
+
 static int _BRPeerOpenSocket(BRPeer *peer, int domain, double timeout, int *error)
 {
     BRPeerContext *ctx = (BRPeerContext *)peer;
     struct sockaddr_storage addr;
     struct timeval tv;
-    fd_set fds;
     socklen_t addrLen, optLen;
     int count, arg = 0, err = 0, on = 1, r = 1;
     SOCKET sock = INVALID_SOCKET;
@@ -925,11 +970,7 @@ static int _BRPeerOpenSocket(BRPeer *peer, int domain, double timeout, int *erro
 #endif
             err = 0;
             optLen = sizeof(err);
-            tv.tv_sec = timeout;
-            tv.tv_usec = (long)(timeout*1000000) % 1000000;
-            FD_ZERO(&fds);
-            FD_SET(sock, &fds);
-            count = select(sock + 1, NULL, &fds, NULL, &tv);
+            count = BRPeerWaitSocketWritable(sock, timeout);
 
             if (count <= 0 || getsockopt(sock, SOL_SOCKET, SO_ERROR, (sockopt_arg_type)&err, &optLen) == SOCKET_ERROR || err) {
                 if (count == 0) err = ETIMEDOUT;
