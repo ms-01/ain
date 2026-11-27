@@ -412,6 +412,7 @@ BASE_SCRIPTS = [
     "feature_balance_overflow_reorg.py",
     "feature_balance_overflow_rpc.py",
     "feature_dfi_rpc_boundaries.py",
+    "feature_dfi_customtx_reorg.py",
     "feature_mn_version_gate.py",
     "feature_accounts_validation.py",
     "feature_listaccounts_pagination.py",
