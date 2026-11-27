@@ -349,3 +349,251 @@ impl From<anyhow::Error> for DBError {
         DBError::Custom(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDbDir {
+        path: PathBuf,
+    }
+
+    impl TempDbDir {
+        fn new(prefix: &str) -> Self {
+            let id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "ain_db_unit_{prefix}_{}_{}",
+                std::process::id(),
+                id
+            ));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).expect("failed to create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &PathBuf {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDbDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    struct ItemsCol;
+    impl ColumnName for ItemsCol {
+        const NAME: &'static str = "items";
+    }
+    impl Column for ItemsCol {
+        type Index = u32;
+    }
+    impl TypedColumn for ItemsCol {
+        type Type = TestValue;
+    }
+
+    struct MissingCol;
+    impl ColumnName for MissingCol {
+        const NAME: &'static str = "does_not_exist";
+    }
+    impl Column for MissingCol {
+        type Index = u32;
+    }
+    impl TypedColumn for MissingCol {
+        type Type = TestValue;
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TestValue {
+        label: String,
+        amount: u64,
+    }
+
+    fn open_test_db(dir: &TempDbDir) -> Arc<Rocks> {
+        Arc::new(
+            Rocks::open(dir.path(), vec![(ItemsCol::NAME, None)], None)
+                .expect("failed to open RocksDB"),
+        )
+    }
+
+    #[test]
+    fn open_default_and_custom_options_and_destroy() {
+        let dir = TempDbDir::new("open_destroy");
+        {
+            let db = open_test_db(&dir);
+            assert!(db.cf_handle(ItemsCol::NAME).is_ok());
+            assert!(matches!(
+                db.cf_handle("unknown_cf"),
+                Err(DBError::Custom(_))
+            ));
+        }
+
+        // Reopen with explicit DB and CF options
+        let mut custom_opts = Options::default();
+        custom_opts.create_if_missing(true);
+        custom_opts.create_missing_column_families(true);
+        {
+            let db = Rocks::open(
+                dir.path(),
+                vec![(ItemsCol::NAME, Some(Options::default()))],
+                Some(custom_opts),
+            )
+            .expect("failed to reopen with custom options");
+            assert!(db.cf_handle(ItemsCol::NAME).is_ok());
+        }
+
+        Rocks::destroy(dir.path()).expect("destroy should succeed");
+    }
+
+    #[test]
+    fn raw_cf_crud_and_ledger_column_bytes() {
+        let dir = TempDbDir::new("raw_crud");
+        let db = open_test_db(&dir);
+        let cf = db.cf_handle(ItemsCol::NAME).unwrap();
+
+        assert_eq!(db.get_cf(cf, b"k1").unwrap(), None);
+        db.put_cf(cf, b"k1", b"v1").unwrap();
+        assert_eq!(db.get_cf(cf, b"k1").unwrap(), Some(b"v1".to_vec()));
+        db.delete_cf(cf, b"k1").unwrap();
+        assert_eq!(db.get_cf(cf, b"k1").unwrap(), None);
+
+        let col = LedgerColumn::<ItemsCol> {
+            backend: Arc::clone(&db),
+            column: PhantomData,
+        };
+        assert_eq!(col.get_bytes(&7).unwrap(), None);
+        col.put_bytes(&7, b"raw-bytes").unwrap();
+        assert_eq!(col.get_bytes(&7).unwrap(), Some(b"raw-bytes".to_vec()));
+    }
+
+    #[test]
+    fn typed_column_crud_corrupt_decode_and_missing_cf() {
+        let dir = TempDbDir::new("typed_crud");
+        let db = open_test_db(&dir);
+        let col = LedgerColumn::<ItemsCol> {
+            backend: Arc::clone(&db),
+            column: PhantomData,
+        };
+
+        let v1 = TestValue {
+            label: "alpha".to_string(),
+            amount: 42,
+        };
+        let v2 = TestValue {
+            label: "beta".to_string(),
+            amount: 99,
+        };
+
+        assert_eq!(col.get(&1).unwrap(), None);
+        col.put(&1, &v1).unwrap();
+        assert_eq!(col.get(&1).unwrap(), Some(v1));
+
+        // Overwrite existing key
+        col.put(&1, &v2).unwrap();
+        assert_eq!(col.get(&1).unwrap(), Some(v2));
+
+        // Delete existing and non-existing keys
+        col.delete(&1).unwrap();
+        assert_eq!(col.get(&1).unwrap(), None);
+        col.delete(&999).unwrap();
+
+        // Corrupt bytes trigger Bincode error on typed get
+        col.put_bytes(&2, &[0xff, 0xff]).unwrap();
+        assert!(matches!(col.get(&2), Err(DBError::Bincode(_))));
+
+        // Corrupt raw key triggers Bincode error on Column::get_key
+        assert!(matches!(
+            ItemsCol::get_key(vec![0x01].into_boxed_slice()),
+            Err(DBError::Bincode(_))
+        ));
+
+        // Unopened column family returns Custom error
+        let missing = LedgerColumn::<MissingCol> {
+            backend: Arc::clone(&db),
+            column: PhantomData,
+        };
+        assert!(matches!(missing.handle(), Err(DBError::Custom(_))));
+        assert!(matches!(missing.get(&1), Err(DBError::Custom(_))));
+    }
+
+    #[test]
+    fn flush_compact_dump_table_sizes_and_hash_db_state() {
+        let dir = TempDbDir::new("maintenance");
+        let db = open_test_db(&dir);
+        let col = LedgerColumn::<ItemsCol> {
+            backend: Arc::clone(&db),
+            column: PhantomData,
+        };
+
+        // Empty DB table stats and hash
+        db.dump_table_sizes(&[ItemsCol::NAME, "nonexistent_cf"])
+            .unwrap();
+        let empty_hash = db.hash_db_state(&[ItemsCol::NAME]).unwrap();
+        assert_eq!(empty_hash.len(), 64);
+
+        // Unknown CF in hash_db_state returns error
+        assert!(matches!(
+            db.hash_db_state(&["nonexistent_cf"]),
+            Err(DBError::Custom(_))
+        ));
+
+        for i in 0..10u32 {
+            col.put(
+                &i,
+                &TestValue {
+                    label: format!("item-{i}"),
+                    amount: u64::from(i) * 10,
+                },
+            )
+            .unwrap();
+        }
+
+        db.flush().unwrap();
+        db.compact();
+        db.dump_table_sizes(&[ItemsCol::NAME]).unwrap();
+
+        let populated_hash = db.hash_db_state(&[ItemsCol::NAME]).unwrap();
+        assert_eq!(populated_hash.len(), 64);
+        assert_ne!(empty_hash, populated_hash);
+
+        // Deterministic hash on repeated calls
+        assert_eq!(
+            populated_hash,
+            db.hash_db_state(&[ItemsCol::NAME]).unwrap()
+        );
+    }
+
+    #[test]
+    fn db_error_display_and_conversions() {
+        let bincode_err: DBError = bincode::deserialize::<u64>(&[0x01]).unwrap_err().into();
+        assert!(bincode_err.to_string().contains("Bincode Error:"));
+
+        let custom_err: DBError = format_err!("boom").into();
+        assert!(custom_err.to_string().contains("Custom Error: boom"));
+
+        assert_eq!(DBError::ParseKey.to_string(), "Error parsing key");
+        assert_eq!(DBError::WrongKeyLength.to_string(), "Wrong key length");
+        assert!(DBError::UnsupportedVersion
+            .to_string()
+            .contains("DB version higher than expected"));
+
+        // Trigger a real RocksDB error by opening a non-existent DB with create_if_missing(false)
+        let dir = TempDbDir::new("rocks_err");
+        let missing_path = dir.path().join("does_not_exist");
+        let mut opts = Options::default();
+        opts.create_if_missing(false);
+        let rocks_err = Rocks::open(&missing_path, vec![], Some(opts)).unwrap_err();
+        assert!(rocks_err.to_string().contains("RocksDB Error:"));
+        let _: &dyn Error = &rocks_err;
+    }
+}
