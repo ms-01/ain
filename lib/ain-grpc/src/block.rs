@@ -329,6 +329,128 @@ mod tests {
         assert_eq!(match_block_number(bn_tag_finalized).unwrap(), 999);
         assert_eq!(match_block_number(bn_tag_pending).unwrap(), 1001);
     }
+
+    #[test]
+    fn block_number_convert_to_min_and_serialize_and_from_str() {
+        assert_eq!(BlockNumber::Num(7).convert_to_min_block_num(), Some(7));
+        assert_eq!(BlockNumber::Earliest.convert_to_min_block_num(), Some(0));
+        assert_eq!(BlockNumber::Latest.convert_to_min_block_num(), None);
+        assert_eq!(BlockNumber::Pending.convert_to_min_block_num(), None);
+        assert_eq!(BlockNumber::Safe.convert_to_min_block_num(), None);
+        assert_eq!(BlockNumber::Finalized.convert_to_min_block_num(), None);
+        let hash = H256::from_low_u64_be(0xaa);
+        assert_eq!(
+            BlockNumber::Hash {
+                hash,
+                require_canonical: true,
+            }
+            .convert_to_min_block_num(),
+            None
+        );
+
+        assert_eq!(serde_json::to_string(&BlockNumber::Num(0x1a)).unwrap(), r#""0x1a""#);
+        assert_eq!(serde_json::to_string(&BlockNumber::Latest).unwrap(), r#""latest""#);
+        assert_eq!(serde_json::to_string(&BlockNumber::Earliest).unwrap(), r#""earliest""#);
+        assert_eq!(serde_json::to_string(&BlockNumber::Pending).unwrap(), r#""pending""#);
+        assert_eq!(serde_json::to_string(&BlockNumber::Safe).unwrap(), r#""safe""#);
+        assert_eq!(serde_json::to_string(&BlockNumber::Finalized).unwrap(), r#""finalized""#);
+        let hash_ser = serde_json::to_string(&BlockNumber::Hash {
+            hash,
+            require_canonical: true,
+        })
+        .unwrap();
+        assert!(hash_ser.contains("requireCanonical"));
+
+        assert_eq!(BlockNumber::from_str("latest").unwrap(), BlockNumber::Latest);
+        assert_eq!(BlockNumber::from_str("0x10").unwrap(), BlockNumber::Num(16));
+        assert_eq!(BlockNumber::from_str("42").unwrap(), BlockNumber::Num(42));
+        assert!(BlockNumber::from_str("not_a_tag").is_err());
+        assert!(BlockNumber::from_str("0xzzzz").is_err());
+    }
+
+    #[test]
+    fn block_number_deserialize_map_and_invalid_inputs() {
+        let from_num: BlockNumber = serde_json::from_str(r#"{"blockNumber":"0x10"}"#).unwrap();
+        assert_eq!(from_num, BlockNumber::Num(16));
+
+        let hash = H256::from_low_u64_be(0x1234);
+        let from_hash: BlockNumber = serde_json::from_str(&format!(
+            r#"{{"blockHash":"{hash:#x}","requireCanonical":true}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            from_hash,
+            BlockNumber::Hash {
+                hash,
+                require_canonical: true,
+            }
+        );
+
+        // Invalid map inputs
+        assert!(serde_json::from_str::<BlockNumber>(r#"{"blockNumber":"16"}"#).is_err());
+        assert!(serde_json::from_str::<BlockNumber>(r#"{"blockNumber":"0xzz"}"#).is_err());
+        assert!(serde_json::from_str::<BlockNumber>(r#"{"unknownKey":"0x1"}"#).is_err());
+        assert!(serde_json::from_str::<BlockNumber>(r#"{}"#).is_err());
+
+        // Invalid primitive types
+        assert!(serde_json::from_str::<BlockNumber>(r#"true"#).is_err());
+        assert!(serde_json::from_str::<BlockNumber>(r#"[]"#).is_err());
+        assert!(serde_json::from_str::<BlockNumber>(r#""invalid_tag""#).is_err());
+    }
+
+    #[test]
+    fn rpc_block_header_block_transactions_and_fee_history_conversions() {
+        let partial = ethereum::PartialHeader {
+            parent_hash: H256::from_low_u64_be(1),
+            beneficiary: H160::from_low_u64_be(2),
+            state_root: H256::from_low_u64_be(3),
+            receipts_root: H256::from_low_u64_be(4),
+            logs_bloom: Default::default(),
+            difficulty: U256::from(5),
+            number: U256::from(10),
+            gas_limit: U256::from(30_000_000),
+            gas_used: U256::from(21_000),
+            timestamp: 1_700_000_000,
+            extra_data: vec![0xab],
+            mix_hash: H256::from_low_u64_be(6),
+            nonce: H64::from_low_u64_be(7),
+            base_fee: U256::from(1_000_000_000),
+        };
+        let block = ethereum::Block::new(partial, Vec::new(), Vec::new());
+
+        let rpc_block_hashes = RpcBlock::from_block_with_tx(block.clone(), false);
+        assert_eq!(rpc_block_hashes.header.number, U256::from(10));
+        assert_eq!(rpc_block_hashes.header.author, H160::from_low_u64_be(2));
+        assert_eq!(rpc_block_hashes.header.miner, H160::from_low_u64_be(2));
+        assert_eq!(rpc_block_hashes.header.seal_fields.len(), 2);
+        assert_eq!(rpc_block_hashes.transactions, BlockTransactions::Hashes(vec![]));
+
+        let rpc_block_full = RpcBlock::from_block_with_tx(block, true);
+        assert_eq!(rpc_block_full.transactions, BlockTransactions::Full(vec![]));
+
+        // BlockTransactions serialization
+        assert_eq!(
+            serde_json::to_string(&BlockTransactions::None).unwrap(),
+            "[]"
+        );
+        assert_eq!(
+            serde_json::to_string(&BlockTransactions::Hashes(vec![H256::zero()])).unwrap(),
+            format!(r#"["{:#x}"]"#, H256::zero())
+        );
+
+        // RpcFeeHistory conversion
+        let fee_history = FeeHistoryData {
+            oldest_block: U256::from(5),
+            base_fee_per_gas: vec![U256::from(100)],
+            gas_used_ratio: vec![0.5],
+            reward: Some(vec![vec![U256::from(10)]]),
+        };
+        let rpc_fh = RpcFeeHistory::from(fee_history);
+        assert_eq!(rpc_fh.oldest_block, U256::from(5));
+        assert_eq!(rpc_fh.base_fee_per_gas, vec![U256::from(100)]);
+        assert_eq!(rpc_fh.gas_used_ratio, vec![0.5]);
+        assert!(rpc_fh.reward.is_some());
+    }
 }
 
 /// Block Transactions

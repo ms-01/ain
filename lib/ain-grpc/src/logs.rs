@@ -244,4 +244,45 @@ mod filter_topics_tests {
             vec![vec![t(1)], vec![], vec![t(3)]]
         );
     }
+
+    #[test]
+    fn get_logs_request_handles_address_variants_and_rejects_unknown_fields() {
+        let single: GetLogsRequest = serde_json::from_value(json!({
+            "address": "0x0000000000000000000000000000000000000011",
+            "blockHash": "0x00000000000000000000000000000000000000000000000000000000000000bb"
+        }))
+        .unwrap();
+        assert_eq!(single.address.unwrap().len(), 1);
+        assert!(single.block_hash.is_some());
+
+        let multi: GetLogsRequest = serde_json::from_value(json!({
+            "address": [
+                "0x0000000000000000000000000000000000000011",
+                "0x0000000000000000000000000000000000000022"
+            ],
+            "fromBlock": "0x1",
+            "toBlock": "latest"
+        }))
+        .unwrap();
+        assert_eq!(multi.address.unwrap().len(), 2);
+
+        // Unknown field rejected by deny_unknown_fields
+        assert!(serde_json::from_value::<GetLogsRequest>(json!({ "badField": 123 })).is_err());
+
+        // Malformed address rejected
+        assert!(serde_json::from_value::<GetLogsRequest>(json!({ "address": "not-an-address" })).is_err());
+
+        // Empty and multi-OR nested topics
+        let empty = LogRequestTopics::VecOfHashes(vec![]);
+        assert!(empty.into_filter_topics().is_empty());
+
+        let multi_or = LogRequestTopics::VecOfHashVecs(vec![
+            vec![Some(t(1)), Some(t(2))],
+            vec![Some(t(3))],
+        ]);
+        assert_eq!(
+            multi_or.into_filter_topics(),
+            vec![vec![t(1), t(2)], vec![t(3)]]
+        );
+    }
 }

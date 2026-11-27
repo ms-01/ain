@@ -427,4 +427,51 @@ mod tests {
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].nonce(), U256::zero());
     }
+
+    #[test]
+    fn resolved_block_accessors_and_committed_block_helper() {
+        let block = committed_block(10);
+        let resolved = super::committed_block(Some(block.clone())).unwrap();
+        assert!(!resolved.is_pending());
+        assert!(resolved.pending().is_none());
+        assert_eq!(resolved.committed().header.number, U256::from(10));
+
+        assert!(super::committed_block(None).is_err());
+
+        let pending_block = build_pending_block(&block, &[]);
+        let resolved_pending = ResolvedBlock::Pending {
+            block: Box::new(pending_block.clone()),
+            committed: Box::new(block.clone()),
+        };
+        assert!(resolved_pending.is_pending());
+        assert_eq!(
+            resolved_pending.pending().unwrap().header.number,
+            U256::from(11)
+        );
+        assert_eq!(resolved_pending.committed().header.number, U256::from(10));
+    }
+
+    #[test]
+    fn pool_transactions_are_sorted_by_sender_and_nonce() {
+        let entries = vec![
+            PoolEntry {
+                tx_type: POOL_TX_TYPE_EVM,
+                data: signed_tx_hex(2),
+            },
+            PoolEntry {
+                tx_type: POOL_TX_TYPE_EVM,
+                data: signed_tx_hex(0),
+            },
+            PoolEntry {
+                tx_type: POOL_TX_TYPE_EVM,
+                data: signed_tx_hex(1),
+            },
+        ];
+
+        let transactions = decode_pool_transactions(&entries);
+        assert_eq!(transactions.len(), 3);
+        assert_eq!(transactions[0].nonce(), U256::from(0));
+        assert_eq!(transactions[1].nonce(), U256::from(1));
+        assert_eq!(transactions[2].nonce(), U256::from(2));
+    }
 }

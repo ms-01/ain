@@ -189,3 +189,214 @@ impl From<AccessListInfo> for AccessListResult {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use ain_evm::{bytes::Bytes, trace::service::AccessListInfo};
+    use ethereum::AccessListItem;
+    use ethereum_types::{H160, H256, U256};
+    use serde_json::json;
+
+    use super::{override_to_overlay, AccessListResult, CallRequest, CallStateOverride};
+
+    #[test]
+    fn call_request_deserializes_camel_case_and_rejects_unknown_fields() {
+        let req: CallRequest = serde_json::from_value(json!({
+            "from": "0x0000000000000000000000000000000000000001",
+            "to": "0x0000000000000000000000000000000000000002",
+            "gasPrice": "0x10",
+            "gas": "0x5208",
+            "value": "0x1",
+            "data": "0xdeadbeef",
+            "type": "0x0"
+        }))
+        .unwrap();
+        assert_eq!(req.from, Some(H160::from_low_u64_be(1)));
+        assert_eq!(req.to, Some(H160::from_low_u64_be(2)));
+        assert_eq!(req.gas_price, Some(U256::from(0x10)));
+        assert_eq!(req.transaction_type, Some(U256::zero()));
+
+        let err = serde_json::from_value::<CallRequest>(json!({ "unknownField": "0x1" }));
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn effective_gas_price_handles_legacy_eip2930_eip1559_and_errors() {
+        // Default legacy with no gas price
+        let req = CallRequest::default();
+        assert_eq!(req.get_effective_gas_price().unwrap(), None);
+
+        // Legacy with zero gas price normalizes to None
+        let req = CallRequest {
+            gas_price: Some(U256::zero()),
+            ..Default::default()
+        };
+        assert_eq!(req.get_effective_gas_price().unwrap(), None);
+
+        // Legacy with non-zero gas price
+        let req = CallRequest {
+            gas_price: Some(U256::from(42)),
+            ..Default::default()
+        };
+        assert_eq!(req.get_effective_gas_price().unwrap(), Some(U256::from(42)));
+
+        // EIP-2930 inferred from access_list
+        let req = CallRequest {
+            gas_price: Some(U256::from(100)),
+            access_list: Some(vec![]),
+            ..Default::default()
+        };
+        assert_eq!(
+            req.get_effective_gas_price().unwrap(),
+            Some(U256::from(100))
+        );
+
+        // EIP-1559 inferred from max_fee + max_priority_fee
+        let req = CallRequest {
+            max_fee_per_gas: Some(U256::from(200)),
+            max_priority_fee_per_gas: Some(U256::from(10)),
+            ..Default::default()
+        };
+        assert_eq!(
+            req.get_effective_gas_price().unwrap(),
+            Some(U256::from(200))
+        );
+
+        // EIP-1559 with zero max_fee normalizes to None
+        let req = CallRequest {
+            max_fee_per_gas: Some(U256::zero()),
+            max_priority_fee_per_gas: Some(U256::zero()),
+            ..Default::default()
+        };
+        assert_eq!(req.get_effective_gas_price().unwrap(), None);
+
+        // Explicit transaction types 0, 1, 2
+        for tx_type in [0u64, 1, 2] {
+            let req = CallRequest {
+                transaction_type: Some(U256::from(tx_type)),
+                gas_price: Some(U256::from(5)),
+                max_fee_per_gas: Some(U256::from(9)),
+                ..Default::default()
+            };
+            let expected = if tx_type == 2 { 9 } else { 5 };
+            assert_eq!(
+                req.get_effective_gas_price().unwrap(),
+                Some(U256::from(expected))
+            );
+        }
+
+        // Invalid explicit transaction type
+        let req = CallRequest {
+            transaction_type: Some(U256::from(99)),
+            ..Default::default()
+        };
+        assert!(req
+            .get_effective_gas_price()
+            .unwrap_err()
+            .message()
+            .contains("invalid transaction type"));
+
+        // Conflicting gas_price and max_fee_per_gas
+        let req = CallRequest {
+            gas_price: Some(U256::from(1)),
+            max_fee_per_gas: Some(U256::from(2)),
+            ..Default::default()
+        };
+        assert!(req
+            .get_effective_gas_price()
+            .unwrap_err()
+            .message()
+            .contains("both gasPrice and"));
+
+        // Conflicting gas_price and max_priority_fee_per_gas
+        let req = CallRequest {
+            gas_price: Some(U256::from(1)),
+            max_priority_fee_per_gas: Some(U256::from(2)),
+            ..Default::default()
+        };
+        assert!(req.get_effective_gas_price().is_err());
+
+        // max_fee_per_gas without max_priority_fee_per_gas
+        let req = CallRequest {
+            max_fee_per_gas: Some(U256::from(2)),
+            ..Default::default()
+        };
+        assert!(req.get_effective_gas_price().is_err());
+    }
+
+    #[test]
+    fn get_data_handles_data_input_default_and_conflict() {
+        let empty = CallRequest::default();
+        assert_eq!(empty.get_data().unwrap(), Bytes::default());
+
+        let with_data = CallRequest {
+            data: Some(Bytes::from(vec![0xaa, 0xbb])),
+            ..Default::default()
+        };
+        assert_eq!(with_data.get_data().unwrap(), Bytes::from(vec![0xaa, 0xbb]));
+
+        let with_input = CallRequest {
+            input: Some(Bytes::from(vec![0xcc])),
+            ..Default::default()
+        };
+        assert_eq!(with_input.get_data().unwrap(), Bytes::from(vec![0xcc]));
+
+        let conflict = CallRequest {
+            data: Some(Bytes::from(vec![0xaa])),
+            input: Some(Bytes::from(vec![0xbb])),
+            ..Default::default()
+        };
+        assert!(conflict
+            .get_data()
+            .unwrap_err()
+            .message()
+            .contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn override_to_overlay_applies_accounts_code_state_and_diff() {
+        let addr1 = H160::from_low_u64_be(0x11);
+        let addr2 = H160::from_low_u64_be(0x22);
+        let slot1 = H256::from_low_u64_be(1);
+        let slot2 = H256::from_low_u64_be(2);
+
+        let mut state = BTreeMap::new();
+        state.insert(slot1, H256::from_low_u64_be(10));
+
+        let mut diff = BTreeMap::new();
+        diff.insert(slot1, H256::from_low_u64_be(20));
+        diff.insert(slot2, H256::from_low_u64_be(30));
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            addr1,
+            CallStateOverride {
+                balance: Some(U256::from(1000)),
+                nonce: Some(U256::from(5)),
+                code: Some(Bytes::from(vec![0x60, 0x00])),
+                state: Some(state),
+                state_diff: Some(diff),
+            },
+        );
+        overrides.insert(addr2, CallStateOverride::default());
+
+        let _overlay = override_to_overlay(overrides);
+    }
+
+    #[test]
+    fn access_list_result_converts_from_info() {
+        let item = AccessListItem {
+            address: H160::from_low_u64_be(0x42),
+            storage_keys: vec![H256::from_low_u64_be(7)],
+        };
+        let info = AccessListInfo {
+            access_list: vec![item.clone()],
+            gas_used: U256::from(25_000),
+        };
+        let result = AccessListResult::from(info);
+        assert_eq!(result.access_list, vec![item]);
+        assert_eq!(result.gas_used, U256::from(25_000));
+    }
+}

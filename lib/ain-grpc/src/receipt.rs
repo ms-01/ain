@@ -219,4 +219,31 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn receipt_result_handles_eip2930_and_eip1559_receipts() {
+        let mut r2930 = make_receipt(1, 30_000, vec![]);
+        r2930.tx_type = 1;
+        r2930.receipt = ReceiptV3::EIP2930(EIP658ReceiptData {
+            status_code: 1,
+            used_gas: U256::from(30_000),
+            logs_bloom: Bloom::default(),
+            logs: vec![],
+        });
+        let res2930 = ReceiptResult::from(r2930);
+        assert_eq!(res2930.r#type, "0x1");
+        assert_eq!(res2930.gas_used, U256::from(30_000));
+
+        let mut r1559 = make_receipt(0, 40_000, vec![]);
+        r1559.tx_type = 2;
+        r1559.receipt = ReceiptV3::EIP1559(EIP658ReceiptData {
+            status_code: 0,
+            used_gas: U256::from(40_000),
+            logs_bloom: Bloom::default(),
+            logs: vec![],
+        });
+        let res1559 = ReceiptResult::from(r1559);
+        assert_eq!(res1559.r#type, "0x2");
+        assert_eq!(res1559.status, "0x0");
+    }
 }
