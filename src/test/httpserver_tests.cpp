@@ -4,12 +4,15 @@
 
 #include <httpserver.h>
 #include <netaddress.h>
+#include <util/threadpool.h>
 #include <util/url.h>
 
 #include <test/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
 
+#include <chrono>
+#include <future>
 #include <string>
 
 BOOST_FIXTURE_TEST_SUITE(httpserver_tests, BasicTestingSetup)
@@ -182,6 +185,42 @@ BOOST_AUTO_TEST_CASE(url_encoding)
     BOOST_CHECK_EQUAL(urlEncode("hello world"), "hello%20world");
     BOOST_CHECK_EQUAL(urlEncode("a/b"), "a%2Fb");
     BOOST_CHECK_EQUAL(urlEncode("a-b_c.d~e"), "a-b_c.d~e");
+}
+
+BOOST_AUTO_TEST_CASE(threadpool_concurrent_execution_and_interrupt)
+{
+    ThreadPool pool("test", /*max_queue_depth=*/16);
+    pool.Start(2);
+
+    std::promise<void> first_started;
+    std::promise<void> release_first;
+    std::shared_future<void> release_future = release_first.get_future().share();
+    std::promise<void> second_done;
+
+    // Submit a long-running task that blocks until released.
+    BOOST_REQUIRE(pool.Submit([&]() {
+        first_started.set_value();
+        release_future.wait();
+    }));
+
+    // Wait until the first worker is actively executing the blocking task.
+    BOOST_REQUIRE(first_started.get_future().wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+
+    // Submitting and executing a second task must not block on the first worker's mutex.
+    BOOST_REQUIRE(pool.Submit([&]() {
+        second_done.set_value();
+    }));
+    BOOST_REQUIRE(second_done.get_future().wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+
+    // Interrupt() must not deadlock while a worker is executing a blocking task.
+    pool.Interrupt();
+    BOOST_CHECK(!pool.Submit([]() {}));
+
+    // Unblock the first task and stop the pool cleanly.
+    release_first.set_value();
+    pool.Stop();
+    BOOST_CHECK_EQUAL(pool.WorkersCount(), 0U);
+    BOOST_CHECK_EQUAL(pool.WorkQueueSize(), 0U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
