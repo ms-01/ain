@@ -58,10 +58,10 @@ private:
     void WorkerThread()
     {
         util::ThreadRename(strprintf("%s.worker", m_name));
-        WAIT_LOCK(m_mutex, wait_lock);
         for (;;) {
             std::function<void()> task;
             {
+                WAIT_LOCK(m_mutex, wait_lock);
                 // Wait only if needed; avoid sleeping when a new task was submitted while we were processing another one.
                 if (!m_interrupt && m_work_queue.empty()) {
                     // Block until the pool is interrupted or a task is available.
