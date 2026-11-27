@@ -47,6 +47,8 @@ FUZZ_SUITE = \
 FUZZ_TARGET_SOURCES = \
   test/fuzz/addrv2_deserialize.cpp \
   test/fuzz/deserialize.cpp \
+  test/fuzz/dfi_customtx_deserialize.cpp \
+  test/fuzz/dfi_rpc_p2p_parse.cpp \
   test/fuzz/netaddr_str.cpp \
   test/fuzz/p2p_message_parsing.cpp \
   test/fuzz/partially_downloaded_block.cpp \
