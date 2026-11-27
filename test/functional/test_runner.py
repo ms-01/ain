@@ -26,6 +26,11 @@ import tempfile
 import re
 import logging
 from test_framework.test_framework import get_default_config_path
+from test_framework.util import (
+    PORT_SEED_MODULUS,
+    is_port_available,
+    ports_for_portseed,
+)
 
 # Formatting. Default colors to empty strings.
 BOLD, GREEN, RED, GREY = ("", ""), ("", ""), ("", ""), ("", "")
@@ -450,6 +455,20 @@ NON_SCRIPTS = [
 NON_SCRIPTS = NON_SCRIPTS + EXPLICIT_IGNORES
 
 
+def _parse_portseed_offset(value):
+    try:
+        offset = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "portseed offset must be a non-negative integer, got {!r}".format(value)
+        ) from exc
+    if offset < 0:
+        raise argparse.ArgumentTypeError(
+            "portseed offset must be a non-negative integer, got {}".format(offset)
+        )
+    return offset
+
+
 def main():
     # Parse arguments and pass through unrecognised args
     parser = argparse.ArgumentParser(
@@ -527,6 +546,17 @@ def main():
         help="stop execution after the first test failure",
     )
     parser.add_argument("--filter", help="filter scripts to run by regular expression")
+    default_portseed_offset_raw = os.getenv("PORTSEED_OFFSET", "0") or "0"
+    try:
+        default_portseed_offset = _parse_portseed_offset(default_portseed_offset_raw)
+    except argparse.ArgumentTypeError as exc:
+        parser.error("Invalid PORTSEED_OFFSET: {}".format(exc))
+    parser.add_argument(
+        "--portseed-offset",
+        type=_parse_portseed_offset,
+        default=default_portseed_offset,
+        help="Offset added to assigned portseeds (default: PORTSEED_OFFSET env var or 0)",
+    )
 
     args, unknown_args = parser.parse_known_args()
     if not args.ansi:
@@ -665,6 +695,7 @@ def main():
         failfast=args.failfast,
         runs_ci=args.ci,
         use_term_control=args.ansi,
+        portseed_offset=args.portseed_offset,
     )
 
 
@@ -680,7 +711,8 @@ def run_tests(
     combined_logs_len=0,
     failfast=False,
     runs_ci,
-    use_term_control
+    use_term_control,
+    portseed_offset=0
 ):
     args = args or []
 
@@ -734,6 +766,7 @@ def run_tests(
         flags=flags,
         timeout_duration=40 * 60 if runs_ci else float("inf"),  # in seconds
         use_term_control=use_term_control,
+        portseed_offset=portseed_offset,
     )
     start_time = time.time()
     test_results = []
@@ -853,9 +886,12 @@ class TestHandler:
         test_list,
         flags,
         timeout_duration,
-        use_term_control
+        use_term_control,
+        portseed_offset=0
     ):
         assert num_tests_parallel >= 1
+        if portseed_offset < 0:
+            raise ValueError("portseed_offset must be non-negative")
         self.num_jobs = num_tests_parallel
         self.tests_dir = tests_dir
         self.tmpdir = tmpdir
@@ -865,13 +901,31 @@ class TestHandler:
         self.num_running = 0
         self.jobs = []
         self.use_term_control = use_term_control
+        self.active_ports = set()
+        self._next_portseed = portseed_offset
+
+    def _allocate_portseed(self):
+        for _ in range(PORT_SEED_MODULUS):
+            candidate = self._next_portseed
+            self._next_portseed += 1
+            ports = ports_for_portseed(candidate)
+            if ports & self.active_ports:
+                continue
+            if all(is_port_available(port) for port in ports):
+                self.active_ports.update(ports)
+                return candidate, ports
+        raise RuntimeError(
+            "Unable to find an available portseed after {} attempts".format(
+                PORT_SEED_MODULUS
+            )
+        )
 
     def get_next(self):
         while self.num_running < self.num_jobs and self.test_list:
             # Add tests
             self.num_running += 1
             test = self.test_list.pop(0)
-            portseed = len(self.test_list)
+            portseed, allocated_ports = self._allocate_portseed()
             portseed_arg = ["--portseed={}".format(portseed)]
             log_stdout = tempfile.SpooledTemporaryFile(max_size=2**16)
             log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16)
@@ -897,6 +951,7 @@ class TestHandler:
                     testdir,
                     log_stdout,
                     log_stderr,
+                    allocated_ports,
                 )
             )
         if not self.jobs:
@@ -911,7 +966,9 @@ class TestHandler:
             # Return first proc that finishes
             time.sleep(0.5)
             for job in self.jobs:
-                (name, start_time, proc, testdir, log_out, log_err) = job
+                (name, start_time, proc, testdir, log_out, log_err, allocated_ports) = (
+                    job
+                )
                 if int(time.time() - start_time) > self.timeout_duration:
                     # Timeout individual tests if timeout is specified (to stop
                     # tests hanging and not providing useful output).
@@ -931,6 +988,7 @@ class TestHandler:
                         status = "Failed"
                     self.num_running -= 1
                     self.jobs.remove(job)
+                    self.active_ports.difference_update(allocated_ports)
                     if self.use_term_control:
                         clearline = "\r" + (" " * dot_count) + "\r"
                         print(clearline, end="", flush=True)
@@ -954,6 +1012,10 @@ class TestHandler:
 
         for proc in procs:
             proc.wait()
+
+        self.jobs.clear()
+        self.active_ports.clear()
+        self.num_running = 0
 
 
 class TestResult:
