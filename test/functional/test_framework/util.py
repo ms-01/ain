@@ -13,6 +13,7 @@ import logging
 import os
 import random
 import re
+import socket
 from subprocess import CalledProcessError
 import time
 import web3
@@ -367,12 +368,35 @@ def hex_to_decimal(value):
 
 # The maximum number of nodes a single test can spawn
 MAX_NODES = 12
-# Don't assign rpc or p2p ports lower than this
-PORT_MIN = 11000
-# The number of ports to "reserve" for p2p and rpc, each
-PORT_RANGE = 5000
 # Don't assign rpc or p2p ports higher than this
 PORT_MAX = 65000
+# The number of ports to "reserve" for p2p and rpc, each
+PORT_RANGE = 5000
+# Prime modulus used to spread port seeds across concurrent processes
+PORT_SEED_MODULUS = 9973
+
+
+def _get_port_min():
+    raw = os.getenv("TEST_RUNNER_PORT_MIN")
+    if raw is None or raw == "":
+        return 11000
+    try:
+        port_min = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "TEST_RUNNER_PORT_MIN must be an integer, got {!r}".format(raw)
+        ) from exc
+    if not (1 <= port_min < PORT_MAX):
+        raise ValueError(
+            "TEST_RUNNER_PORT_MIN must be in [1, {}], got {}".format(
+                PORT_MAX - 1, port_min
+            )
+        )
+    return port_min
+
+
+# Don't assign rpc or p2p ports lower than this
+PORT_MIN = _get_port_min()
 
 
 class PortSeed:
@@ -411,13 +435,39 @@ def p2p_port(n):
     return rpc_port(n, 0)
 
 
+def _rpc_port_for_seed(n, i, portseed):
+    return PORT_MIN + ((n * 1000) + (i * 100) + (portseed % PORT_SEED_MODULUS)) % (
+        PORT_MAX - PORT_MIN
+    )
+
+
 def rpc_port(n, i):
     # We space out n, the node index, and i the item
     # Additionally, use a reasonably large enough prime to tame the port seed
     # to spread out concurrent processes.
-    return PORT_MIN + ((n * 1000) + (i * 100) + (PortSeed.n % 9973)) % (
-        PORT_MAX - PORT_MIN
-    )
+    return _rpc_port_for_seed(n, i, PortSeed.n)
+
+
+def ports_for_portseed(portseed, max_nodes=MAX_NODES):
+    """Return the set of TCP ports a test with the given portseed may bind."""
+    ports = set()
+    for n in range(max_nodes):
+        for i in range(5):
+            ports.add(_rpc_port_for_seed(n, i, portseed))
+        # gRPC uses two consecutive ports (grpcport and grpcport + 1)
+        ports.add(_rpc_port_for_seed(n, 2, portseed) + 1)
+    return ports
+
+
+def is_port_available(port, host="127.0.0.1"):
+    """Return True if a TCP socket can bind to (host, port)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
 
 
 def rpc_url(datadir, n, i, chain, rpchost):
