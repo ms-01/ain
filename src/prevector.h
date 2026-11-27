@@ -450,7 +450,9 @@ public:
 
     void swap(prevector<N, T, Size, Diff>& other) {
         std::swap(_union, other._union);
-        std::swap(_size, other._size);
+        size_type tmp = _size;
+        _size = other._size;
+        other._size = tmp;
     }
 
     ~prevector() {
