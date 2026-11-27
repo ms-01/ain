@@ -318,3 +318,176 @@ where
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{hashes::Hash, Txid};
+    use defichain_rpc::json::token::TokenInfo;
+    use rust_decimal_macros::dec;
+
+    use super::{
+        address_to_hid, find_token_balance, format_number, parse_amount, parse_dat_symbol,
+        parse_display_symbol, parse_fixed_interval_price, parse_pool_pair_symbol,
+        parse_price_ticker_sort, parse_query_height_txid, parse_query_height_txno,
+        parse_token_currency, to_script, Paginate,
+    };
+    use crate::{api::query::PaginationQuery, network::Network};
+
+    fn make_token_info(symbol: &str, is_dat: bool, is_lps: bool) -> TokenInfo {
+        TokenInfo {
+            symbol: symbol.to_string(),
+            symbol_key: symbol.to_string(),
+            name: symbol.to_string(),
+            decimal: 8,
+            limit: 0,
+            mintable: true,
+            tradeable: true,
+            is_dat,
+            is_lps,
+            finalized: false,
+            is_loan_token: false,
+            minted: 0.0,
+            creation_tx: Txid::all_zeros().to_string(),
+            creation_height: 0,
+            destruction_tx: Txid::all_zeros().to_string(),
+            destruction_height: 0,
+            collateral_address: None,
+        }
+    }
+
+    #[test]
+    fn test_parse_dat_and_display_symbol() {
+        assert_eq!(parse_dat_symbol("DFI"), "DFI");
+        assert_eq!(parse_dat_symbol("DUSD"), "DUSD");
+        assert_eq!(parse_dat_symbol("csETH"), "csETH");
+        assert_eq!(parse_dat_symbol("BTC"), "dBTC");
+
+        assert_eq!(
+            parse_display_symbol(&make_token_info("BTC-DFI", true, true)),
+            "dBTC-DFI"
+        );
+        assert_eq!(
+            parse_display_symbol(&make_token_info("BTC", true, false)),
+            "dBTC"
+        );
+        assert_eq!(
+            parse_display_symbol(&make_token_info("CUSTOM", false, false)),
+            "CUSTOM"
+        );
+        assert_eq!(
+            parse_display_symbol(&make_token_info("SINGLE", true, true)),
+            "SINGLE"
+        );
+    }
+
+    #[test]
+    fn test_string_parsers() {
+        assert_eq!(
+            parse_pool_pair_symbol("BTC-DFI").unwrap(),
+            ("BTC".to_string(), "DFI".to_string())
+        );
+        assert!(parse_pool_pair_symbol("BTCDFI").is_err());
+
+        assert_eq!(
+            parse_token_currency("BTC-USD").unwrap(),
+            ("BTC".to_string(), "USD".to_string())
+        );
+        assert!(parse_token_currency("BTCUSD").is_err());
+
+        assert_eq!(
+            parse_fixed_interval_price("BTC/USD").unwrap(),
+            ("BTC".to_string(), "USD".to_string())
+        );
+        assert!(parse_fixed_interval_price("BTC-USD").is_err());
+
+        assert_eq!(
+            parse_amount("12.5@DFI").unwrap(),
+            ("12.5".to_string(), "DFI".to_string())
+        );
+        assert!(parse_amount("12.5DFI").is_err());
+
+        assert_eq!(parse_query_height_txno("100-5").unwrap(), (100, 5));
+        assert!(parse_query_height_txno("100").is_err());
+        assert!(parse_query_height_txno("abc-5").is_err());
+
+        let txid = Txid::all_zeros();
+        let height_hex = hex::encode(42u32.to_be_bytes());
+        assert_eq!(
+            parse_query_height_txid(&format!("{height_hex}-{txid}")).unwrap(),
+            (42, txid)
+        );
+        assert!(parse_query_height_txid("invalid").is_err());
+        assert!(parse_query_height_txid(&format!("00-{txid}")).is_err());
+
+        let count_hex = hex::encode(3u32.to_be_bytes());
+        let h_hex = hex::encode(99u32.to_be_bytes());
+        let parsed = parse_price_ticker_sort(&format!("{count_hex}{h_hex}BTC-USD")).unwrap();
+        assert_eq!(
+            parsed,
+            (
+                3u32.to_be_bytes(),
+                99u32.to_be_bytes(),
+                "BTC".to_string(),
+                "USD".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_format_number_and_address_helpers() {
+        assert_eq!(format_number(dec!(0)), "0");
+        assert_eq!(format_number(dec!(1.5)), "1.50000000");
+
+        let addr = "df1qq4mg7tgh7qqkk4eqhdyct89mqegyzut0jjz8rg";
+        let script = to_script(addr, Network::Mainnet).unwrap();
+        assert_eq!(
+            hex::encode(script.to_bytes()),
+            "001405768f2d17f0016b5720bb49859cbb065041716f"
+        );
+        let hid = address_to_hid(addr, Network::Mainnet).unwrap();
+        assert_eq!(hid.len(), 32);
+        assert!(to_script("not-an-address", Network::Mainnet).is_err());
+    }
+
+    #[test]
+    fn test_find_token_balance() {
+        let tokens = vec![
+            "557.35080849@DFI".to_string(),
+            "9.98000000@BTC".to_string(),
+            "bad@ETH".to_string(),
+        ];
+        assert_eq!(find_token_balance(tokens.clone(), "DFI"), dec!(557.35080849));
+        assert_eq!(find_token_balance(tokens.clone(), "BTC"), dec!(9.98000000));
+        assert_eq!(find_token_balance(tokens.clone(), "ETH"), dec!(0));
+        assert_eq!(find_token_balance(tokens, "MISSING"), dec!(0));
+    }
+
+    #[test]
+    fn test_paginate_and_fake_paginate() {
+        let items = vec![1, 2, 3, 4, 5];
+
+        let q1 = PaginationQuery {
+            size: 2,
+            next: None,
+        };
+        let page1: Vec<_> = items.clone().into_iter().paginate(&q1).collect();
+        assert_eq!(page1, vec![1, 2]);
+
+        let q2 = PaginationQuery {
+            size: 2,
+            next: Some("1".to_string()),
+        };
+        let page2: Vec<_> = items.clone().into_iter().paginate(&q2).collect();
+        assert_eq!(page2, vec![2, 3]);
+
+        let q3 = PaginationQuery {
+            size: 2,
+            next: Some("2".to_string()),
+        };
+        let fake: Vec<_> = items
+            .into_iter()
+            .fake_paginate(&q3, |el| *el != 2)
+            .collect();
+        assert_eq!(fake, vec![3, 4]);
+    }
+}

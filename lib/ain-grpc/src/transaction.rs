@@ -125,3 +125,136 @@ impl EthTransactionInfo {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ain_evm::transaction::{LegacyUnsignedTransaction, SignedTx};
+    use ethereum::{
+        AccessListItem, Block, EIP1559Transaction, EIP2930Transaction, EnvelopedEncodable,
+        PartialHeader, TransactionAction, TransactionSignature, TransactionV2,
+    };
+    use ethereum_types::{H160, H256, U256};
+
+    use crate::codegen::types::{EthAccessList, EthTransactionInfo};
+
+    const TEST_CHAIN_ID: u64 = 1127;
+    const TEST_SECRET_KEY: [u8; 32] = [0x02; 32];
+
+    fn make_legacy_signed(input: Vec<u8>, action: TransactionAction) -> SignedTx {
+        let unsigned = LegacyUnsignedTransaction {
+            nonce: U256::from(1),
+            gas_price: U256::from(10_000_000_000u64),
+            gas_limit: U256::from(21_000u64),
+            action,
+            value: U256::from(5u64),
+            input,
+            sig: TransactionSignature::new(27, H256::from_low_u64_be(1), H256::from_low_u64_be(1))
+                .unwrap(),
+        };
+        let signed = unsigned
+            .sign_with_chain_id(&TEST_SECRET_KEY, TEST_CHAIN_ID)
+            .unwrap();
+        SignedTx::try_from(TransactionV2::Legacy(signed)).unwrap()
+    }
+
+    #[test]
+    fn eth_transaction_info_converts_legacy_eip2930_and_eip1559() {
+        let legacy =
+            make_legacy_signed(vec![], TransactionAction::Call(H160::from_low_u64_be(0xee)));
+        let info = EthTransactionInfo::from(legacy.clone());
+        assert_eq!(info.input, "0x");
+        assert!(info.to.is_some());
+        assert!(info.access_list.is_empty());
+        assert_eq!(info.field_type, "0x0");
+
+        let legacy_create = make_legacy_signed(vec![0x60, 0x00], TransactionAction::Create);
+        let create_info = EthTransactionInfo::from(legacy_create);
+        assert_eq!(create_info.input, "0x6000");
+        assert!(create_info.to.is_none());
+
+        let access_item = AccessListItem {
+            address: H160::from_low_u64_be(0x11),
+            storage_keys: vec![H256::from_low_u64_be(0x22)],
+        };
+        let eth_al = EthAccessList::from(access_item.clone());
+        assert_eq!(eth_al.storage_keys.len(), 1);
+
+        let eip2930_tx = TransactionV2::EIP2930(EIP2930Transaction {
+            chain_id: TEST_CHAIN_ID,
+            nonce: U256::from(2),
+            gas_price: U256::from(10_000_000_000u64),
+            gas_limit: U256::from(30_000u64),
+            action: TransactionAction::Call(H160::from_low_u64_be(0xaa)),
+            value: U256::zero(),
+            input: vec![0xde, 0xad],
+            access_list: vec![access_item.clone()],
+            odd_y_parity: false,
+            r: H256::from_low_u64_be(1),
+            s: H256::from_low_u64_be(1),
+        });
+        let eip2930_info = EthTransactionInfo::try_from(eip2930_tx).unwrap();
+        assert_eq!(eip2930_info.field_type, "0x1");
+        assert_eq!(eip2930_info.access_list.len(), 1);
+
+        let eip1559_tx = TransactionV2::EIP1559(EIP1559Transaction {
+            chain_id: TEST_CHAIN_ID,
+            nonce: U256::from(3),
+            max_priority_fee_per_gas: U256::from(1_000_000_000u64),
+            max_fee_per_gas: U256::from(20_000_000_000u64),
+            gas_limit: U256::from(30_000u64),
+            action: TransactionAction::Call(H160::from_low_u64_be(0xbb)),
+            value: U256::zero(),
+            input: vec![],
+            access_list: vec![access_item],
+            odd_y_parity: false,
+            r: H256::from_low_u64_be(1),
+            s: H256::from_low_u64_be(1),
+        });
+        let eip1559_info = EthTransactionInfo::try_from(eip1559_tx).unwrap();
+        assert_eq!(eip1559_info.field_type, "0x2");
+        assert_eq!(eip1559_info.access_list.len(), 1);
+    }
+
+    #[test]
+    fn eth_transaction_info_try_from_str_block_and_pending() {
+        let legacy = make_legacy_signed(
+            vec![0x01],
+            TransactionAction::Call(H160::from_low_u64_be(0xee)),
+        );
+        let raw_hex = hex::encode(legacy.transaction.encode());
+        let info = EthTransactionInfo::try_from(raw_hex.as_str()).unwrap();
+        assert_eq!(info.input, "0x01");
+        let info_from_tx = EthTransactionInfo::try_from(legacy.transaction.clone()).unwrap();
+        assert_eq!(info_from_tx.hash, info.hash);
+
+        assert!(EthTransactionInfo::try_from("not-valid-hex").is_err());
+
+        let partial = PartialHeader {
+            parent_hash: H256::zero(),
+            beneficiary: H160::zero(),
+            state_root: H256::zero(),
+            receipts_root: H256::zero(),
+            logs_bloom: Default::default(),
+            difficulty: U256::zero(),
+            number: U256::from(7),
+            gas_limit: U256::from(30_000_000),
+            gas_used: U256::zero(),
+            timestamp: 1_700_000_000,
+            extra_data: vec![],
+            mix_hash: H256::zero(),
+            nonce: Default::default(),
+            base_fee: U256::from(1_000_000_000u64),
+        };
+        let block = Block::new(partial, vec![legacy.transaction.clone()], vec![]);
+        let in_block =
+            EthTransactionInfo::try_from_tx_block_and_index(&legacy.transaction, &block, 0)
+                .unwrap();
+        assert_eq!(in_block.block_number, Some("0x7".to_string()));
+        assert_eq!(in_block.transaction_index, Some("0x0".to_string()));
+        assert!(in_block.block_hash.is_some());
+
+        let pending = info.into_pending_transaction_info();
+        assert_eq!(pending.block_number, Some("null".to_string()));
+        assert_eq!(pending.transaction_index, Some("0x0".to_string()));
+    }
+}

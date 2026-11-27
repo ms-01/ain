@@ -950,4 +950,127 @@ BOOST_FIXTURE_TEST_CASE(MempoolFinalityCutoffTests, TestChain100Setup)
     GetTimeOffsets().Clear();
 }
 
+BOOST_FIXTURE_TEST_CASE(MempoolRulesChangedBetweenTests, TestChain100Setup)
+{
+    LOCK2(cs_main, mempool.cs);
+
+    const auto &consensus = Params().GetConsensus();
+
+    // Start from a clean mempool state (accountsViewHeight == 0, accountsViewDirty == false).
+    mempool.clear();
+    BOOST_CHECK(!mempool.getAccountViewDirty());
+
+    // Calling removeForBlock with an empty block vector at a height that crosses an active
+    // upgrade height (e.g. DF25Height or nBalanceOverflowHeight in regtest) triggers
+    // MempoolRulesChangedBetween() -> rebuildAccountsView() and leaves the view clean.
+    if (consensus.DF25Height > 0 && consensus.DF25Height < std::numeric_limits<int>::max()) {
+        const unsigned int beforeHeight = static_cast<unsigned int>(consensus.DF25Height - 1);
+        mempool.removeForBlock({}, beforeHeight);
+        BOOST_CHECK(!mempool.getAccountViewDirty());
+
+        // Subsequent block above the activation height does not leave the view dirty.
+        mempool.removeForBlock({}, static_cast<unsigned int>(consensus.DF25Height));
+        BOOST_CHECK(!mempool.getAccountViewDirty());
+    }
+
+    if (consensus.nBalanceOverflowHeight > 0 &&
+        consensus.nBalanceOverflowHeight < std::numeric_limits<int>::max()) {
+        mempool.clear();
+        BOOST_CHECK(!mempool.getAccountViewDirty());
+        const unsigned int crossingBlock = static_cast<unsigned int>(consensus.nBalanceOverflowHeight - 1);
+        mempool.removeForBlock({}, crossingBlock);
+        BOOST_CHECK(!mempool.getAccountViewDirty());
+    }
+
+    // Explicitly marking the accounts view dirty is cleared by removeForBlock() rebuild.
+    mempool.setAccountViewDirty();
+    BOOST_CHECK(mempool.getAccountViewDirty());
+    mempool.removeForBlock({}, static_cast<unsigned int>(::ChainActive().Height()));
+    BOOST_CHECK(!mempool.getAccountViewDirty());
+}
+
+BOOST_AUTO_TEST_CASE(MempoolEvictionAndExpiryEdgeCases)
+{
+    CTxMemPool pool;
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper entry;
+
+    // Build a low-fee parent -> child chain and a high-fee independent transaction.
+    CTransactionRef txLowParent = make_tx({10 * COIN});
+    CTransactionRef txLowChild = make_tx({5 * COIN}, {txLowParent});
+    CTransactionRef txHigh = make_tx({11 * COIN});
+
+    pool.addUnchecked(entry.Fee(100LL).Time(1000).FromTx(txLowParent));
+    pool.addUnchecked(entry.Fee(100LL).Time(2000).FromTx(txLowChild));
+    pool.addUnchecked(entry.Fee(100000LL).Time(2000).FromTx(txHigh));
+    BOOST_CHECK_EQUAL(pool.size(), 3UL);
+
+    // Expiring transactions with timestamp < 1500 removes txLowParent and its descendant
+    // txLowChild, while preserving the independent txHigh.
+    pool.Expire(1500, 1500);
+    BOOST_CHECK(!pool.exists(txLowParent->GetHash()));
+    BOOST_CHECK(!pool.exists(txLowChild->GetHash()));
+    BOOST_CHECK(pool.exists(txHigh->GetHash()));
+    BOOST_CHECK_EQUAL(pool.size(), 1UL);
+
+    // Re-add the low-fee chain and verify TrimToSize evicts the low-fee package first
+    // and raises the rolling minimum fee.
+    pool.addUnchecked(entry.Fee(100LL).Time(2000).FromTx(txLowParent));
+    pool.addUnchecked(entry.Fee(100LL).Time(2000).FromTx(txLowChild));
+    BOOST_CHECK_EQUAL(pool.size(), 3UL);
+
+    const size_t sizeWithOneTx = pool.DynamicMemoryUsage() / 2;
+    pool.TrimToSize(sizeWithOneTx);
+    BOOST_CHECK(pool.exists(txHigh->GetHash()));
+    BOOST_CHECK(!pool.exists(txLowChild->GetHash()));
+    BOOST_CHECK(pool.GetMinFee(1).GetFeePerK() > 0);
+
+    // Trimming to 0 bytes evicts all remaining transactions.
+    pool.TrimToSize(0);
+    BOOST_CHECK_EQUAL(pool.size(), 0UL);
+}
+
+BOOST_AUTO_TEST_CASE(MempoolAncestorDescendantLimitEdgeCases)
+{
+    CTxMemPool pool;
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper entry;
+
+    // Build a 3-tx chain: tx1 -> tx2 -> tx3
+    CTransactionRef tx1 = make_tx({10 * COIN});
+    CTransactionRef tx2 = make_tx({9 * COIN}, {tx1});
+    CTransactionRef tx3 = make_tx({8 * COIN}, {tx2});
+    CTransactionRef tx4 = make_tx({7 * COIN}, {tx3});
+
+    pool.addUnchecked(entry.Fee(1000LL).FromTx(tx1));
+    pool.addUnchecked(entry.Fee(1000LL).FromTx(tx2));
+    pool.addUnchecked(entry.Fee(1000LL).FromTx(tx3));
+
+    CTxMemPoolEntry entry4 = entry.Fee(1000LL).FromTx(tx4);
+    CTxMemPool::setEntries ancestors;
+    std::string errString;
+
+    // Within limits (4 ancestors allowed): succeeds and finds 3 in-mempool ancestors.
+    BOOST_CHECK(pool.CalculateMemPoolAncestors(entry4, ancestors, 4, 100000, 10, 100000, errString));
+    BOOST_CHECK_EQUAL(ancestors.size(), 3UL);
+
+    // Exceeding ancestor count limit (limit = 3, chain would be 4): fails.
+    ancestors.clear();
+    errString.clear();
+    BOOST_CHECK(!pool.CalculateMemPoolAncestors(entry4, ancestors, 3, 100000, 10, 100000, errString));
+    BOOST_CHECK(!errString.empty());
+
+    // Exceeding descendant count limit on tx1 (limit = 3, chain would be 4): fails.
+    ancestors.clear();
+    errString.clear();
+    BOOST_CHECK(!pool.CalculateMemPoolAncestors(entry4, ancestors, 10, 100000, 3, 100000, errString));
+    BOOST_CHECK(!errString.empty());
+
+    // Exceeding ancestor size limit (1 byte): fails.
+    ancestors.clear();
+    errString.clear();
+    BOOST_CHECK(!pool.CalculateMemPoolAncestors(entry4, ancestors, 10, 1, 10, 100000, errString));
+    BOOST_CHECK(!errString.empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

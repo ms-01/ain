@@ -234,3 +234,81 @@ impl Network {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::Network;
+
+    #[test]
+    fn test_network_as_str_and_display() {
+        let cases = [
+            (Network::Mainnet, "mainnet"),
+            (Network::Mocknet, "mocknet"),
+            (Network::Testnet, "testnet"),
+            (Network::Regtest, "regtest"),
+            (Network::Devnet, "devnet"),
+            (Network::Changi, "changi"),
+        ];
+        for (net, expected) in cases {
+            assert_eq!(net.as_str(), expected);
+            assert_eq!(net.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_network_from_str() {
+        assert_eq!(Network::from_str("mainnet"), Ok(Network::Mainnet));
+        assert_eq!(Network::from_str("main"), Ok(Network::Mainnet));
+        assert_eq!(Network::from_str("mocknet"), Ok(Network::Mocknet));
+        assert_eq!(Network::from_str("testnet"), Ok(Network::Testnet));
+        assert_eq!(Network::from_str("test"), Ok(Network::Testnet));
+        assert_eq!(Network::from_str("regtest"), Ok(Network::Regtest));
+        assert_eq!(Network::from_str("devnet"), Ok(Network::Devnet));
+        assert_eq!(Network::from_str("changi"), Ok(Network::Changi));
+        assert_eq!(Network::from_str("unknown"), Err("invalid network"));
+    }
+
+    #[test]
+    fn test_network_into_bitcoin_network() {
+        let mainnet: bitcoin::Network = Network::Mainnet.into();
+        let testnet: bitcoin::Network = Network::Testnet.into();
+        let devnet: bitcoin::Network = Network::Devnet.into();
+        let regtest: bitcoin::Network = Network::Regtest.into();
+        let mocknet: bitcoin::Network = Network::Mocknet.into();
+        let changi: bitcoin::Network = Network::Changi.into();
+
+        assert_eq!(mainnet, bitcoin::Network::Mainnet);
+        assert_eq!(testnet, bitcoin::Network::Testnet);
+        assert_eq!(devnet, bitcoin::Network::Devnet);
+        assert_eq!(regtest, bitcoin::Network::Regtest);
+        assert_eq!(mocknet, bitcoin::Network::Regtest);
+        assert_eq!(changi, bitcoin::Network::Regtest);
+    }
+
+    #[test]
+    fn test_network_params() {
+        let mainnet = Network::Mainnet.params();
+        assert_eq!(mainnet.activation_delay, 10);
+        assert_eq!(mainnet.new_activation_delay, 1008);
+        assert_eq!(mainnet.resign_delay, 60);
+        assert_eq!(mainnet.new_resign_delay, 2016);
+
+        let regtest = Network::Regtest.params();
+        assert_eq!(regtest.activation_delay, 10);
+        assert_eq!(regtest.new_activation_delay, 20);
+        assert_eq!(regtest.resign_delay, 10);
+        assert_eq!(regtest.new_resign_delay, 40);
+    }
+
+    #[test]
+    fn test_network_fork_heights() {
+        assert_eq!(Network::Mainnet.fork_heights().df8_eunos_height, 894_000);
+        assert_eq!(Network::Mocknet.fork_heights().df8_eunos_height, 894_000);
+        assert_eq!(Network::Testnet.fork_heights().df8_eunos_height, 354_950);
+        assert_eq!(Network::Regtest.fork_heights().df8_eunos_height, 10_000_000);
+        assert_eq!(Network::Devnet.fork_heights().df8_eunos_height, 354_950);
+        assert_eq!(Network::Changi.fork_heights().df23_height, 1_985_600);
+    }
+}

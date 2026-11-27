@@ -93,3 +93,120 @@ pub fn to_custom_err<T: ToString>(e: T) -> ErrorObjectOwned {
         None::<()>,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use ain_evm::EVMError;
+    use ethereum_types::H256;
+    use jsonrpsee::types::ErrorObjectOwned;
+
+    use super::{to_custom_err, RPCError};
+
+    fn assert_custom_err(err: RPCError, expected_msg: &str) {
+        let obj: ErrorObjectOwned = err.into();
+        assert_eq!(obj.code(), -32001);
+        assert_eq!(obj.message(), format!("Custom error: {expected_msg}"));
+        assert!(obj.data().is_none());
+    }
+
+    #[test]
+    fn to_custom_err_sets_expected_code_and_prefix() {
+        let obj = to_custom_err("boom");
+        assert_eq!(obj.code(), -32001);
+        assert_eq!(obj.message(), "Custom error: boom");
+        assert!(obj.data().is_none());
+    }
+
+    #[test]
+    fn static_rpc_error_variants_map_to_expected_messages() {
+        assert_custom_err(RPCError::AccountError, "error getting account");
+        assert_custom_err(RPCError::BlockNotFound, "header not found");
+        assert_custom_err(
+            RPCError::DebugNotEnabled,
+            "debug_* RPCs have not been enabled",
+        );
+        assert_custom_err(
+            RPCError::InsufficientFunds,
+            "insufficient funds for transfer",
+        );
+        assert_custom_err(
+            RPCError::InvalidBlockInput,
+            "both blockHash and fromBlock/toBlock specified",
+        );
+        assert_custom_err(
+            RPCError::InvalidDataInput,
+            "data and input fields are mutually exclusive",
+        );
+        assert_custom_err(
+            RPCError::InvalidGasPrice,
+            "both gasPrice and (maxFeePerGas or maxPriorityFeePerGas) specified",
+        );
+        assert_custom_err(
+            RPCError::InvalidTransactionMessage,
+            "invalid transaction message parameters",
+        );
+        assert_custom_err(
+            RPCError::InvalidTransactionType,
+            "invalid transaction type specified",
+        );
+        assert_custom_err(RPCError::NonceCacheError, "could not cache account nonce");
+        assert_custom_err(RPCError::StateRootNotFound, "state root not found");
+        assert_custom_err(
+            RPCError::TraceNotEnabled,
+            "debug_trace* RPCs have not been enabled",
+        );
+        assert_custom_err(RPCError::TxExecutionFailed, "transaction execution failed");
+        assert_custom_err(RPCError::ValueOverflow, "value overflow");
+        assert_custom_err(RPCError::ValueUnderflow, "value underflow");
+        assert_custom_err(RPCError::DivideError, "divide error");
+    }
+
+    #[test]
+    fn parameterized_rpc_error_variants_map_correctly() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "disk full");
+        let obj: ErrorObjectOwned = RPCError::Error(Box::new(io_err)).into();
+        assert_eq!(obj.code(), -32001);
+        assert!(obj.message().contains("disk full"));
+
+        let evm_err = EVMError::from(anyhow::anyhow!("evm failure"));
+        let obj: ErrorObjectOwned = RPCError::EvmError(evm_err).into();
+        assert_eq!(obj.code(), -32001);
+        assert!(obj.message().contains("error calling EVM"));
+        assert!(obj.message().contains("evm failure"));
+
+        let obj: ErrorObjectOwned = RPCError::GasCapTooLow(50_000).into();
+        assert_eq!(obj.code(), -32001);
+        assert!(obj.message().contains("gas required exceeds allowance"));
+        assert!(obj.message().contains("50000"));
+
+        let hash = H256::from_low_u64_be(0xabcd);
+        let obj: ErrorObjectOwned = RPCError::ReceiptNotFound(hash).into();
+        assert_eq!(obj.code(), -32001);
+        assert!(obj
+            .message()
+            .contains("could not find receipt for transaction hash"));
+
+        let obj: ErrorObjectOwned = RPCError::TxNotFound(hash).into();
+        assert_eq!(obj.code(), -32001);
+        assert!(obj
+            .message()
+            .contains("could not find transaction for transaction hash"));
+
+        let trace_hash = [1u8; 16];
+        let obj: ErrorObjectOwned = RPCError::TracingParamError(trace_hash).into();
+        assert_eq!(obj.code(), -32001);
+        assert!(obj
+            .message()
+            .contains("javascript based tracing is not available"));
+    }
+
+    #[test]
+    fn revert_error_uses_code_3_and_json_data() {
+        let obj: ErrorObjectOwned =
+            RPCError::RevertError("execution reverted: bad".to_string(), "0x08c379a0".to_string())
+                .into();
+        assert_eq!(obj.code(), 3);
+        assert_eq!(obj.message(), "execution reverted: bad");
+        assert_eq!(obj.data().unwrap().get(), "\"0x08c379a0\"");
+    }
+}

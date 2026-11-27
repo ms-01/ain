@@ -546,3 +546,304 @@ pub const COLUMN_NAMES: [&str; 28] = [
     TxResult::NAME,
     VaultAuctionHistory::NAME,
 ];
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
+
+    use ain_db::{Column, DBError};
+    use bitcoin::{hashes::Hash, BlockHash, Txid};
+    use rocksdb::Direction;
+    use rust_decimal_macros::dec;
+
+    use super::{
+        BlockByHeight, InitialKeyProvider, MasternodeByHeight, MasternodeStats, OceanStore,
+        OracleHistory, PoolSwap, PoolSwapAggregated, PoolSwapAggregatedKey, RepositoryOps,
+        SecondaryIndex, SortOrder, TransactionByBlockHash, TransactionVin, TransactionVout,
+    };
+    use crate::{model, Services};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(prefix: &str) -> Self {
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "ain-ocean-test-{prefix}-{}-{id}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn make_block(height: u32, hash_byte: u8) -> model::Block {
+        let hash = BlockHash::from_byte_array([hash_byte; 32]);
+        model::Block {
+            hash,
+            id: hash,
+            previous_hash: None,
+            height,
+            version: 1,
+            time: i64::from(height) * 30,
+            median_time: i64::from(height) * 30,
+            transaction_count: 1,
+            difficulty: 1.0,
+            masternode: None,
+            minter: None,
+            minter_block_count: 0,
+            stake_modifier: String::new(),
+            merkleroot: String::new(),
+            size: 100,
+            size_stripped: 100,
+            weight: 400,
+        }
+    }
+
+    #[test]
+    fn test_sort_order_to_direction() {
+        assert!(matches!(
+            Direction::from(SortOrder::Ascending),
+            Direction::Forward
+        ));
+        assert!(matches!(
+            Direction::from(SortOrder::Descending),
+            Direction::Reverse
+        ));
+    }
+
+    #[test]
+    fn test_custom_key_codecs_and_errors() {
+        // BlockByHeight
+        let raw = BlockByHeight::key(&42).unwrap();
+        assert_eq!(BlockByHeight::get_key(raw.into_boxed_slice()).unwrap(), 42);
+        assert!(matches!(
+            BlockByHeight::get_key(vec![0u8; 2].into_boxed_slice()),
+            Err(DBError::WrongKeyLength)
+        ));
+
+        // MasternodeByHeight
+        let txid = Txid::from_byte_array([3u8; 32]);
+        let raw = MasternodeByHeight::key(&(100, txid)).unwrap();
+        assert_eq!(
+            MasternodeByHeight::get_key(raw.into_boxed_slice()).unwrap(),
+            (100, txid)
+        );
+        assert!(matches!(
+            MasternodeByHeight::get_key(vec![0u8; 10].into_boxed_slice()),
+            Err(DBError::WrongKeyLength)
+        ));
+
+        // MasternodeStats
+        let raw = MasternodeStats::key(&7).unwrap();
+        assert_eq!(MasternodeStats::get_key(raw.into_boxed_slice()).unwrap(), 7);
+        assert!(matches!(
+            MasternodeStats::get_key(vec![0u8; 3].into_boxed_slice()),
+            Err(DBError::WrongKeyLength)
+        ));
+
+        // OracleHistory
+        let raw = OracleHistory::key(&(txid, 55)).unwrap();
+        assert_eq!(
+            OracleHistory::get_key(raw.into_boxed_slice()).unwrap(),
+            (txid, 55)
+        );
+        assert!(matches!(
+            OracleHistory::get_key(vec![0u8; 5].into_boxed_slice()),
+            Err(DBError::WrongKeyLength)
+        ));
+
+        // PoolSwap
+        let raw = PoolSwap::key(&(1, 200, 3)).unwrap();
+        assert_eq!(
+            PoolSwap::get_key(raw.into_boxed_slice()).unwrap(),
+            (1, 200, 3)
+        );
+        assert_eq!(PoolSwap::initial_key(5), (5, u32::MAX, usize::MAX));
+        assert!(matches!(
+            PoolSwap::get_key(vec![0u8; 4].into_boxed_slice()),
+            Err(DBError::WrongKeyLength)
+        ));
+
+        // PoolSwapAggregatedKey
+        let raw = PoolSwapAggregatedKey::key(&(2, 3600, 1_700_000_000)).unwrap();
+        assert_eq!(
+            PoolSwapAggregatedKey::get_key(raw.into_boxed_slice()).unwrap(),
+            (2, 3600, 1_700_000_000)
+        );
+        assert!(matches!(
+            PoolSwapAggregatedKey::get_key(vec![0u8; 4].into_boxed_slice()),
+            Err(DBError::WrongKeyLength)
+        ));
+
+        // PoolSwapAggregated key error
+        let hash = BlockHash::from_byte_array([4u8; 32]);
+        let raw = PoolSwapAggregated::key(&(1, 3600, hash)).unwrap();
+        assert_eq!(raw.len(), 40);
+        assert!(matches!(
+            PoolSwapAggregated::get_key(vec![0u8; 4].into_boxed_slice()),
+            Err(DBError::WrongKeyLength)
+        ));
+
+        // TransactionByBlockHash
+        let raw = TransactionByBlockHash::key(&(hash, 9)).unwrap();
+        assert_eq!(
+            TransactionByBlockHash::get_key(raw.into_boxed_slice()).unwrap(),
+            (hash, 9)
+        );
+        assert_eq!(TransactionByBlockHash::initial_key(hash), (hash, 0));
+        assert!(matches!(
+            TransactionByBlockHash::get_key(vec![0u8; 4].into_boxed_slice()),
+            Err(DBError::WrongKeyLength)
+        ));
+
+        // TransactionVin initial_key
+        assert_eq!(TransactionVin::initial_key(txid), format!("{txid}00"));
+
+        // TransactionVout
+        let raw = TransactionVout::key(&(txid, 2)).unwrap();
+        assert_eq!(
+            TransactionVout::get_key(raw.into_boxed_slice()).unwrap(),
+            (txid, 2)
+        );
+        assert!(matches!(
+            TransactionVout::get_key(vec![0u8; 4].into_boxed_slice()),
+            Err(DBError::WrongKeyLength)
+        ));
+    }
+
+    #[test]
+    fn test_ocean_store_crud_pagination_and_secondary_indexes() {
+        let dir = TempDir::new("store-crud");
+        let store = Arc::new(OceanStore::new_for_test(&dir.0).unwrap());
+        let services = Services::new(Arc::clone(&store));
+
+        // Put and retrieve blocks + secondary index BlockByHeight
+        for h in 1u32..=3 {
+            let blk = make_block(h, h as u8);
+            services.block.by_id.put(&blk.hash, &blk).unwrap();
+            services.block.by_height.put(&h, &blk.hash).unwrap();
+        }
+
+        let b2 = services
+            .block
+            .by_id
+            .get(&BlockHash::from_byte_array([2u8; 32]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(b2.height, 2);
+
+        // Ascending list
+        let asc: Vec<u32> = services
+            .block
+            .by_height
+            .list(None, SortOrder::Ascending)
+            .unwrap()
+            .map(|r| r.unwrap().0)
+            .collect();
+        assert_eq!(asc, vec![1, 2, 3]);
+
+        // Descending list with secondary index resolution
+        let desc_blocks: Vec<u32> = services
+            .block
+            .by_height
+            .list(None, SortOrder::Descending)
+            .unwrap()
+            .map(|item| {
+                services
+                    .block
+                    .by_height
+                    .retrieve_primary_value(item)
+                    .unwrap()
+                    .height
+            })
+            .collect();
+        assert_eq!(desc_blocks, vec![3, 2, 1]);
+
+        // Delete & verify removal
+        services.block.by_height.delete(&2).unwrap();
+        assert!(services.block.by_height.get(&2).unwrap().is_none());
+
+        // Masternode + MasternodeByHeight secondary index + MasternodeStats::get_latest
+        assert!(services.masternode.stats.get_latest().unwrap().is_none());
+        let mn_id = Txid::from_byte_array([5u8; 32]);
+        let mn = model::Masternode {
+            id: mn_id,
+            owner_address: "owner".to_string(),
+            operator_address: "op".to_string(),
+            creation_height: 10,
+            resign_height: None,
+            resign_tx: None,
+            minted_blocks: 1,
+            timelock: 0,
+            collateral: dec!(20000),
+            block: model::BlockContext::default(),
+            history: vec![],
+        };
+        services.masternode.by_id.put(&mn_id, &mn).unwrap();
+        services.masternode.by_height.put(&(10, mn_id), &1).unwrap();
+        let item = services
+            .masternode
+            .by_height
+            .list(None, SortOrder::Ascending)
+            .unwrap()
+            .next()
+            .unwrap();
+        let resolved = services
+            .masternode
+            .by_height
+            .retrieve_primary_value(item)
+            .unwrap();
+        assert_eq!(resolved.id, mn_id);
+
+        let stats1 = model::MasternodeStats {
+            block: model::BlockContext {
+                height: 10,
+                ..Default::default()
+            },
+            stats: model::MasternodeStatsData::default(),
+        };
+        let stats2 = model::MasternodeStats {
+            block: model::BlockContext {
+                height: 20,
+                ..Default::default()
+            },
+            stats: model::MasternodeStatsData::default(),
+        };
+        services.masternode.stats.put(&10, &stats1).unwrap();
+        services.masternode.stats.put(&20, &stats2).unwrap();
+        assert_eq!(
+            services
+                .masternode
+                .stats
+                .get_latest()
+                .unwrap()
+                .unwrap()
+                .block
+                .height,
+            20
+        );
+
+        // OceanStore maintenance helpers
+        let hash1 = store.hash_db_state().unwrap();
+        assert!(!hash1.is_empty());
+        store.dump_table_sizes().unwrap();
+        store.compact();
+    }
+}

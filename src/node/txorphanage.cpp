@@ -516,7 +516,8 @@ bool TxOrphanageImpl::EraseTxByTxid(const uint256& txid)
 {
     auto it = m_txid_to_wtxid.find(txid);
     if (it == m_txid_to_wtxid.end()) return false;
-    return EraseTx(it->second);
+    const Wtxid wtxid = it->second;
+    return EraseTx(wtxid);
 }
 
 /** Erase all entries by this peer. */

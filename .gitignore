@@ -19,6 +19,8 @@ tmp/
 # Build
 build/
 build.*/
+build-asan/
+build-fuzz/
 out/
 *.exe
 *.pdb

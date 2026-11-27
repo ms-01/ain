@@ -47,6 +47,8 @@ FUZZ_SUITE = \
 FUZZ_TARGET_SOURCES = \
   test/fuzz/addrv2_deserialize.cpp \
   test/fuzz/deserialize.cpp \
+  test/fuzz/dfi_customtx_deserialize.cpp \
+  test/fuzz/dfi_rpc_p2p_parse.cpp \
   test/fuzz/netaddr_str.cpp \
   test/fuzz/p2p_message_parsing.cpp \
   test/fuzz/partially_downloaded_block.cpp \
@@ -82,6 +84,7 @@ DEFI_TESTS =\
   test/anchor_peers_tests.cpp \
   test/assumevalid_tests.cpp \
   test/applytx_tests.cpp \
+  test/dfi_customtx_undo_tests.cpp \
   test/banman_tests.cpp \
   test/base32_tests.cpp \
   test/base58_tests.cpp \
@@ -290,7 +293,7 @@ nodist_test_test_defi_SOURCES = $(GENERATED_TEST_FILES)
 
 $(DEFI_TESTS): $(GENERATED_TEST_FILES)
 
-CLEAN_DEFI_TEST = test/*.gcda test/*.gcno $(GENERATED_TEST_FILES) $(DEFI_TESTS:=.log)
+CLEAN_DEFI_TEST = test/*.gcda test/*.gcno wallet/test/*.gcda wallet/test/*.gcno $(GENERATED_TEST_FILES) $(DEFI_TESTS:=.log)
 
 CLEANFILES += $(CLEAN_DEFI_TEST)
 

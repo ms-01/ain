@@ -92,6 +92,9 @@ AC_PATH_TOOL(READELF, readelf)
 AC_PATH_TOOL(CPPFILT, c++filt)
 AC_PATH_TOOL(OBJCOPY, objcopy)
 AC_PATH_PROG(DOXYGEN, doxygen)
+AC_PATH_PROG(LCOV, lcov)
+AC_PATH_PROG(GENHTML, genhtml)
+AC_PATH_PROG(GCOV, gcov)
 if test -z "$DOXYGEN"; then
    AC_MSG_WARN([Doxygen not found])
 fi
@@ -209,6 +212,19 @@ AC_ARG_ENABLE([gprof],
                     [use gprof profiling compiler flags (default is no)])],
     [enable_gprof=$enableval],
     [enable_gprof=no])
+
+# Enable lcov code coverage
+AC_ARG_ENABLE([lcov],
+    [AS_HELP_STRING([--enable-lcov],
+                    [enable lcov testing (default is no)])],
+    [use_lcov=$enableval],
+    [use_lcov=no])
+
+AC_ARG_ENABLE([lcov-branch-coverage],
+    [AS_HELP_STRING([--enable-lcov-branch-coverage],
+                    [enable lcov testing branch coverage (default is no)])],
+    [use_lcov_branch=$enableval],
+    [use_lcov_branch=no])
 
 # Turn warnings into errors
 AC_ARG_ENABLE([werror],
@@ -656,6 +672,32 @@ if test "x$enable_gprof" = xyes; then
     AX_CHECK_LINK_FLAG([[-no-pie]], [GPROF_LDFLAGS="-no-pie"])
     AX_CHECK_LINK_FLAG([[-pg]],[GPROF_LDFLAGS="$GPROF_LDFLAGS -pg"],
         [AC_MSG_ERROR(gprof profiling requested but not available)], [[$GPROF_LDFLAGS]])
+fi
+
+if test "x$use_lcov" = "xyes"; then
+  if test "x$LCOV" = "x"; then
+    AC_MSG_ERROR("lcov testing requested but lcov not found")
+  fi
+  if test "x$GCOV" = "x"; then
+    AC_MSG_ERROR("lcov testing requested but gcov not found")
+  fi
+  if test "x$PYTHON" = "x"; then
+    AC_MSG_ERROR("lcov testing requested but python not found")
+  fi
+  if test "x$GENHTML" = "x"; then
+    AC_MSG_ERROR("lcov testing requested but genhtml not found")
+  fi
+  LCOV="$LCOV --gcov-tool=$GCOV"
+  AX_CHECK_LINK_FLAG([[--coverage]], [LDFLAGS="$LDFLAGS --coverage"],
+    [AC_MSG_ERROR("lcov testing requested but --coverage linker flag does not work")])
+  AX_CHECK_COMPILE_FLAG([--coverage],[CXXFLAGS="$CXXFLAGS --coverage"],
+    [AC_MSG_ERROR("lcov testing requested but --coverage flag does not work")])
+  AC_DEFINE(USE_COVERAGE, 1, [Define this symbol if coverage is enabled])
+  CXXFLAGS="-Og $CXXFLAGS"
+fi
+
+if test "x$use_lcov_branch" != "xno"; then
+  AC_SUBST(LCOV_OPTS, "$LCOV_OPTS --rc lcov_branch_coverage=1")
 fi
 
 if test x$TARGET_OS != xwindows; then
@@ -1252,6 +1294,11 @@ AC_SUBST(COMPAT_LDFLAGS)
 AC_SUBST(ERROR_CXXFLAGS)
 AC_SUBST(GPROF_CXXFLAGS)
 AC_SUBST(GPROF_LDFLAGS)
+AC_SUBST(LCOV)
+AC_SUBST(GENHTML)
+AC_SUBST(GCOV)
+AC_SUBST(LCOV_OPTS)
+AM_CONDITIONAL([USE_LCOV], [test x$use_lcov = xyes])
 AC_SUBST(HARDENED_CXXFLAGS)
 AC_SUBST(HARDENED_CPPFLAGS)
 AC_SUBST(HARDENED_LDFLAGS)
@@ -1385,6 +1432,8 @@ if test x$SANITIZER_NO_PIE_LDFLAGS != x; then
 fi
 echo "  debug enabled       = $enable_debug"
 echo "  gprof enabled       = $enable_gprof"
+echo "  lcov enabled        = $use_lcov"
+echo "  lcov branch cov     = $use_lcov_branch"
 echo "  werror              = $enable_werror"
 echo
 echo "  target os           = $TARGET_OS"

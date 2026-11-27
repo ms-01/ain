@@ -62,3 +62,86 @@ impl MasternodeService {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::{hashes::Hash, Txid};
+    use rust_decimal_macros::dec;
+
+    use super::{MasternodeService, MasternodeState};
+    use crate::{
+        model::{BlockContext, Masternode},
+        network::Network,
+    };
+
+    fn make_mn(creation_height: u32, resign_height: Option<u32>) -> Masternode {
+        Masternode {
+            id: Txid::all_zeros(),
+            owner_address: "owner".to_string(),
+            operator_address: "operator".to_string(),
+            creation_height,
+            resign_height,
+            resign_tx: None,
+            minted_blocks: 0,
+            timelock: 0,
+            collateral: dec!(20000),
+            block: BlockContext::default(),
+            history: vec![],
+        }
+    }
+
+    #[test]
+    fn test_masternode_state_transitions_pre_and_post_eunos() {
+        let svc = MasternodeService::new(Network::Mainnet);
+
+        // Genesis masternode is immediately enabled
+        assert!(matches!(
+            svc.get_masternode_state(&make_mn(0, None), 0),
+            MasternodeState::Enabled
+        ));
+
+        // Pre-Eunos activation delay is 10
+        let mn_pre = make_mn(100, None);
+        assert!(matches!(
+            svc.get_masternode_state(&mn_pre, 109),
+            MasternodeState::PreEnabled
+        ));
+        assert!(matches!(
+            svc.get_masternode_state(&mn_pre, 110),
+            MasternodeState::Enabled
+        ));
+
+        // Post-Eunos activation delay is 1008
+        let mn_post = make_mn(900_000, None);
+        assert!(matches!(
+            svc.get_masternode_state(&mn_post, 901_007),
+            MasternodeState::PreEnabled
+        ));
+        assert!(matches!(
+            svc.get_masternode_state(&mn_post, 901_008),
+            MasternodeState::Enabled
+        ));
+
+        // Pre-Eunos resign delay is 60
+        let mn_resign_pre = make_mn(100, Some(200));
+        assert!(matches!(
+            svc.get_masternode_state(&mn_resign_pre, 259),
+            MasternodeState::PreResigned
+        ));
+        assert!(matches!(
+            svc.get_masternode_state(&mn_resign_pre, 260),
+            MasternodeState::Resigned
+        ));
+
+        // Post-Eunos resign delay is 2016
+        let mn_resign_post = make_mn(900_000, Some(905_000));
+        assert!(matches!(
+            svc.get_masternode_state(&mn_resign_post, 907_015),
+            MasternodeState::PreResigned
+        ));
+        assert!(matches!(
+            svc.get_masternode_state(&mn_resign_post, 907_016),
+            MasternodeState::Resigned
+        ));
+    }
+}

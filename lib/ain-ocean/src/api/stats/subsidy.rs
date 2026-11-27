@@ -144,3 +144,61 @@ impl BlockSubsidy {
         subsidy_reductions
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BlockSubsidy, BLOCK_SUBSIDY, MAIN_NET_COINBASE_SUBSIDY_OPTIONS,
+        TEST_NET_COINBASE_SUBSIDY_OPTIONS,
+    };
+    use crate::network::Network;
+
+    #[test]
+    fn test_block_subsidy_genesis_pre_and_post_eunos() {
+        let subsidy = BlockSubsidy::default();
+        assert_eq!(
+            subsidy.get_block_subsidy(0),
+            MAIN_NET_COINBASE_SUBSIDY_OPTIONS.genesis_block_subsidy
+        );
+        assert_eq!(
+            subsidy.get_block_subsidy(100),
+            MAIN_NET_COINBASE_SUBSIDY_OPTIONS.pre_eunos_block_subsidy
+        );
+        assert_eq!(
+            subsidy.get_block_subsidy(894_000),
+            MAIN_NET_COINBASE_SUBSIDY_OPTIONS.eunos_base_block_subsidy
+        );
+        // First reduction interval after Eunos
+        let first_reduction = subsidy.get_block_subsidy(894_000 + 32_690);
+        assert!(first_reduction < MAIN_NET_COINBASE_SUBSIDY_OPTIONS.eunos_base_block_subsidy);
+        assert!(first_reduction > 0);
+        // Far future height hits 0 subsidy
+        assert_eq!(subsidy.get_block_subsidy(u32::MAX), 0);
+    }
+
+    #[test]
+    fn test_block_supply_pre_and_post_eunos() {
+        let subsidy = BlockSubsidy::new(TEST_NET_COINBASE_SUBSIDY_OPTIONS);
+        let pre = subsidy.get_supply(100);
+        assert_eq!(
+            pre,
+            TEST_NET_COINBASE_SUBSIDY_OPTIONS.genesis_block_subsidy
+                + TEST_NET_COINBASE_SUBSIDY_OPTIONS.pre_eunos_block_subsidy * 100
+        );
+        let at_eunos = subsidy.get_supply(354_950);
+        let after_eunos = subsidy.get_supply(354_951);
+        assert_eq!(
+            after_eunos - at_eunos,
+            TEST_NET_COINBASE_SUBSIDY_OPTIONS.eunos_base_block_subsidy
+        );
+        // Far future supply caps at last milestone
+        let cap = subsidy.get_supply(u32::MAX);
+        assert!(cap > after_eunos);
+    }
+
+    #[test]
+    fn test_block_subsidy_static_map() {
+        assert!(BLOCK_SUBSIDY.contains_key(&Network::Mainnet));
+        assert!(BLOCK_SUBSIDY.contains_key(&Network::Testnet));
+    }
+}

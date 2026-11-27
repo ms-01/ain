@@ -97,4 +97,29 @@ impl OceanStore {
     pub fn compact(&self) {
         self.0.compact();
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(path: &Path) -> Result<Self> {
+        let path = path.join("ocean");
+        fs::create_dir_all(&path)?;
+
+        let cf_with_opts = COLUMN_NAMES
+            .into_iter()
+            .map(|name| (name, None))
+            .collect::<Vec<_>>();
+
+        let backend = Arc::new(Rocks::open(&path, cf_with_opts, None)?);
+
+        Ok(Self(backend))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_scriptactivity_cf_options;
+
+    #[test]
+    fn test_get_scriptactivity_cf_options_builds() {
+        let _opts = get_scriptactivity_cf_options();
+    }
 }

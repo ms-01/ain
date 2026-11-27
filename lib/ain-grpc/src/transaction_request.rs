@@ -111,3 +111,133 @@ impl From<TransactionRequest> for Option<TransactionMessage> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ain_evm::bytes::Bytes;
+    use ethereum::{AccessListItem, TransactionAction};
+    use ethereum_types::{H160, H256, U256};
+    use serde_json::json;
+
+    use super::{TransactionMessage, TransactionRequest};
+
+    #[test]
+    fn transaction_request_deserializes_and_rejects_unknown_fields() {
+        let req: TransactionRequest = serde_json::from_value(json!({
+            "from": "0x0000000000000000000000000000000000000001",
+            "to": "0x0000000000000000000000000000000000000002",
+            "gas": "0x5208",
+            "value": "0x10",
+            "type": "0x2"
+        }))
+        .unwrap();
+        assert_eq!(req.from, Some(H160::from_low_u64_be(1)));
+        assert_eq!(req.to, Some(H160::from_low_u64_be(2)));
+        assert_eq!(req.transaction_type, Some(U256::from(2)));
+
+        assert!(serde_json::from_value::<TransactionRequest>(json!({ "extra": 1 })).is_err());
+    }
+
+    #[test]
+    fn legacy_transaction_request_converts_call_and_create() {
+        let req = TransactionRequest {
+            to: Some(H160::from_low_u64_be(0xaa)),
+            gas_price: Some(U256::from(100)),
+            gas: Some(U256::from(21_000)),
+            value: Some(U256::from(5)),
+            data: Some(Bytes::from(vec![0x01, 0x02])),
+            ..Default::default()
+        };
+        match Option::<TransactionMessage>::from(req).unwrap() {
+            TransactionMessage::Legacy(msg) => {
+                assert_eq!(msg.gas_price, U256::from(100));
+                assert_eq!(msg.gas_limit, U256::from(21_000));
+                assert_eq!(msg.value, U256::from(5));
+                assert_eq!(msg.input, vec![0x01, 0x02]);
+                assert_eq!(msg.action, TransactionAction::Call(H160::from_low_u64_be(0xaa)));
+            }
+            _ => panic!("expected Legacy transaction message"),
+        }
+
+        let create_req = TransactionRequest {
+            gas_price: Some(U256::from(50)),
+            input: Some(Bytes::from(vec![0x60])),
+            ..Default::default()
+        };
+        match Option::<TransactionMessage>::from(create_req).unwrap() {
+            TransactionMessage::Legacy(msg) => {
+                assert_eq!(msg.action, TransactionAction::Create);
+                assert_eq!(msg.input, vec![0x60]);
+            }
+            _ => panic!("expected Legacy transaction message"),
+        }
+    }
+
+    #[test]
+    fn eip2930_transaction_request_converts_call_and_create() {
+        let item = AccessListItem {
+            address: H160::from_low_u64_be(0xbb),
+            storage_keys: vec![H256::from_low_u64_be(1)],
+        };
+        let req = TransactionRequest {
+            to: Some(H160::from_low_u64_be(0xaa)),
+            gas_price: Some(U256::from(200)),
+            access_list: Some(vec![item.clone()]),
+            ..Default::default()
+        };
+        match Option::<TransactionMessage>::from(req).unwrap() {
+            TransactionMessage::EIP2930(msg) => {
+                assert_eq!(msg.gas_price, U256::from(200));
+                assert_eq!(msg.access_list, vec![item]);
+                assert_eq!(msg.action, TransactionAction::Call(H160::from_low_u64_be(0xaa)));
+            }
+            _ => panic!("expected EIP2930 transaction message"),
+        }
+
+        let create_req = TransactionRequest {
+            access_list: Some(vec![]),
+            ..Default::default()
+        };
+        match Option::<TransactionMessage>::from(create_req).unwrap() {
+            TransactionMessage::EIP2930(msg) => {
+                assert_eq!(msg.action, TransactionAction::Create);
+            }
+            _ => panic!("expected EIP2930 transaction message"),
+        }
+    }
+
+    #[test]
+    fn eip1559_and_default_and_invalid_transaction_requests() {
+        let req = TransactionRequest {
+            to: Some(H160::from_low_u64_be(0xcc)),
+            max_fee_per_gas: Some(U256::from(300)),
+            max_priority_fee_per_gas: Some(U256::from(10)),
+            ..Default::default()
+        };
+        match Option::<TransactionMessage>::from(req).unwrap() {
+            TransactionMessage::EIP1559(msg) => {
+                assert_eq!(msg.max_fee_per_gas, U256::from(300));
+                assert_eq!(msg.max_priority_fee_per_gas, U256::from(10));
+                assert_eq!(msg.action, TransactionAction::Call(H160::from_low_u64_be(0xcc)));
+            }
+            _ => panic!("expected EIP1559 transaction message"),
+        }
+
+        // Default empty request falls back to EIP1559 Create
+        match Option::<TransactionMessage>::from(TransactionRequest::default()).unwrap() {
+            TransactionMessage::EIP1559(msg) => {
+                assert_eq!(msg.action, TransactionAction::Create);
+                assert_eq!(msg.max_fee_per_gas, U256::zero());
+            }
+            _ => panic!("expected EIP1559 transaction message"),
+        }
+
+        // Conflicting gas_price and max_fee_per_gas returns None
+        let invalid = TransactionRequest {
+            gas_price: Some(U256::from(1)),
+            max_fee_per_gas: Some(U256::from(2)),
+            ..Default::default()
+        };
+        assert!(Option::<TransactionMessage>::from(invalid).is_none());
+    }
+}
