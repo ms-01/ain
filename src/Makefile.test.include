@@ -290,7 +290,7 @@ nodist_test_test_defi_SOURCES = $(GENERATED_TEST_FILES)
 
 $(DEFI_TESTS): $(GENERATED_TEST_FILES)
 
-CLEAN_DEFI_TEST = test/*.gcda test/*.gcno $(GENERATED_TEST_FILES) $(DEFI_TESTS:=.log)
+CLEAN_DEFI_TEST = test/*.gcda test/*.gcno wallet/test/*.gcda wallet/test/*.gcno $(GENERATED_TEST_FILES) $(DEFI_TESTS:=.log)
 
 CLEANFILES += $(CLEAN_DEFI_TEST)
 

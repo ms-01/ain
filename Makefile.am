@@ -5,7 +5,7 @@
 ACLOCAL_AMFLAGS = -I build-aux/m4
 SUBDIRS = src
 
-.PHONY: deploy FORCE
+.PHONY: deploy FORCE cov cov_clean
 
 export PYTHONPATH
 
@@ -98,6 +98,50 @@ endif
 
 clean-docs:
 	rm -rf doc/doxygen
+
+if USE_LCOV
+LCOV_FILTER_PATTERN = \
+	-p "/usr/" \
+	-p "/boost/" \
+	-p "/depends/" \
+	-p "src/test/" \
+	-p "src/bench/" \
+	-p "src/secp256k1/" \
+	-p "src/leveldb/" \
+	-p "src/univalue/" \
+	-p "src/crc32c/"
+
+baseline.info:
+	$(LCOV) -c -i -d $(abs_builddir)/src -o $@
+
+baseline_filtered.info: baseline.info
+	$(abs_builddir)/contrib/filter-lcov.py $(LCOV_FILTER_PATTERN) $< $@
+	$(LCOV) -a $@ $(LCOV_OPTS) -o $@
+
+test_defi.info: baseline_filtered.info
+	$(MAKE) -C src/ check
+	$(LCOV) -c $(LCOV_OPTS) -d $(abs_builddir)/src -t test_defi -o $@
+	$(LCOV) -z $(LCOV_OPTS) -d $(abs_builddir)/src
+
+test_defi_filtered.info: test_defi.info
+	$(abs_builddir)/contrib/filter-lcov.py $(LCOV_FILTER_PATTERN) $< $@
+	$(LCOV) -a $@ $(LCOV_OPTS) -o $@
+
+test_defi_coverage.info: baseline_filtered.info test_defi_filtered.info
+	$(LCOV) -a $(LCOV_OPTS) baseline_filtered.info -a test_defi_filtered.info -o $@
+
+test_defi.coverage/.dirstamp: test_defi_coverage.info
+	$(GENHTML) -s $(LCOV_OPTS) $< -o $(@D)
+	@touch $@
+
+cov: test_defi.coverage/.dirstamp
+
+cov_clean:
+	rm -rf baseline.info baseline_filtered.info test_defi.info test_defi_filtered.info test_defi_coverage.info test_defi.coverage/ total.coverage/ coverage_percent.txt
+	find $(abs_builddir)/src -name '*.gcda' -delete
+
+CLEANFILES += baseline.info baseline_filtered.info test_defi.info test_defi_filtered.info test_defi_coverage.info
+endif
 
 clean-local: clean-docs
 	rm -rf coverage_percent.txt test_defi.coverage/ total.coverage/ test/tmp/ cache/
