@@ -877,4 +877,316 @@ mod tests {
             BLOOM_TRANSFER_AND_SECOND_LOG.trim_start_matches("0x")
         );
     }
+
+    mod validation_tests {
+        use std::{
+            path::PathBuf,
+            sync::{
+                atomic::{AtomicU64, Ordering},
+                Arc,
+            },
+        };
+
+        use ain_contracts::{
+            dst20_address_from_token_id, get_transfer_domain_contract,
+            get_transferdomain_dst20_transfer_function,
+            get_transferdomain_native_transfer_function,
+        };
+        use ethereum::{
+            EIP1559Transaction, EnvelopedEncodable, LegacyTransaction, TransactionAction,
+            TransactionSignature, TransactionV2,
+        };
+        use ethereum_types::{H160, U256};
+        use evm::backend::Basic;
+
+        use crate::{
+            backend::{EVMBackend, Vicinity},
+            block::INITIAL_BASE_FEE,
+            blocktemplate::BlockTemplate,
+            core::{EVMCoreService, TransferDomainTxInfo},
+            evm::BlockContext,
+            storage::Storage,
+            transaction::{
+                cache::{SignedTxCache, TransactionCache, TxValidationCache},
+                SignedTx, LOWER_H256,
+            },
+            trie::GENESIS_STATE_ROOT,
+            weiamount::try_from_satoshi,
+        };
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        fn make_core_and_template(
+            block_gas_limit: u64,
+        ) -> (
+            parking_lot::MutexGuard<'static, ()>,
+            EVMCoreService,
+            BlockTemplate,
+            PathBuf,
+        ) {
+            let guard = crate::evm_unit_tests::vsdb_lock();
+            let trie_store = crate::evm_unit_tests::test_trie_store();
+            let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let dir = std::env::temp_dir().join(format!(
+                "ain_evm_core_tests_storage_{}_{}",
+                std::process::id(),
+                id
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let storage = Arc::new(Storage::new(&dir).unwrap());
+            let tx_cache = Arc::new(TransactionCache {
+                signed_tx_cache: SignedTxCache::new(64),
+                tx_validation_cache: TxValidationCache::new(64),
+            });
+            let core = EVMCoreService::restore(
+                Arc::clone(&trie_store),
+                Arc::clone(&storage),
+                Arc::clone(&tx_cache),
+            );
+            let backend = EVMBackend::from_root(
+                GENESIS_STATE_ROOT,
+                trie_store,
+                storage,
+                Vicinity {
+                    block_gas_limit: U256::from(block_gas_limit),
+                    ..Vicinity::default()
+                },
+                None,
+            )
+            .unwrap();
+            let template = BlockTemplate::new(
+                Vicinity::default(),
+                BlockContext::new_for_test(1, block_gas_limit),
+                backend,
+            );
+            (guard, core, template, dir)
+        }
+
+        fn encode_legacy_tx(
+            nonce: u64,
+            gas_price: U256,
+            gas_limit: u64,
+            action: TransactionAction,
+            value: U256,
+            input: Vec<u8>,
+        ) -> (String, SignedTx) {
+            let tx = TransactionV2::Legacy(LegacyTransaction {
+                nonce: U256::from(nonce),
+                gas_price,
+                gas_limit: U256::from(gas_limit),
+                action,
+                value,
+                input,
+                signature: TransactionSignature::new(27, LOWER_H256, LOWER_H256).unwrap(),
+            });
+            let raw = hex::encode(tx.encode());
+            let signed = SignedTx::try_from(tx).unwrap();
+            (raw, signed)
+        }
+
+        #[test]
+        fn validate_raw_tx_covers_all_checks_and_cache_hit() {
+            let (_guard, core, mut template, dir) = make_core_and_template(30_000_000);
+            let to = TransactionAction::Call(H160::from_low_u64_be(0x1234));
+
+            // 1. Invalid hex / RLP
+            assert!(unsafe { core.validate_raw_tx("not_valid_hex", &template) }.is_err());
+
+            // 2. Gas price below INITIAL_BASE_FEE
+            let (low_gp, _) = encode_legacy_tx(0, INITIAL_BASE_FEE - 1, 21_000, to, U256::zero(), vec![]);
+            assert!(unsafe { core.validate_raw_tx(&low_gp, &template) }.is_err());
+
+            // 3. Value out of money range
+            let (huge_val, _) = encode_legacy_tx(0, INITIAL_BASE_FEE, 21_000, to, U256::MAX, vec![]);
+            assert!(unsafe { core.validate_raw_tx(&huge_val, &template) }.is_err());
+
+            // 4. Intrinsic gas too low
+            let (low_gas, _) = encode_legacy_tx(0, INITIAL_BASE_FEE, 100, to, U256::zero(), vec![]);
+            assert!(unsafe { core.validate_raw_tx(&low_gas, &template) }.is_err());
+
+            // 5. Gas limit > block_gas_limit
+            let (high_gas, _) = encode_legacy_tx(0, INITIAL_BASE_FEE, 40_000_000, to, U256::zero(), vec![]);
+            assert!(unsafe { core.validate_raw_tx(&high_gas, &template) }.is_err());
+
+            // 6. Insufficient balance
+            let (valid_raw, signed) = encode_legacy_tx(0, INITIAL_BASE_FEE, 21_000, to, U256::zero(), vec![]);
+            assert!(unsafe { core.validate_raw_tx(&valid_raw, &template) }.is_err());
+
+            // Fund sender and set nonce=1 so nonce=0 fails
+            template
+                .backend
+                .apply(
+                    signed.sender,
+                    Some(Basic {
+                        balance: INITIAL_BASE_FEE * U256::from(100_000u64),
+                        nonce: U256::from(1),
+                    }),
+                    None,
+                    Vec::new(),
+                    false,
+                )
+                .unwrap();
+            assert!(unsafe { core.validate_raw_tx(&valid_raw, &template) }.is_err());
+
+            // Valid tx with nonce=1 succeeds (and second call hits stateless cache)
+            let (valid_raw_1, signed_1) = encode_legacy_tx(1, INITIAL_BASE_FEE, 21_000, to, U256::zero(), vec![]);
+            template
+                .backend
+                .apply(
+                    signed_1.sender,
+                    Some(Basic {
+                        balance: INITIAL_BASE_FEE * U256::from(100_000u64),
+                        nonce: U256::from(1),
+                    }),
+                    None,
+                    Vec::new(),
+                    false,
+                )
+                .unwrap();
+            let info1 = unsafe { core.validate_raw_tx(&valid_raw_1, &template) }.unwrap();
+            let info2 = unsafe { core.validate_raw_tx(&valid_raw_1, &template) }.unwrap();
+            assert_eq!(info1.max_prepay_fee, info2.max_prepay_fee);
+
+            // Template helper methods
+            assert_eq!(
+                unsafe { core.get_next_valid_nonce_in_block_template(&template, signed.sender) }.unwrap(),
+                U256::from(1)
+            );
+            assert!(unsafe { core.remove_txs_above_hash_in_block_template(&mut template, [0u8; 32]) }.unwrap().is_empty());
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn validate_raw_transferdomain_tx_native_and_dst20() {
+            let (_guard, core, mut template, dir) = make_core_and_template(30_000_000);
+            let td_addr = get_transfer_domain_contract().fixed_address;
+            let to_addr = H160::from_low_u64_be(0xabcd);
+            let amount_sat: u64 = 100_000_000;
+            let amount_wei = try_from_satoshi(U256::from(amount_sat)).unwrap().0;
+
+            // Build a valid native EvmIn transferdomain tx
+            let native_fn = get_transferdomain_native_transfer_function();
+            let native_input = native_fn
+                .encode_input(&[
+                    ethabi::Token::Address(td_addr),
+                    ethabi::Token::Address(to_addr),
+                    ethabi::Token::Uint(amount_wei),
+                    ethabi::Token::String("df1qtest".into()),
+                ])
+                .unwrap();
+
+            let (raw_native, signed_native) = encode_legacy_tx(
+                0,
+                U256::zero(),
+                0,
+                TransactionAction::Call(td_addr),
+                U256::zero(),
+                native_input.clone(),
+            );
+            let sender = signed_native.sender;
+
+            let ctx_native = || TransferDomainTxInfo {
+                from: sender.0,
+                to: to_addr.0,
+                native_address: "df1qtest".into(),
+                direction: true,
+                value: amount_sat,
+                token_id: 0,
+            };
+
+            // Valid native EvmIn
+            let ok = unsafe { core.validate_raw_transferdomain_tx(&raw_native, &template, ctx_native()) };
+            assert!(ok.is_ok());
+
+            // Non-legacy tx type fails
+            let eip1559 = TransactionV2::EIP1559(EIP1559Transaction {
+                chain_id: 1,
+                nonce: U256::zero(),
+                max_priority_fee_per_gas: U256::zero(),
+                max_fee_per_gas: U256::zero(),
+                gas_limit: U256::zero(),
+                action: TransactionAction::Call(td_addr),
+                value: U256::zero(),
+                input: native_input.clone(),
+                access_list: Vec::new(),
+                odd_y_parity: false,
+                r: LOWER_H256,
+                s: LOWER_H256,
+            });
+            let raw_1559 = hex::encode(eip1559.encode());
+            assert!(unsafe { core.validate_raw_transferdomain_tx(&raw_1559, &template, ctx_native()) }.is_err());
+
+            // Wrong sender
+            let mut wrong_sender = ctx_native();
+            wrong_sender.from = [0x11; 20];
+            assert!(unsafe { core.validate_raw_transferdomain_tx(&raw_native, &template, wrong_sender) }.is_err());
+
+            // Non-zero value / gas_price / gas_limit / wrong address / Create action
+            let (nz_val, _) = encode_legacy_tx(0, U256::zero(), 0, TransactionAction::Call(td_addr), U256::from(1), native_input.clone());
+            assert!(unsafe { core.validate_raw_transferdomain_tx(&nz_val, &template, ctx_native()) }.is_err());
+
+            let (nz_gp, _) = encode_legacy_tx(0, U256::from(1), 0, TransactionAction::Call(td_addr), U256::zero(), native_input.clone());
+            assert!(unsafe { core.validate_raw_transferdomain_tx(&nz_gp, &template, ctx_native()) }.is_err());
+
+            let (nz_gl, _) = encode_legacy_tx(0, U256::zero(), 1, TransactionAction::Call(td_addr), U256::zero(), native_input.clone());
+            assert!(unsafe { core.validate_raw_transferdomain_tx(&nz_gl, &template, ctx_native()) }.is_err());
+
+            let (wrong_addr, _) = encode_legacy_tx(0, U256::zero(), 0, TransactionAction::Call(to_addr), U256::zero(), native_input.clone());
+            assert!(unsafe { core.validate_raw_transferdomain_tx(&wrong_addr, &template, ctx_native()) }.is_err());
+
+            let (create_tx, _) = encode_legacy_tx(0, U256::zero(), 0, TransactionAction::Create, U256::zero(), native_input);
+            assert!(unsafe { core.validate_raw_transferdomain_tx(&create_tx, &template, ctx_native()) }.is_err());
+
+            // Valid DST20 EvmIn
+            let token_id: u32 = 5;
+            let dst20_addr = dst20_address_from_token_id(u64::from(token_id)).unwrap();
+            let dst20_fn = get_transferdomain_dst20_transfer_function();
+            let dst20_input = dst20_fn
+                .encode_input(&[
+                    ethabi::Token::Address(dst20_addr),
+                    ethabi::Token::Address(td_addr),
+                    ethabi::Token::Address(to_addr),
+                    ethabi::Token::Uint(amount_wei),
+                    ethabi::Token::String("df1qin".into()),
+                ])
+                .unwrap();
+            let (raw_dst20, signed_dst20) = encode_legacy_tx(
+                0,
+                U256::zero(),
+                0,
+                TransactionAction::Call(td_addr),
+                U256::zero(),
+                dst20_input,
+            );
+            let ctx_dst20 = TransferDomainTxInfo {
+                from: signed_dst20.sender.0,
+                to: to_addr.0,
+                native_address: "df1qin".into(),
+                direction: true,
+                value: amount_sat,
+                token_id,
+            };
+            assert!(unsafe { core.validate_raw_transferdomain_tx(&raw_dst20, &template, ctx_dst20) }.is_ok());
+
+            // Nonce mismatch fails
+            template
+                .backend
+                .apply(
+                    sender,
+                    Some(Basic {
+                        balance: U256::zero(),
+                        nonce: U256::from(2),
+                    }),
+                    None,
+                    Vec::new(),
+                    false,
+                )
+                .unwrap();
+            assert!(unsafe { core.validate_raw_transferdomain_tx(&raw_native, &template, ctx_native()) }.is_err());
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
 }

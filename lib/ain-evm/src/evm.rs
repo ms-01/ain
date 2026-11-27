@@ -75,6 +75,23 @@ pub struct BlockContext {
     pub attrs: Attributes,
 }
 
+#[cfg(test)]
+impl BlockContext {
+    pub(crate) fn new_for_test(dvm_block: u64, block_gas_limit: u64) -> Self {
+        Self {
+            parent_hash: H256::zero(),
+            dvm_block,
+            mnview_ptr: 0,
+            attrs: Attributes {
+                block_gas_target_factor: 2,
+                block_gas_limit,
+                finality_count: 100,
+                rbf_fee_increment: 10,
+            },
+        }
+    }
+}
+
 fn init_vsdb(path: PathBuf) {
     info!(target: "vsdb", "Initializating VSDB");
     let vsdb_dir_path = path.join(".vsdb");

@@ -23,6 +23,8 @@ pub mod trace;
 pub mod transaction;
 mod trie;
 pub mod weiamount;
+#[cfg(test)]
+mod evm_unit_tests;
 
 pub use anyhow::{format_err, Ok};
 use backend::BackendError;
